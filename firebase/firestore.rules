@@ -1,0 +1,79 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function validName(name) {
+      return name is string && name.size() >= 1 && name.size() <= 24;
+    }
+
+    match /users/{userId} {
+      allow read: if signedIn();
+      allow create, update: if signedIn()
+        && request.auth.uid == userId
+        && request.resource.data.keys().hasOnly(['displayName', 'createdAt'])
+        && validName(request.resource.data.displayName);
+      allow delete: if false;
+    }
+
+    match /threads/{threadId} {
+      allow read: if signedIn();
+
+      allow create: if signedIn()
+        && request.resource.data.keys().hasAll([
+             'title', 'kind', 'lat', 'lng', 'geohash',
+             'authorId', 'authorName', 'createdAt', 'lastMessageAt', 'messageCount'
+           ])
+        && request.resource.data.keys().hasOnly([
+             'title', 'kind', 'lat', 'lng', 'geohash',
+             'authorId', 'authorName', 'createdAt', 'lastMessageAt', 'messageCount'
+           ])
+        && request.resource.data.authorId == request.auth.uid
+        && request.resource.data.title is string
+        && request.resource.data.title.size() >= 1
+        && request.resource.data.title.size() <= 80
+        && request.resource.data.kind in ['event', 'notice', 'traffic', 'general']
+        && request.resource.data.lat is number
+        && request.resource.data.lat >= -90 && request.resource.data.lat <= 90
+        && request.resource.data.lng is number
+        && request.resource.data.lng >= -180 && request.resource.data.lng <= 180
+        && request.resource.data.geohash is string
+        && request.resource.data.geohash.size() > 0
+        && request.resource.data.geohash.size() <= 12
+        && validName(request.resource.data.authorName)
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.lastMessageAt == request.time
+        && request.resource.data.messageCount == 0;
+
+      // Clients may only bump the two activity fields, one message at a time.
+      // Everything else about a thread is immutable once created.
+      allow update: if signedIn()
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['lastMessageAt', 'messageCount'])
+        && request.resource.data.messageCount == resource.data.messageCount + 1
+        && request.resource.data.lastMessageAt == request.time;
+
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        allow read: if signedIn();
+
+        allow create: if signedIn()
+          && request.resource.data.keys().hasAll(['text', 'authorId', 'authorName', 'createdAt'])
+          && request.resource.data.keys().hasOnly(['text', 'authorId', 'authorName', 'createdAt'])
+          && request.resource.data.authorId == request.auth.uid
+          && request.resource.data.text is string
+          && request.resource.data.text.size() >= 1
+          && request.resource.data.text.size() <= 1000
+          && validName(request.resource.data.authorName)
+          && request.resource.data.createdAt == request.time;
+
+        allow update, delete: if false;
+      }
+    }
+  }
+}

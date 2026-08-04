@@ -1,0 +1,89 @@
+name: MapTalk
+
+options:
+  bundleIdPrefix: app
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+packages:
+  Firebase:
+    url: https://github.com/firebase/firebase-ios-sdk
+    from: 12.17.0
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    DEVELOPMENT_TEAM: "LJH248Q9BP"
+    CODE_SIGN_STYLE: Automatic
+
+targets:
+  MapTalk:
+    type: application
+    platform: iOS
+    sources:
+      - path: MapTalk
+        excludes:
+          - "**/*.example"
+          - Info.plist
+    dependencies:
+      - package: Firebase
+        product: FirebaseAuth
+      - package: Firebase
+        product: FirebaseFirestore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.maptalk
+        PRODUCT_NAME: MapTalk
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        # Phone only, portrait only.
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: MapTalk
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: MapTalk centres the map on you so you can see the conversations happening around you.
+        INFOPLIST_KEY_NSPhotoLibraryUsageDescription: MapTalk attaches photos you pick to chats on the map.
+        INFOPLIST_FILE: MapTalk/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        SWIFT_STRICT_CONCURRENCY: complete
+
+  MapTalkTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - MapTalkTests
+    dependencies:
+      - target: MapTalk
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.maptalk.tests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  MapTalk:
+    build:
+      targets:
+        MapTalk: all
+        MapTalkTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: false
+      targets:
+        - MapTalkTests
+
+  # On-device demo by default for the physical phone. Override with MAPTALK_MODE=emulator
+  # when the Mac's Firebase emulators are reachable.
+  MapTalk Mock Data:
+    build:
+      targets:
+        MapTalk: all
+    run:
+      config: Debug
+      environmentVariables:
+        MAPTALK_MODE: "local"

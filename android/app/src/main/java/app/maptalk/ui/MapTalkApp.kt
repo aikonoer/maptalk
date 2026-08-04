@@ -1,0 +1,126 @@
+package app.maptalk.ui
+
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavType
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
+import app.maptalk.R
+import app.maptalk.appContainer
+import app.maptalk.data.Session
+import app.maptalk.ui.map.MapScreen
+import app.maptalk.ui.onboarding.DisplayNameScreen
+import app.maptalk.ui.theme.MapTalkColors
+import app.maptalk.ui.theme.MapTalkShapes
+import app.maptalk.ui.thread.ThreadScreen
+
+private const val ROUTE_MAP = "map"
+private const val ARG_THREAD_ID = "threadId"
+private const val ROUTE_THREAD = "thread/{$ARG_THREAD_ID}"
+
+@Composable
+fun MapTalkApp() {
+    val container = LocalContext.current.appContainer
+    val sessionViewModel: SessionViewModel = viewModel(factory = SessionViewModel.factory(container))
+    val session by sessionViewModel.session.collectAsStateWithLifecycle()
+    val signInError by sessionViewModel.signInError.collectAsStateWithLifecycle()
+
+    when (val current = session) {
+        null, Session.SignedOut -> StartupScreen(message = signInError)
+
+        is Session.NeedsDisplayName -> DisplayNameScreen(
+            onSubmit = sessionViewModel::saveDisplayName,
+            isSaving = sessionViewModel.isSavingName.collectAsStateWithLifecycle().value,
+        )
+
+        is Session.Ready -> {
+            val navController = rememberNavController()
+            NavHost(navController = navController, startDestination = ROUTE_MAP) {
+                composable(ROUTE_MAP) {
+                    MapScreen(
+                        author = current.author,
+                        onOpenThread = { threadId -> navController.navigate("thread/$threadId") },
+                    )
+                }
+                composable(
+                    route = ROUTE_THREAD,
+                    arguments = listOf(navArgument(ARG_THREAD_ID) { type = NavType.StringType }),
+                ) { backStackEntry ->
+                    ThreadScreen(
+                        threadId = backStackEntry.arguments?.getString(ARG_THREAD_ID).orEmpty(),
+                        author = current.author,
+                        onBack = navController::popBackStack,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Shown for the moment it takes to get an anonymous account, or if that fails. */
+@Composable
+private fun StartupScreen(message: String?) {
+    Surface(modifier = Modifier.fillMaxSize(), color = MapTalkColors.Base) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(40.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            AppMark()
+            Text(
+                text = "MapTalk",
+                style = MaterialTheme.typography.titleLarge,
+                color = MapTalkColors.Text,
+                modifier = Modifier.padding(top = 16.dp),
+            )
+            Text(
+                text = message ?: "Finding conversations near you\u2026",
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (message == null) MapTalkColors.Subtle else MapTalkColors.Danger,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+        }
+    }
+}
+
+/** The logo, such as it is: the app's own speech bubble with a map pin inside it. */
+@Composable
+fun AppMark(size: Int = 64) {
+    Surface(
+        modifier = Modifier.size(size.dp),
+        shape = MapTalkShapes.bubble(radius = (size * 0.32).dp),
+        color = MapTalkColors.Accent.copy(alpha = 0.16f),
+        contentColor = MapTalkColors.Accent,
+        border = BorderStroke(1.dp, MapTalkColors.Accent.copy(alpha = 0.35f)),
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                painter = painterResource(R.drawable.ic_pin),
+                contentDescription = null,
+                modifier = Modifier.size((size * 0.42).dp),
+            )
+        }
+    }
+}

@@ -1,0 +1,38 @@
+# --- Secrets / machine-local config (never commit these) ---
+android/local.properties
+android/app/google-services.json
+ios/MapTalk/GoogleService-Info.plist
+
+# --- Android / Gradle ---
+.gradle/
+.kotlin/
+android/build/
+android/app/build/
+android/captures/
+*.apk
+*.aab
+*.jks
+*.keystore
+local.properties
+
+# --- iOS / Xcode ---
+ios/MapTalk.xcodeproj/
+ios/MapTalk.xcworkspace/
+ios/build/
+ios/build-device/
+*.xcuserstate
+xcuserdata/
+DerivedData/
+.swiftpm/
+
+# --- Firebase tooling ---
+firebase/.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+
+# --- Node (rules tests) ---
+node_modules/
+
+# --- macOS ---
+.DS_Store
