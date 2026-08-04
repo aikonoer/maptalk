@@ -4,11 +4,13 @@ import android.app.Application
 import android.content.Context
 import app.maptalk.data.AuthRepository
 import app.maptalk.data.LocalDemoStore
+import app.maptalk.data.MediaUploader
 import app.maptalk.data.ThreadRepository
 import app.maptalk.location.LocationProvider
 import com.google.firebase.Firebase
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.firestore
+import com.google.firebase.storage.storage
 import java.io.File
 
 /**
@@ -37,7 +39,11 @@ class AppContainer(context: Context) {
         if (BuildConfig.MAPTALK_MODE == "emulator") {
             FirebaseEmulator.connect(appContext)
         } else {
-            FirebaseEmulator.Connection(Firebase.auth, Firebase.firestore)
+            FirebaseEmulator.Connection(
+                auth = Firebase.auth,
+                firestore = Firebase.firestore,
+                storage = Firebase.storage,
+            )
         }
     }
 
@@ -48,7 +54,10 @@ class AppContainer(context: Context) {
 
     val threadRepository: ThreadRepository by lazy {
         localStore?.let { ThreadRepository(it) }
-            ?: ThreadRepository(firebase.firestore)
+            ?: ThreadRepository(
+                firestore = firebase.firestore,
+                mediaUploader = MediaUploader(firebase.storage),
+            )
     }
 
     val locationProvider: LocationProvider by lazy { LocationProvider(appContext) }

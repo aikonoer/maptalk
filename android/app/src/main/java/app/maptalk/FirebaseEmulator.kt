@@ -7,6 +7,7 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreSettings
 import com.google.firebase.firestore.MemoryCacheSettings
+import com.google.firebase.storage.FirebaseStorage
 
 /**
  * Firebase pointed at the local emulators, under fake credentials in a secondary app so no real
@@ -23,6 +24,7 @@ object FirebaseEmulator {
     private const val APP_NAME = "maptalk-emulator"
     private const val AUTH_PORT = 9099
     private const val FIRESTORE_PORT = 8080
+    private const val STORAGE_PORT = 9199
     private const val PROJECT_ID = "maptalk-qa"
 
     fun connect(context: Context, host: String = DEFAULT_HOST): Connection {
@@ -33,12 +35,14 @@ object FirebaseEmulator {
                 .setProjectId(PROJECT_ID)
                 .setApplicationId("1:000000000000:android:0000000000000000")
                 .setApiKey("emulator-only-key")
+                .setStorageBucket("$PROJECT_ID.appspot.com")
                 .build(),
             APP_NAME,
         )
 
         val auth = FirebaseAuth.getInstance(app)
         val firestore = FirebaseFirestore.getInstance(app)
+        val storage = FirebaseStorage.getInstance(app)
         if (existing == null) {
             auth.useEmulator(host, AUTH_PORT)
             firestore.firestoreSettings = FirebaseFirestoreSettings.Builder()
@@ -47,9 +51,14 @@ object FirebaseEmulator {
                 // Reads must come from the emulator, not a cache left by an earlier run.
                 .setLocalCacheSettings(MemoryCacheSettings.newBuilder().build())
                 .build()
+            storage.useEmulator(host, STORAGE_PORT)
         }
-        return Connection(auth, firestore)
+        return Connection(auth, firestore, storage)
     }
 
-    data class Connection(val auth: FirebaseAuth, val firestore: FirebaseFirestore)
+    data class Connection(
+        val auth: FirebaseAuth,
+        val firestore: FirebaseFirestore,
+        val storage: FirebaseStorage,
+    )
 }

@@ -314,14 +314,28 @@ private struct MessageImage: View {
     let height: Int?
 
     @State private var showFullscreen = false
+    @State private var remoteImage: UIImage?
+
+    private var isRemote: Bool {
+        path.hasPrefix("http://") || path.hasPrefix("https://")
+    }
+
+    private var localImage: UIImage? {
+        guard !isRemote else { return nil }
+        return UIImage(contentsOfFile: LocalMediaStore.url(forRelativePath: path).path)
+    }
+
+    private var displayImage: UIImage? { localImage ?? remoteImage }
 
     var body: some View {
-        let uiImage = UIImage(contentsOfFile: LocalMediaStore.url(forRelativePath: path).path)
         Group {
-            if let uiImage {
-                Image(uiImage: uiImage)
+            if let displayImage {
+                Image(uiImage: displayImage)
                     .resizable()
                     .scaledToFill()
+            } else if isRemote {
+                Color.black.opacity(0.2)
+                    .overlay { ProgressView().tint(Theme.subtle) }
             } else {
                 Color.black.opacity(0.2)
                     .overlay {
@@ -334,8 +348,14 @@ private struct MessageImage: View {
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .onTapGesture { showFullscreen = true }
+        .task(id: path) {
+            guard isRemote, remoteImage == nil, let url = URL(string: path) else { return }
+            if let (data, _) = try? await URLSession.shared.data(from: url) {
+                remoteImage = UIImage(data: data)
+            }
+        }
         .fullScreenCover(isPresented: $showFullscreen) {
-            FullscreenImageViewer(image: uiImage, onDismiss: { showFullscreen = false })
+            FullscreenImageViewer(image: displayImage, onDismiss: { showFullscreen = false })
         }
     }
 

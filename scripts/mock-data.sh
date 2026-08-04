@@ -20,7 +20,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT/firebase"
 [ -d node_modules ] || npm install
 
-npx firebase emulators:start --only auth,firestore --project "$PROJECT_ID" &
+npx firebase emulators:start --only auth,firestore,storage --project "$PROJECT_ID" &
 emulators=$!
 trap 'kill $emulators 2>/dev/null || true' EXIT INT TERM
 

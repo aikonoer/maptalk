@@ -13,7 +13,7 @@ import Foundation
 final class ThreadRepository {
 
     private enum Backend {
-        case firestore(Firestore)
+        case firestore(Firestore, MediaUploader)
         case local(LocalDemoStore)
     }
 
@@ -22,8 +22,8 @@ final class ThreadRepository {
 
     private let messagePageSize = 200
 
-    init(firestore: Firestore) {
-        backend = .firestore(firestore)
+    init(firestore: Firestore, mediaUploader: MediaUploader) {
+        backend = .firestore(firestore, mediaUploader)
     }
 
     init(local: LocalDemoStore) {
@@ -32,7 +32,7 @@ final class ThreadRepository {
 
     func threads(for query: ViewportQuery) -> AsyncStream<[ChatThread]> {
         switch backend {
-        case let .firestore(firestore):
+        case let .firestore(firestore, _):
             switch query {
             case let .nearby(center, radiusKm):
                 return nearbyThreads(firestore: firestore, center: center, radiusKm: radiusKm)
@@ -98,7 +98,7 @@ final class ThreadRepository {
 
     func thread(id threadId: String) -> AsyncStream<ChatThread?> {
         switch backend {
-        case let .firestore(firestore):
+        case let .firestore(firestore, _):
             let listeners = ListenerBag()
             let report = onError
 
@@ -128,7 +128,7 @@ final class ThreadRepository {
     /// bottom where the sender expects it.
     func messages(threadId: String) -> AsyncStream<[Message]> {
         switch backend {
-        case let .firestore(firestore):
+        case let .firestore(firestore, _):
             let listeners = ListenerBag()
             let report = onError
             let pageSize = messagePageSize
@@ -164,7 +164,7 @@ final class ThreadRepository {
         author: Author
     ) -> String {
         switch backend {
-        case let .firestore(firestore):
+        case let .firestore(firestore, _):
             let document = firestore.collection(Fs.threads).document()
             let data: [String: Any] = [
                 Fs.title: title.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -189,6 +189,7 @@ final class ThreadRepository {
     }
 
     /// The message and the thread's activity fields move together or not at all.
+    /// Image messages upload to Storage first, then the Firestore batch carries the download URL.
     func postMessage(
         threadId: String,
         text: String,
@@ -196,33 +197,47 @@ final class ThreadRepository {
         image: PreparedImage? = nil
     ) {
         switch backend {
-        case let .firestore(firestore):
-            // Cloud image upload lands with Storage/R2; until then only text goes to Firestore.
+        case let .firestore(firestore, uploader):
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return }
+            guard image != nil || !trimmed.isEmpty else { return }
             let threadRef = firestore.collection(Fs.threads).document(threadId)
             let messageRef = threadRef.collection(Fs.messages).document()
-            let batch = firestore.batch()
-            batch.setData(
-                [
-                    Fs.text: trimmed,
-                    Fs.kindMessage: MessageKind.text.rawValue,
-                    Fs.authorId: author.uid,
-                    Fs.authorName: author.displayName,
-                    Fs.createdAt: FieldValue.serverTimestamp(),
-                ],
-                forDocument: messageRef
-            )
-            batch.updateData(
-                [
-                    Fs.lastMessageAt: FieldValue.serverTimestamp(),
-                    Fs.messageCount: FieldValue.increment(Int64(1)),
-                ],
-                forDocument: threadRef
-            )
-            batch.commit { [weak self] error in
-                guard let error else { return }
-                MainActor.assumeIsolated { self?.onError?(error) }
+
+            Task { [weak self] in
+                do {
+                    var fields: [String: Any] = [
+                        Fs.text: trimmed,
+                        Fs.authorId: author.uid,
+                        Fs.authorName: author.displayName,
+                        Fs.createdAt: FieldValue.serverTimestamp(),
+                    ]
+                    if let image {
+                        let url = try await uploader.upload(
+                            threadId: threadId,
+                            messageId: messageRef.documentID,
+                            image: image
+                        )
+                        fields[Fs.kindMessage] = MessageKind.image.rawValue
+                        fields[Fs.imagePath] = url
+                        fields[Fs.imageWidth] = image.width
+                        fields[Fs.imageHeight] = image.height
+                    } else {
+                        fields[Fs.kindMessage] = MessageKind.text.rawValue
+                    }
+
+                    let batch = firestore.batch()
+                    batch.setData(fields, forDocument: messageRef)
+                    batch.updateData(
+                        [
+                            Fs.lastMessageAt: FieldValue.serverTimestamp(),
+                            Fs.messageCount: FieldValue.increment(Int64(1)),
+                        ],
+                        forDocument: threadRef
+                    )
+                    try await batch.commit()
+                } catch {
+                    self?.onError?(error)
+                }
             }
         case let .local(store):
             store.postMessage(threadId: threadId, text: text, author: author, image: image)

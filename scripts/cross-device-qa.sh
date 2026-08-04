@@ -33,4 +33,4 @@ cd "$ROOT/firebase"
 [ -d node_modules ] || npm install
 
 # One emulator instance wraps all three steps so the data written by one is there for the next.
-npx firebase emulators:exec --only auth,firestore --project "$PROJECT_ID" "$ROOT/scripts/cross-device-steps.sh '$SIMULATOR'"
+npx firebase emulators:exec --only auth,firestore,storage --project "$PROJECT_ID" "$ROOT/scripts/cross-device-steps.sh '$SIMULATOR'"

@@ -3,6 +3,7 @@ package app.maptalk.qa
 import androidx.test.platform.app.InstrumentationRegistry
 import app.maptalk.FirebaseEmulator
 import app.maptalk.data.AuthRepository
+import app.maptalk.data.MediaUploader
 import app.maptalk.data.ThreadRepository
 import app.maptalk.geo.GeoPoint
 import com.google.firebase.firestore.FirebaseFirestore
@@ -36,7 +37,10 @@ object CrossDevice {
         val firebase = FirebaseEmulator.connect(context)
         return Repositories(
             auth = AuthRepository(firebase.auth, firebase.firestore),
-            threads = ThreadRepository(firebase.firestore),
+            threads = ThreadRepository(
+                firestore = firebase.firestore,
+                mediaUploader = MediaUploader(firebase.storage),
+            ),
             firestore = firebase.firestore,
         )
     }

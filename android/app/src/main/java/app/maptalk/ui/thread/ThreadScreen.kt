@@ -77,6 +77,7 @@ import app.maptalk.ui.theme.MapTalkShapes
 import app.maptalk.ui.theme.avatarTint
 import app.maptalk.ui.theme.initialsOf
 import app.maptalk.ui.theme.tint
+import coil.compose.AsyncImage
 import java.io.File
 import java.time.Duration
 
@@ -122,6 +123,7 @@ fun ThreadScreen(
 
     fullscreenPath?.let { path ->
         FullscreenImage(
+            path = path,
             file = viewModel.mediaFile(path),
             onDismiss = { fullscreenPath = null },
         )
@@ -319,8 +321,10 @@ private fun MessageRow(
                 ) {
                     if (message.hasImage) {
                         message.imagePath?.let { path ->
+                            val remote = path.takeIf { it.startsWith("http://") || it.startsWith("https://") }
                             MessageImage(
-                                file = resolveMedia(path),
+                                file = if (remote == null) resolveMedia(path) else null,
+                                remoteUrl = remote,
                                 width = message.imageWidth,
                                 height = message.imageHeight,
                                 onClick = { onImageClick(path) },
@@ -351,6 +355,7 @@ private fun MessageRow(
 @Composable
 private fun MessageImage(
     file: File?,
+    remoteUrl: String?,
     width: Int?,
     height: Int?,
     onClick: () -> Unit,
@@ -363,7 +368,7 @@ private fun MessageImage(
             160.dp
         }
     }
-    val bitmap = remember(file?.absolutePath) {
+    val localBitmap = remember(file?.absolutePath) {
         file?.takeIf { it.exists() }?.let { BitmapFactory.decodeFile(it.absolutePath) }
     }
 
@@ -376,15 +381,20 @@ private fun MessageImage(
             .background(Color.Black.copy(alpha = 0.2f)),
         contentAlignment = Alignment.Center,
     ) {
-        if (bitmap != null) {
-            Image(
-                bitmap = bitmap.asImageBitmap(),
+        when {
+            localBitmap != null -> Image(
+                bitmap = localBitmap.asImageBitmap(),
                 contentDescription = "Photo",
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),
             )
-        } else {
-            Icon(
+            remoteUrl != null -> AsyncImage(
+                model = remoteUrl,
+                contentDescription = "Photo",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+            else -> Icon(
                 painter = painterResource(R.drawable.ic_photo),
                 contentDescription = null,
                 tint = MapTalkColors.Faint,
@@ -394,9 +404,11 @@ private fun MessageImage(
 }
 
 @Composable
-private fun FullscreenImage(file: File?, onDismiss: () -> Unit) {
+private fun FullscreenImage(path: String, file: File?, onDismiss: () -> Unit) {
+    val remote = path.takeIf { it.startsWith("http://") || it.startsWith("https://") }
     val bitmap = remember(file?.absolutePath) {
-        file?.takeIf { it.exists() }?.let { BitmapFactory.decodeFile(it.absolutePath) }
+        if (remote != null) null
+        else file?.takeIf { it.exists() }?.let { BitmapFactory.decodeFile(it.absolutePath) }
     }
     Dialog(
         onDismissRequest = onDismiss,
@@ -409,9 +421,15 @@ private fun FullscreenImage(file: File?, onDismiss: () -> Unit) {
                 .clickable(onClick = onDismiss),
             contentAlignment = Alignment.Center,
         ) {
-            if (bitmap != null) {
-                Image(
+            when {
+                bitmap != null -> Image(
                     bitmap = bitmap.asImageBitmap(),
+                    contentDescription = "Photo",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize().padding(12.dp),
+                )
+                remote != null -> AsyncImage(
+                    model = remote,
                     contentDescription = "Photo",
                     contentScale = ContentScale.Fit,
                     modifier = Modifier.fillMaxSize().padding(12.dp),

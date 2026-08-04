@@ -39,6 +39,8 @@ androidx-compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling
 firebase-bom = { module = "com.google.firebase:firebase-bom", version.ref = "firebaseBom" }
 firebase-auth = { module = "com.google.firebase:firebase-auth" }
 firebase-firestore = { module = "com.google.firebase:firebase-firestore" }
+firebase-storage = { module = "com.google.firebase:firebase-storage" }
+coil-compose = { module = "io.coil-kt:coil-compose", version = "2.7.0" }
 
 geofire-common = { module = "com.firebase:geofire-android-common", version.ref = "geofire" }
 maps-compose = { module = "com.google.maps.android:maps-compose", version.ref = "mapsCompose" }

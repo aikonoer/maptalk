@@ -231,6 +231,49 @@ describe('messages', () => {
     );
   });
 
+  it('accepts an image message with a caption or empty text', async () => {
+    const threadId = await seedThread();
+    const db = testEnv.authenticatedContext(ALICE).firestore();
+    await assertSucceeds(
+      setDoc(doc(db, 'threads', threadId, 'messages', 'photo'), {
+        text: 'Sunset',
+        authorId: ALICE,
+        authorName: 'Alice',
+        createdAt: serverTimestamp(),
+        messageKind: 'image',
+        imagePath: 'https://example.com/photo.jpg',
+        imageWidth: 1280,
+        imageHeight: 960,
+      }),
+    );
+    await assertSucceeds(
+      setDoc(doc(db, 'threads', threadId, 'messages', 'photo-only'), {
+        text: '',
+        authorId: ALICE,
+        authorName: 'Alice',
+        createdAt: serverTimestamp(),
+        messageKind: 'image',
+        imagePath: 'https://example.com/photo2.jpg',
+        imageWidth: 800,
+        imageHeight: 600,
+      }),
+    );
+  });
+
+  it('rejects an image message without a path or dimensions', async () => {
+    const threadId = await seedThread();
+    const db = testEnv.authenticatedContext(ALICE).firestore();
+    await assertFails(
+      setDoc(doc(db, 'threads', threadId, 'messages', 'bad-image'), {
+        text: '',
+        authorId: ALICE,
+        authorName: 'Alice',
+        createdAt: serverTimestamp(),
+        messageKind: 'image',
+      }),
+    );
+  });
+
   it('rejects editing or deleting a message', async () => {
     const threadId = await seedThread();
     await testEnv.withSecurityRulesDisabled(async (context) => {

@@ -1,6 +1,7 @@
 import FirebaseAuth
 import FirebaseCore
 import FirebaseFirestore
+import FirebaseStorage
 import Foundation
 
 /// Hand rolled dependency container. The app has three collaborators, so a DI framework would
@@ -15,10 +16,17 @@ final class AppEnvironment {
     /// Only set for Firebase-backed environments; local demo has nothing to flush.
     private let firestore: Firestore?
 
-    init(auth: Auth = .auth(), firestore: Firestore = .firestore()) {
+    init(
+        auth: Auth = .auth(),
+        firestore: Firestore = .firestore(),
+        storage: Storage = .storage()
+    ) {
         self.firestore = firestore
         authRepository = AuthRepository(auth: auth, firestore: firestore)
-        threadRepository = ThreadRepository(firestore: firestore)
+        threadRepository = ThreadRepository(
+            firestore: firestore,
+            mediaUploader: MediaUploader(storage: storage)
+        )
         locationProvider = LocationProvider()
     }
 
@@ -49,6 +57,7 @@ final class AppEnvironment {
         host: String = "localhost",
         authPort: Int = 9099,
         firestorePort: Int = 8080,
+        storagePort: Int = 9199,
         projectId: String = "maptalk-qa"
     ) -> AppEnvironment {
         let name = "maptalk-emulator"
@@ -60,6 +69,7 @@ final class AppEnvironment {
             options.projectID = projectId
             options.apiKey = "emulator-only-key"
             options.bundleID = Bundle.main.bundleIdentifier ?? "app.maptalk"
+            options.storageBucket = "\(projectId).appspot.com"
             FirebaseApp.configure(name: name, options: options)
         }
 
@@ -75,6 +85,9 @@ final class AppEnvironment {
         settings.cacheSettings = MemoryCacheSettings()
         firestore.settings = settings
 
-        return AppEnvironment(auth: auth, firestore: firestore)
+        let storage = Storage.storage(app: app)
+        storage.useEmulator(withHost: host, port: storagePort)
+
+        return AppEnvironment(auth: auth, firestore: firestore, storage: storage)
     }
 }

@@ -15,12 +15,16 @@ import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.Query
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.launch
 
 /**
  * Reads and writes threads. Every read is a snapshot listener, so the map and the open
@@ -30,6 +34,7 @@ import kotlinx.coroutines.flow.callbackFlow
  */
 class ThreadRepository private constructor(
     private val backend: Backend,
+    private val mediaUploader: MediaUploader? = null,
 ) {
 
     private sealed interface Backend {
@@ -40,7 +45,10 @@ class ThreadRepository private constructor(
     private val _errors = MutableSharedFlow<Throwable>(extraBufferCapacity = 8)
     val errors: SharedFlow<Throwable> = _errors.asSharedFlow()
 
-    constructor(firestore: FirebaseFirestore) : this(Backend.Firestore(firestore))
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    constructor(firestore: FirebaseFirestore, mediaUploader: MediaUploader) :
+        this(Backend.Firestore(firestore), mediaUploader)
 
     constructor(local: LocalDemoStore) : this(Backend.Local(local))
 
@@ -171,36 +179,74 @@ class ThreadRepository private constructor(
     ) {
         when (val backend = backend) {
             is Backend.Firestore -> {
-                // Cloud image upload lands with Storage/R2; until then only text goes to Firestore.
                 val trimmed = text.trim()
-                if (trimmed.isEmpty()) return
+                if (image == null && trimmed.isEmpty()) return
                 val threadRef = backend.db.collection(Fs.THREADS).document(threadId)
                 val messageRef = threadRef.collection(Fs.MESSAGES).document()
-                backend.db.batch()
-                    .apply {
-                        set(
-                            messageRef,
-                            mapOf(
+                if (image == null) {
+                    commitFirestoreMessage(
+                        db = backend.db,
+                        threadRef = threadRef,
+                        messageRef = messageRef,
+                        fields = mapOf(
+                            Fs.TEXT to trimmed,
+                            Fs.MESSAGE_KIND to MessageKind.TEXT.id,
+                            Fs.AUTHOR_ID to author.uid,
+                            Fs.AUTHOR_NAME to author.displayName,
+                            Fs.CREATED_AT to FieldValue.serverTimestamp(),
+                        ),
+                    )
+                    return
+                }
+                val uploader = mediaUploader
+                if (uploader == null) {
+                    _errors.tryEmit(IllegalStateException("Photo upload is not configured"))
+                    return
+                }
+                scope.launch {
+                    runCatching {
+                        val url = uploader.upload(threadId, messageRef.id, image)
+                        commitFirestoreMessage(
+                            db = backend.db,
+                            threadRef = threadRef,
+                            messageRef = messageRef,
+                            fields = mapOf(
                                 Fs.TEXT to trimmed,
-                                Fs.MESSAGE_KIND to MessageKind.TEXT.id,
+                                Fs.MESSAGE_KIND to MessageKind.IMAGE.id,
+                                Fs.IMAGE_PATH to url,
+                                Fs.IMAGE_WIDTH to image.width,
+                                Fs.IMAGE_HEIGHT to image.height,
                                 Fs.AUTHOR_ID to author.uid,
                                 Fs.AUTHOR_NAME to author.displayName,
                                 Fs.CREATED_AT to FieldValue.serverTimestamp(),
                             ),
                         )
-                        update(
-                            threadRef,
-                            mapOf(
-                                Fs.LAST_MESSAGE_AT to FieldValue.serverTimestamp(),
-                                Fs.MESSAGE_COUNT to FieldValue.increment(1),
-                            ),
-                        )
-                    }
-                    .commit()
-                    .addOnFailureListener { _errors.tryEmit(it) }
+                    }.onFailure { _errors.emit(it) }
+                }
             }
             is Backend.Local -> backend.store.postMessage(threadId, text, author, image)
         }
+    }
+
+    private fun commitFirestoreMessage(
+        db: FirebaseFirestore,
+        threadRef: com.google.firebase.firestore.DocumentReference,
+        messageRef: com.google.firebase.firestore.DocumentReference,
+        fields: Map<String, Any>,
+    ) {
+        db.batch()
+            .apply {
+                set(messageRef, fields)
+                update(
+                    threadRef,
+                    mapOf(
+                        Fs.LAST_MESSAGE_AT to FieldValue.serverTimestamp(),
+                        Fs.MESSAGE_COUNT to FieldValue.increment(1),
+                    ),
+                )
+            }
+            .commit()
+            .addOnFailureListener { _errors.tryEmit(it) }
     }
 
     private fun List<ChatThread>.within(center: GeoPoint, radiusMetres: Double): List<ChatThread> =

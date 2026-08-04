@@ -103,12 +103,14 @@ dependencies {
 
     implementation(libs.firebase.auth)
     implementation(libs.firebase.firestore)
+    implementation(libs.firebase.storage)
     implementation(libs.coroutines.play.services)
 
     implementation(libs.maps.compose)
     implementation(libs.play.services.location)
     implementation(libs.geofire.common)
     implementation(libs.androidx.exifinterface)
+    implementation(libs.coil.compose)
 
     testImplementation(libs.junit)
     testImplementation(libs.coroutines.test)

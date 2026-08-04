@@ -11,6 +11,42 @@ service cloud.firestore {
       return name is string && name.size() >= 1 && name.size() <= 24;
     }
 
+    function isTextMessage() {
+      return request.resource.data.keys().hasAll(['text', 'authorId', 'authorName', 'createdAt'])
+        && (
+          request.resource.data.keys().hasOnly(['text', 'authorId', 'authorName', 'createdAt'])
+          || request.resource.data.keys().hasOnly(['text', 'authorId', 'authorName', 'createdAt', 'messageKind'])
+        )
+        && request.resource.data.text is string
+        && request.resource.data.text.size() >= 1
+        && request.resource.data.text.size() <= 1000
+        && (
+          !('messageKind' in request.resource.data)
+          || request.resource.data.messageKind == 'text'
+        );
+    }
+
+    function isImageMessage() {
+      return request.resource.data.keys().hasAll([
+             'text', 'authorId', 'authorName', 'createdAt',
+             'messageKind', 'imagePath', 'imageWidth', 'imageHeight'
+           ])
+        && request.resource.data.keys().hasOnly([
+             'text', 'authorId', 'authorName', 'createdAt',
+             'messageKind', 'imagePath', 'imageWidth', 'imageHeight'
+           ])
+        && request.resource.data.messageKind == 'image'
+        && request.resource.data.text is string
+        && request.resource.data.text.size() <= 1000
+        && request.resource.data.imagePath is string
+        && request.resource.data.imagePath.size() > 0
+        && request.resource.data.imagePath.size() <= 2048
+        && request.resource.data.imageWidth is number
+        && request.resource.data.imageHeight is number
+        && request.resource.data.imageWidth > 0
+        && request.resource.data.imageHeight > 0;
+    }
+
     match /users/{userId} {
       allow read: if signedIn();
       allow create, update: if signedIn()
@@ -63,14 +99,10 @@ service cloud.firestore {
         allow read: if signedIn();
 
         allow create: if signedIn()
-          && request.resource.data.keys().hasAll(['text', 'authorId', 'authorName', 'createdAt'])
-          && request.resource.data.keys().hasOnly(['text', 'authorId', 'authorName', 'createdAt'])
           && request.resource.data.authorId == request.auth.uid
-          && request.resource.data.text is string
-          && request.resource.data.text.size() >= 1
-          && request.resource.data.text.size() <= 1000
           && validName(request.resource.data.authorName)
-          && request.resource.data.createdAt == request.time;
+          && request.resource.data.createdAt == request.time
+          && (isTextMessage() || isImageMessage());
 
         allow update, delete: if false;
       }

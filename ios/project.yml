@@ -32,6 +32,8 @@ targets:
         product: FirebaseAuth
       - package: Firebase
         product: FirebaseFirestore
+      - package: Firebase
+        product: FirebaseStorage
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.maptalk
