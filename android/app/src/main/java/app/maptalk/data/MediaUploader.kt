@@ -18,6 +18,8 @@ import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
@@ -38,6 +40,8 @@ sealed class MediaUploader {
         private val auth: FirebaseAuth,
         private val imageEndpoint: String,
     ) : MediaUploader() {
+        private val uploadSlots = Semaphore(MAX_CONCURRENT_UPLOADS)
+
         private val audioEndpoint: String =
             if (imageEndpoint.endsWith("/v1/images")) {
                 imageEndpoint.removeSuffix("/v1/images") + "/v1/audio"
@@ -53,21 +57,26 @@ sealed class MediaUploader {
             }
 
         override suspend fun upload(threadId: String, messageId: String, image: PreparedImage): String =
-            post(imageEndpoint, threadId, messageId, image.jpegBytes, "image/jpeg")
+            uploadSlots.withPermit {
+                post(imageEndpoint, threadId, messageId, image.jpegBytes, "image/jpeg")
+            }
 
         override suspend fun upload(threadId: String, messageId: String, audio: PreparedAudio): String =
-            post(audioEndpoint, threadId, messageId, audio.bytes, audio.contentType)
+            uploadSlots.withPermit {
+                post(audioEndpoint, threadId, messageId, audio.bytes, audio.contentType)
+            }
 
         override suspend fun upload(threadId: String, messageId: String, video: PreparedVideo): String =
-            putFile(
-                videoEndpoint,
-                threadId,
-                messageId,
-                video.file,
-                video.contentType,
-                extraHeaders = mapOf("X-MapTalk-Duration-Ms" to video.durationMs.toString()),
-            )
-
+            uploadSlots.withPermit {
+                putFile(
+                    videoEndpoint,
+                    threadId,
+                    messageId,
+                    video.file,
+                    video.contentType,
+                    extraHeaders = mapOf("X-MapTalk-Duration-Ms" to video.durationMs.toString()),
+                )
+            }
         private suspend fun post(
             endpoint: String,
             threadId: String,
@@ -222,6 +231,10 @@ sealed class MediaUploader {
 
         private fun enc(value: String): String =
             URLEncoder.encode(value, Charsets.UTF_8.name())
+
+        companion object {
+            private const val MAX_CONCURRENT_UPLOADS = 2
+        }
     }
 
     class Firebase(

@@ -14,6 +14,7 @@ final class R2MediaUploader: MediaUploading {
     private let imageEndpoint: URL
     private let audioEndpoint: URL
     private let videoEndpoint: URL
+    private let uploadGate = UploadGate(limit: 2)
 
     init(auth: Auth, endpoint: URL) {
         self.auth = auth
@@ -35,34 +36,40 @@ final class R2MediaUploader: MediaUploading {
     }
 
     func upload(threadId: String, messageId: String, image: PreparedImage) async throws -> String {
-        try await post(
-            endpoint: imageEndpoint,
-            threadId: threadId,
-            messageId: messageId,
-            body: image.jpegData,
-            contentType: "image/jpeg"
-        )
+        try await uploadGate.withPermit {
+            try await post(
+                endpoint: imageEndpoint,
+                threadId: threadId,
+                messageId: messageId,
+                body: image.jpegData,
+                contentType: "image/jpeg"
+            )
+        }
     }
 
     func upload(threadId: String, messageId: String, audio: PreparedAudio) async throws -> String {
-        try await post(
-            endpoint: audioEndpoint,
-            threadId: threadId,
-            messageId: messageId,
-            body: audio.data,
-            contentType: audio.contentType
-        )
+        try await uploadGate.withPermit {
+            try await post(
+                endpoint: audioEndpoint,
+                threadId: threadId,
+                messageId: messageId,
+                body: audio.data,
+                contentType: audio.contentType
+            )
+        }
     }
 
     func upload(threadId: String, messageId: String, video: PreparedVideo) async throws -> String {
-        try await putFile(
-            endpoint: videoEndpoint,
-            threadId: threadId,
-            messageId: messageId,
-            fileURL: video.fileURL,
-            contentType: video.contentType,
-            extraHeaders: ["X-MapTalk-Duration-Ms": "\(video.durationMs)"]
-        )
+        try await uploadGate.withPermit {
+            try await putFile(
+                endpoint: videoEndpoint,
+                threadId: threadId,
+                messageId: messageId,
+                fileURL: video.fileURL,
+                contentType: video.contentType,
+                extraHeaders: ["X-MapTalk-Duration-Ms": "\(video.durationMs)"]
+            )
+        }
     }
 
     private func post(
@@ -220,6 +227,44 @@ final class R2MediaUploader: MediaUploading {
 
     private struct UploadResponse: Decodable {
         let url: String
+    }
+}
+
+/// Limits parallel R2 uploads so a busy thread doesn't stampede the Worker.
+private actor UploadGate {
+    private let limit: Int
+    private var inFlight = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(limit: Int) {
+        self.limit = limit
+    }
+
+    func withPermit<T>(_ work: () async throws -> T) async throws -> T {
+        await acquire()
+        do {
+            let value = try await work()
+            release()
+            return value
+        } catch {
+            release()
+            throw error
+        }
+    }
+
+    private func acquire() async {
+        while inFlight >= limit {
+            await withCheckedContinuation { cont in
+                waiters.append(cont)
+            }
+        }
+        inFlight += 1
+    }
+
+    private func release() {
+        inFlight = max(0, inFlight - 1)
+        guard !waiters.isEmpty else { return }
+        waiters.removeFirst().resume()
     }
 }
 

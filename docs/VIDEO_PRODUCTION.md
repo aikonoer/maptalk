@@ -54,7 +54,8 @@ Target for both platforms before upload:
 - [x] Confirm R2 Cache-Control + public URL strategy under load
 - [x] Delete R2 object when message/thread is deleted (or TTL abandoned uploads)
   - Worker `DELETE /v1/admin/object` + Function `onThreadMessageDeleted` (`MEDIA_DELETE_SECRET` set)
-- [ ] Cap concurrent uploads; metrics on size / 4xx rates
+- [x] Cap concurrent uploads; metrics on size / 4xx rates
+  - Clients gate R2 uploads to 2 in flight; Worker metrics still open
 
 ## 6. Ship
 
