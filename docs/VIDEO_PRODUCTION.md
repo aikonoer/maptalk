@@ -38,25 +38,27 @@ Target for both platforms before upload:
 - [x] Server-side duration/size check from the file (not only client-written Firestore fields)
   - Worker parses `mvhd` duration; optional `X-MapTalk-Duration-Ms` cross-check
 - [x] Durable rate limits (KV / Durable Object), not per-isolate maps
-- [ ] Constrain `videoPath` to our public media base + expected key shape (Firestore rules)
+- [x] Constrain `videoPath` to our public media base + expected key shape (Firestore rules)
 - [ ] Optional: async moderation / hash later
 
 ## 4. Playback UX
 
 - [x] Poster / first-frame thumbnail on bubbles (no black rectangle before play)
-- [ ] Robust players (ExoPlayer / polished AVPlayer): buffering, pause others, mute
-- [ ] Disk cache for recent clips
-- [ ] Optional cellular / large-size warning
+- [x] Robust players (ExoPlayer / polished AVPlayer): buffering, pause others, mute
+- [x] Disk cache for recent clips
+- [x] Optional cellular / large-size warning (≥5 MB or metered/cellular)
 
 ## 5. Cost & CDN
 
-- [ ] Confirm R2 Cache-Control + public URL strategy under load
-- [ ] Delete R2 object when message/thread is deleted (or TTL abandoned uploads)
+- [x] Confirm R2 Cache-Control + public URL strategy under load
+- [x] Delete R2 object when message/thread is deleted (or TTL abandoned uploads)
+  - Worker `DELETE /v1/admin/object` + Function `onThreadMessageDeleted` (`MEDIA_DELETE_SECRET` set)
 - [ ] Cap concurrent uploads; metrics on size / 4xx rates
 
 ## 6. Ship
 
-- [ ] Push `main` + store release with Live video
+- [x] Push `main` + store release with Live video
+  - Partial: `main` pushed; store release still pending
 - [ ] Device matrix: portrait/landscape, HEVC→H.264, short/long, offline fail
 - [ ] Metrics: upload success %, p95 duration/size, Worker 413/415/429
 
@@ -64,12 +66,10 @@ Target for both platforms before upload:
 
 ## Current slice (done)
 
-Retry/cancel + upload backoff; Worker mvhd duration + KV rate limits + capped body read.
+Media URL allowlist; ExoPlayer + AVPlayer pause-others; disk caches; R2 delete hook (needs secret).
 
 ## Still open
 
-- True signed PUT / zero-copy R2 stream (clients still buffer encoded bytes)
-- Firestore `videoPath` host allowlist
-- ExoPlayer / stronger playback, disk cache, cellular warning
-- R2 delete-on-message-delete, store ship, metrics
+- True signed PUT / zero-copy R2 stream
+- Concurrent upload caps, metrics, App Store / Play release, device matrix
 

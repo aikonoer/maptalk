@@ -17,6 +17,7 @@ struct ThreadScreen: View {
     @State private var videoSendPhase: VideoSendPhase = .idle
     @State private var videoTask: Task<Void, Never>?
     @State private var retryPreparedVideo: PreparedVideo?
+    @State private var pendingUploadConfirm: PendingVideoUpload?
     @State private var showStickers = false
     @State private var longPressTarget: Message?
     @State private var longPressFrame: CGRect = .zero
@@ -181,6 +182,34 @@ struct ThreadScreen: View {
                 Button("Cancel", role: .cancel) { blockConfirm = nil }
             } message: {
                 Text("Their chats and messages will disappear for you. Unblock anytime from Settings.")
+            }
+            .confirmationDialog(
+                "Upload this video?",
+                isPresented: Binding(
+                    get: { pendingUploadConfirm != nil },
+                    set: {
+                        if !$0 {
+                            pendingUploadConfirm = nil
+                            if videoSendPhase == .confirmUpload { videoSendPhase = .idle }
+                        }
+                    }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Upload") {
+                    if let pending = pendingUploadConfirm {
+                        pendingUploadConfirm = nil
+                        videoTask = Task { await uploadPreparedVideo(pending.video) }
+                    }
+                }
+                Button("Cancel", role: .cancel) {
+                    pendingUploadConfirm = nil
+                    videoSendPhase = .idle
+                }
+            } message: {
+                if let pending = pendingUploadConfirm {
+                    Text("About \(pending.megabytes) MB. On cellular this may use mobile data.")
+                }
             }
     }
 
@@ -535,20 +564,32 @@ struct ThreadScreen: View {
                 return
             }
             retryPreparedVideo = prepared
-            videoSendPhase = .uploading
-            model.errorMessage = nil
-            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-                model.send("", as: author, video: prepared) {
-                    cont.resume()
-                }
-            }
-            if Task.isCancelled {
-                videoSendPhase = .idle
-            } else if model.errorMessage != nil {
-                videoSendPhase = .failed
+            let mb = max(1, (prepared.data.count + 512 * 1024) / (1024 * 1024))
+            let needsConfirm = NetworkExpense.isExpensiveOrConstrained
+                || prepared.data.count >= 5 * 1024 * 1024
+            if needsConfirm {
+                pendingUploadConfirm = PendingVideoUpload(video: prepared, megabytes: mb)
+                videoSendPhase = .confirmUpload
             } else {
-                videoSendPhase = .idle
+                await uploadPreparedVideo(prepared)
             }
+        }
+    }
+
+    private func uploadPreparedVideo(_ prepared: PreparedVideo) async {
+        videoSendPhase = .uploading
+        model.errorMessage = nil
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            model.send("", as: author, video: prepared) {
+                cont.resume()
+            }
+        }
+        if Task.isCancelled {
+            videoSendPhase = .idle
+        } else if model.errorMessage != nil {
+            videoSendPhase = .failed
+        } else {
+            videoSendPhase = .idle
         }
     }
 
@@ -556,26 +597,14 @@ struct ThreadScreen: View {
         guard let prepared = retryPreparedVideo else { return }
         videoTask?.cancel()
         videoTask = Task {
-            videoSendPhase = .uploading
-            model.errorMessage = nil
-            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-                model.send("", as: author, video: prepared) {
-                    cont.resume()
-                }
-            }
-            if Task.isCancelled {
-                videoSendPhase = .idle
-            } else if model.errorMessage != nil {
-                videoSendPhase = .failed
-            } else {
-                videoSendPhase = .idle
-            }
+            await uploadPreparedVideo(prepared)
         }
     }
 
     private func cancelVideoSend() {
         videoTask?.cancel()
         videoTask = nil
+        pendingUploadConfirm = nil
         videoSendPhase = .idle
     }
 
@@ -1235,17 +1264,23 @@ private struct FullscreenImageViewer: View {
 private enum VideoSendPhase {
     case idle
     case compressing
+    case confirmUpload
     case uploading
     case failed
 
     var statusCopy: String? {
         switch self {
-        case .idle: nil
+        case .idle, .confirmUpload: nil
         case .compressing: "Compressing video…"
         case .uploading: "Uploading video…"
         case .failed: "Video failed to send"
         }
     }
+}
+
+private struct PendingVideoUpload {
+    let video: PreparedVideo
+    let megabytes: Int
 }
 
 private struct VideoBubble: View {
@@ -1254,9 +1289,12 @@ private struct VideoBubble: View {
     let width: Int?
     let height: Int?
 
-    @State private var player: AVPlayer?
-    @State private var isPlaying = false
     @State private var poster: UIImage?
+    @State private var isPreparing = false
+    @State private var activePlayURL: URL?
+    @State private var playTask: Task<Void, Never>?
+
+    private let playback = VideoPlaybackController.shared
 
     private var mediaURL: URL? {
         if path.hasPrefix("http://") || path.hasPrefix("https://") {
@@ -1265,11 +1303,19 @@ private struct VideoBubble: View {
         return LocalMediaStore.url(forRelativePath: path)
     }
 
+    private var isThisPlaying: Bool {
+        playback.isPlaying && playback.currentURL == activePlayURL
+    }
+
+    private var showBusy: Bool {
+        isPreparing || (isThisPlaying && playback.isBuffering)
+    }
+
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
             Color.black.opacity(0.35)
 
-            if let player, isPlaying {
+            if isThisPlaying, let player = playback.player {
                 VideoPlayer(player: player)
             } else if let poster {
                 Image(uiImage: poster)
@@ -1277,7 +1323,12 @@ private struct VideoBubble: View {
                     .scaledToFill()
             }
 
-            if !isPlaying {
+            if showBusy {
+                ProgressView()
+                    .controlSize(.regular)
+                    .tint(.white)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if !isThisPlaying {
                 Image(systemName: "play.circle.fill")
                     .font(.system(size: 44))
                     .foregroundStyle(.white.opacity(0.9))
@@ -1297,7 +1348,13 @@ private struct VideoBubble: View {
         .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .onTapGesture { toggle() }
         .task(id: path) { await loadPoster() }
-        .onDisappear { stop() }
+        .onDisappear {
+            playTask?.cancel()
+            playTask = nil
+            if playback.currentURL == activePlayURL {
+                playback.pause()
+            }
+        }
         .accessibilityLabel("Video")
         .accessibilityAddTraits(.isButton)
     }
@@ -1320,31 +1377,28 @@ private struct VideoBubble: View {
     }
 
     private func toggle() {
-        if isPlaying {
-            stop()
+        if isThisPlaying {
+            playback.pause()
             return
         }
-        guard let url = mediaURL else { return }
-        let item = AVPlayerItem(url: url)
-        let av = AVPlayer(playerItem: item)
-        player = av
-        isPlaying = true
-        NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemDidPlayToEndTime,
-            object: item,
-            queue: .main
-        ) { _ in
-            Task { @MainActor in
-                isPlaying = false
-            }
-        }
-        av.play()
-    }
 
-    private func stop() {
-        player?.pause()
-        player = nil
-        isPlaying = false
+        guard let url = mediaURL else { return }
+        playTask?.cancel()
+        playTask = Task {
+            isPreparing = true
+            defer { isPreparing = false }
+
+            let playURL: URL
+            if let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" {
+                playURL = await VideoCache.localURL(for: url)
+            } else {
+                playURL = url
+            }
+            guard !Task.isCancelled else { return }
+
+            activePlayURL = playURL
+            playback.play(url: playURL)
+        }
     }
 
     private static func format(_ ms: Int) -> String {

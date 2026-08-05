@@ -27,6 +27,8 @@ DerivedData/
 
 # --- Firebase tooling ---
 firebase/.firebase/
+firebase/functions/.env
+firebase/functions/.env.*
 firebase-debug.log
 firestore-debug.log
 ui-debug.log

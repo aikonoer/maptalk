@@ -20,6 +20,7 @@ export interface Env {
   RATE?: KVNamespace;
   FIREBASE_PROJECT_ID: string;
   PUBLIC_BASE_URL: string;
+  MEDIA_DELETE_SECRET?: string;
 }
 
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
@@ -92,6 +93,19 @@ export default {
         extension: "mp4",
         contentType: "video/mp4",
       });
+    }
+
+    if (request.method === "DELETE" && url.pathname === "/v1/admin/object") {
+      const secret = request.headers.get("X-MapTalk-Admin") ?? "";
+      if (!env.MEDIA_DELETE_SECRET || secret !== env.MEDIA_DELETE_SECRET) {
+        return json({ error: "unauthorized" }, 401);
+      }
+      const key = url.searchParams.get("key") ?? "";
+      if (!/^threads\/[A-Za-z0-9_-]{1,128}\/[A-Za-z0-9_-]{1,128}\.(jpg|m4a|mp4)$/.test(key)) {
+        return json({ error: "bad_key" }, 400);
+      }
+      await env.MEDIA.delete(key);
+      return json({ ok: true, key });
     }
 
     return json({ error: "not_found" }, 404);
@@ -408,8 +422,8 @@ function readU64(bytes: Uint8Array, offset: number): bigint {
 function corsHeaders(): HeadersInit {
   return {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "POST, OPTIONS, GET",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, X-MapTalk-Duration-Ms",
+    "Access-Control-Allow-Methods": "POST, OPTIONS, GET, DELETE",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, X-MapTalk-Duration-Ms, X-MapTalk-Admin",
     "Access-Control-Max-Age": "86400",
   };
 }

@@ -7,7 +7,8 @@ import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Build
-import android.widget.VideoView
+import android.view.TextureView
+import android.widget.FrameLayout
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -91,13 +92,16 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import kotlinx.coroutines.launch
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import app.maptalk.R
 import app.maptalk.appContainer
+import app.maptalk.data.ThreadVideoPlayer
 import app.maptalk.data.model.Author
+import app.maptalk.data.model.ChatThread
 import app.maptalk.data.model.Message
 import app.maptalk.data.model.PreparedAudio
 import app.maptalk.data.model.PreparedImage
@@ -105,7 +109,6 @@ import app.maptalk.data.model.ReactionEmoji
 import app.maptalk.data.model.ReportReason
 import app.maptalk.data.model.ReportTargetType
 import app.maptalk.data.model.StickerPack
-import app.maptalk.data.model.ChatThread
 import app.maptalk.ui.relativeTime
 import app.maptalk.ui.theme.MapTalkColors
 import app.maptalk.ui.theme.MapTalkShapes
@@ -116,6 +119,7 @@ import coil.compose.AsyncImage
 import java.io.File
 import java.time.Duration
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /** Messages from one person, close enough in time, are drawn as one run. */
 private val RUN_GAP: Duration = Duration.ofMinutes(5)
@@ -135,6 +139,7 @@ fun ThreadScreen(
     val isPreparingImage by viewModel.isPreparingImage.collectAsStateWithLifecycle()
     val isPreparingVideo by viewModel.isPreparingVideo.collectAsStateWithLifecycle()
     val videoSendPhase by viewModel.videoSendPhase.collectAsStateWithLifecycle()
+    val videoConfirmMb by viewModel.videoConfirmMb.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
     var pendingImage by remember { mutableStateOf<PreparedImage?>(null) }
@@ -342,6 +347,31 @@ fun ThreadScreen(
         )
     }
 
+    if (videoSendPhase == VideoSendPhase.ConfirmUpload) {
+        val mb = videoConfirmMb ?: 1
+        AlertDialog(
+            onDismissRequest = { viewModel.declineVideoUpload() },
+            containerColor = MapTalkColors.Surface,
+            title = { Text("Upload this video?", color = MapTalkColors.Text) },
+            text = {
+                Text(
+                    "About $mb MB. On cellular this may use mobile data.",
+                    color = MapTalkColors.Subtle,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { viewModel.confirmVideoUpload() }) {
+                    Text("Upload", color = MapTalkColors.Accent)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.declineVideoUpload() }) {
+                    Text("Cancel", color = MapTalkColors.Subtle)
+                }
+            },
+        )
+    }
+
     if (reportThanks) {
         AlertDialog(
             onDismissRequest = { reportThanks = false },
@@ -487,7 +517,7 @@ fun ThreadScreen(
                     VideoSendPhase.Compressing -> "Compressing video…"
                     VideoSendPhase.Uploading -> "Uploading video…"
                     VideoSendPhase.Failed -> "Video failed to send"
-                    VideoSendPhase.Idle -> null
+                    VideoSendPhase.ConfirmUpload, VideoSendPhase.Idle -> null
                 },
                 onCancelVideo = viewModel::cancelVideoSend,
                 onRetryVideo = viewModel::retryVideoSend,
@@ -830,6 +860,7 @@ private fun ReactionStrip(
     }
 }
 
+@OptIn(UnstableApi::class)
 @Composable
 private fun VideoBubble(
     path: String,
@@ -847,16 +878,42 @@ private fun VideoBubble(
             160.dp
         }
     }
+    val playUri = remember(path, file?.absolutePath) {
+        when {
+            path.startsWith("http://") || path.startsWith("https://") -> path
+            file != null && file.exists() -> Uri.fromFile(file).toString()
+            else -> null
+        }
+    }
     var isPlaying by remember(path) { mutableStateOf(false) }
-    var videoView by remember { mutableStateOf<VideoView?>(null) }
+    var isBuffering by remember(path) { mutableStateOf(false) }
     val poster = remember(path, file?.absolutePath) {
         loadVideoPoster(context, path, file)
     }
 
     DisposableEffect(path) {
+        val exo = ThreadVideoPlayer.player(context)
+        val listener = object : Player.Listener {
+            override fun onIsPlayingChanged(playing: Boolean) {
+                if (ThreadVideoPlayer.activePath == playUri) {
+                    isPlaying = playing
+                } else if (playing.not() && ThreadVideoPlayer.activePath != playUri) {
+                    isPlaying = false
+                }
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (ThreadVideoPlayer.activePath != playUri) return
+                isBuffering = playbackState == Player.STATE_BUFFERING
+                if (playbackState == Player.STATE_ENDED) {
+                    isPlaying = false
+                }
+            }
+        }
+        exo.addListener(listener)
         onDispose {
-            videoView?.stopPlayback()
-            videoView = null
+            exo.removeListener(listener)
+            playUri?.let { ThreadVideoPlayer.pauseIfPlaying(it) }
         }
     }
 
@@ -867,17 +924,9 @@ private fun VideoBubble(
             .clip(RoundedCornerShape(14.dp))
             .background(Color.Black.copy(alpha = 0.35f))
             .clickable {
-                val vv = videoView ?: return@clickable
-                if (isPlaying) {
-                    vv.pause()
-                    isPlaying = false
-                } else {
-                    if (vv.currentPosition >= vv.duration.coerceAtLeast(1) - 200) {
-                        vv.seekTo(0)
-                    }
-                    vv.start()
-                    isPlaying = true
-                }
+                val uri = playUri ?: return@clickable
+                ThreadVideoPlayer.play(context, uri)
+                isPlaying = ThreadVideoPlayer.activePath == uri
             },
         contentAlignment = Alignment.Center,
     ) {
@@ -889,31 +938,37 @@ private fun VideoBubble(
                 modifier = Modifier.fillMaxSize(),
             )
         }
-        AndroidView(
-            factory = { ctx ->
-                VideoView(ctx).also { vv ->
-                    videoView = vv
-                    val source = when {
-                        path.startsWith("http://") || path.startsWith("https://") -> Uri.parse(path)
-                        file != null && file.exists() -> Uri.fromFile(file)
-                        else -> null
+        if (isPlaying && playUri != null) {
+            AndroidView(
+                factory = { ctx ->
+                    FrameLayout(ctx).apply {
+                        val texture = TextureView(ctx)
+                        addView(
+                            texture,
+                            FrameLayout.LayoutParams(
+                                FrameLayout.LayoutParams.MATCH_PARENT,
+                                FrameLayout.LayoutParams.MATCH_PARENT,
+                            ),
+                        )
+                        ThreadVideoPlayer.player(ctx).setVideoTextureView(texture)
                     }
-                    if (source != null) {
-                        vv.setVideoURI(source)
-                        vv.setOnCompletionListener { isPlaying = false }
-                        vv.setOnPreparedListener { mp ->
-                            mp.isLooping = false
-                            vv.seekTo(1)
-                        }
+                },
+                update = { frame ->
+                    val texture = frame.getChildAt(0) as? TextureView
+                    if (texture != null && ThreadVideoPlayer.activePath == playUri) {
+                        ThreadVideoPlayer.player(frame.context).setVideoTextureView(texture)
                     }
-                }
-            },
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer { alpha = if (isPlaying) 1f else 0f },
-        )
-        if (!isPlaying) {
-            Icon(
+                },
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+        when {
+            isBuffering && isPlaying -> CircularProgressIndicator(
+                color = Color.White,
+                strokeWidth = 2.dp,
+                modifier = Modifier.size(28.dp),
+            )
+            !isPlaying -> Icon(
                 painter = painterResource(R.drawable.ic_play),
                 contentDescription = "Play video",
                 tint = Color.White,

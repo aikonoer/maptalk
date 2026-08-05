@@ -13,9 +13,11 @@ iOS delivery won’t work without the key.
 
 ## Video messages
 
-Shipped MVP: pick ≤30s MP4, R2 `POST /v1/video`, in-thread play.
+Production checklist: [`VIDEO_PRODUCTION.md`](VIDEO_PRODUCTION.md).
 
-Production hardening checklist: [`VIDEO_PRODUCTION.md`](VIDEO_PRODUCTION.md).
+R2 cleanup on message delete is live (`MEDIA_DELETE_SECRET` on Worker +
+`onThreadMessageDeleted`). Local `firebase/functions/.env` holds the param
+values and is gitignored — recreate it if deploying Functions from a fresh clone.
 
 ## Account extras (not in identity slice)
 

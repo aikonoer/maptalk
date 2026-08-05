@@ -20,6 +20,10 @@ import {
 const PROJECT_ID = 'maptalk-rules-test';
 const ALICE = 'alice-uid';
 const BOB = 'bob-uid';
+const R2_IMAGE = 'https://pub-7c910bfa4a884bb6bd039db548455d5e.r2.dev/threads/t1/m1.jpg';
+const R2_AUDIO = 'https://pub-7c910bfa4a884bb6bd039db548455d5e.r2.dev/threads/t1/m1.m4a';
+const R2_VIDEO = 'https://pub-7c910bfa4a884bb6bd039db548455d5e.r2.dev/threads/t1/m1.mp4';
+const BAD_HOST = 'https://example.com/evil.mp4';
 
 let testEnv;
 
@@ -241,7 +245,7 @@ describe('messages', () => {
         authorName: 'Alice',
         createdAt: serverTimestamp(),
         messageKind: 'image',
-        imagePath: 'https://example.com/photo.jpg',
+        imagePath: R2_IMAGE,
         imageWidth: 1280,
         imageHeight: 960,
       }),
@@ -253,7 +257,7 @@ describe('messages', () => {
         authorName: 'Alice',
         createdAt: serverTimestamp(),
         messageKind: 'image',
-        imagePath: 'https://example.com/photo2.jpg',
+        imagePath: 'https://pub-7c910bfa4a884bb6bd039db548455d5e.r2.dev/threads/t1/m2.jpg',
         imageWidth: 800,
         imageHeight: 600,
       }),
@@ -284,7 +288,7 @@ describe('messages', () => {
         authorName: 'Alice',
         createdAt: serverTimestamp(),
         messageKind: 'voice',
-        audioPath: 'https://example.com/note.m4a',
+        audioPath: R2_AUDIO,
         audioDurationMs: 4_200,
       }),
     );
@@ -300,7 +304,7 @@ describe('messages', () => {
         authorName: 'Alice',
         createdAt: serverTimestamp(),
         messageKind: 'voice',
-        audioPath: 'https://example.com/note.m4a',
+        audioPath: R2_AUDIO,
         audioDurationMs: 1_000,
       }),
     );
@@ -311,7 +315,7 @@ describe('messages', () => {
         authorName: 'Alice',
         createdAt: serverTimestamp(),
         messageKind: 'voice',
-        audioPath: 'https://example.com/note.m4a',
+        audioPath: R2_AUDIO,
         audioDurationMs: 60_001,
       }),
     );
@@ -327,7 +331,7 @@ describe('messages', () => {
         authorName: 'Alice',
         createdAt: serverTimestamp(),
         messageKind: 'video',
-        videoPath: 'https://example.com/clip.mp4',
+        videoPath: R2_VIDEO,
         videoDurationMs: 12_000,
         videoWidth: 720,
         videoHeight: 1280,
@@ -345,7 +349,7 @@ describe('messages', () => {
         authorName: 'Alice',
         createdAt: serverTimestamp(),
         messageKind: 'video',
-        videoPath: 'https://example.com/clip.mp4',
+        videoPath: R2_VIDEO,
         videoDurationMs: 30_001,
         videoWidth: 720,
         videoHeight: 1280,
@@ -358,8 +362,26 @@ describe('messages', () => {
         authorName: 'Alice',
         createdAt: serverTimestamp(),
         messageKind: 'video',
-        videoPath: 'https://example.com/clip.mp4',
+        videoPath: R2_VIDEO,
         videoDurationMs: 5_000,
+      }),
+    );
+  });
+
+  it('rejects media hosted on an untrusted host', async () => {
+    const threadId = await seedThread();
+    const db = testEnv.authenticatedContext(ALICE).firestore();
+    await assertFails(
+      setDoc(doc(db, 'threads', threadId, 'messages', 'video-bad-host'), {
+        text: '',
+        authorId: ALICE,
+        authorName: 'Alice',
+        createdAt: serverTimestamp(),
+        messageKind: 'video',
+        videoPath: BAD_HOST,
+        videoDurationMs: 5_000,
+        videoWidth: 720,
+        videoHeight: 1280,
       }),
     );
   });
