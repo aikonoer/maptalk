@@ -1,15 +1,21 @@
 package app.maptalk.ui.map
 
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -19,7 +25,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
@@ -51,7 +56,9 @@ import app.maptalk.data.LocalDemoStore
 import app.maptalk.data.model.Author
 import app.maptalk.geo.GeoPoint
 import app.maptalk.location.LocationProvider
+import app.maptalk.ui.settings.SettingsScreen
 import app.maptalk.ui.theme.MapTalkColors
+import app.maptalk.ui.thread.ThreadScreen
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
@@ -72,8 +79,6 @@ private const val CLUSTER_ZOOM_STEP = 3f
 @Composable
 fun MapScreen(
     author: Author,
-    onOpenThread: (String) -> Unit,
-    onOpenSettings: () -> Unit,
 ) {
     val context = LocalContext.current
     val container = context.appContainer
@@ -141,7 +146,11 @@ fun MapScreen(
     }
 
     var showNewThreadSheet by remember { mutableStateOf(false) }
-    val sheetState = rememberModalBottomSheetState()
+    var openThreadId by remember { mutableStateOf<String?>(null) }
+    var showSettings by remember { mutableStateOf(false) }
+    val newThreadSheetState = rememberModalBottomSheetState()
+    val threadSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val settingsSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -162,7 +171,9 @@ fun MapScreen(
                 cameraPositionState = cameraPositionState,
                 properties = MapProperties(
                     isMyLocationEnabled = hasLocationPermission,
-                    // Keeps the map on the same near-black ramp as the rest of the app.
+                    isBuildingEnabled = false,
+                    isIndoorEnabled = false,
+                    // Same near-black ramp as Theme / MapTalkColors (see map_style_dark.json).
                     mapStyleOptions = remember(context) {
                         MapStyleOptions.loadRawResourceStyle(context, R.raw.map_style_dark)
                     },
@@ -182,7 +193,7 @@ fun MapScreen(
                             onClick = {
                                 val single = bubble.single
                                 if (single != null) {
-                                    onOpenThread(single.id)
+                                    openThreadId = single.id
                                 } else {
                                     scope.launch {
                                         cameraPositionState.animate(
@@ -214,7 +225,7 @@ fun MapScreen(
                         else -> "$count chats nearby"
                     }
                 },
-                onOpenSettings = onOpenSettings,
+                onOpenSettings = { showSettings = true },
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .padding(top = padding.calculateTopPadding() + 12.dp),
@@ -250,16 +261,56 @@ fun MapScreen(
         val pinPosition = GeoPoint(pin.latitude, pin.longitude)
         ModalBottomSheet(
             onDismissRequest = { showNewThreadSheet = false },
-            sheetState = sheetState,
+            sheetState = newThreadSheetState,
             containerColor = MapTalkColors.Surface,
             contentColor = MapTalkColors.Text,
+            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
         ) {
             NewThreadSheet(
                 position = pinPosition,
                 onCreate = { title, kind ->
                     showNewThreadSheet = false
-                    onOpenThread(viewModel.createThread(title, kind, pinPosition, author))
+                    openThreadId = viewModel.createThread(title, kind, pinPosition, author)
                 },
+            )
+        }
+    }
+
+    openThreadId?.let { threadId ->
+        BackHandler { openThreadId = null }
+        ModalBottomSheet(
+            onDismissRequest = { openThreadId = null },
+            sheetState = threadSheetState,
+            containerColor = MapTalkColors.Base,
+            contentColor = MapTalkColors.Text,
+            dragHandle = null,
+            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+        ) {
+            ThreadScreen(
+                threadId = threadId,
+                author = author,
+                onBack = { openThreadId = null },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.94f),
+            )
+        }
+    }
+
+    if (showSettings) {
+        ModalBottomSheet(
+            onDismissRequest = { showSettings = false },
+            sheetState = settingsSheetState,
+            containerColor = MapTalkColors.Base,
+            contentColor = MapTalkColors.Text,
+            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+        ) {
+            SettingsScreen(
+                author = author,
+                onBack = { showSettings = false },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.92f),
             )
         }
     }

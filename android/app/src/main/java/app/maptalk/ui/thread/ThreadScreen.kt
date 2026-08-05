@@ -65,8 +65,6 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -131,6 +129,7 @@ fun ThreadScreen(
     threadId: String,
     author: Author,
     onBack: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     val container = context.appContainer
@@ -393,20 +392,46 @@ fun ThreadScreen(
     }
 
     Scaffold(
+        modifier = modifier,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         containerColor = MapTalkColors.Base,
         topBar = {
-            TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MapTalkColors.Surface,
-                    titleContentColor = MapTalkColors.Text,
-                    navigationIconContentColor = MapTalkColors.Text,
-                ),
-                title = {
-                    Column {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MapTalkColors.Surface),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 10.dp, bottom = 6.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .width(36.dp)
+                            .height(4.dp)
+                            .background(MapTalkColors.Hairline, RoundedCornerShape(2.dp)),
+                    )
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onClick = onBack) {
+                        Icon(
+                            painterResource(R.drawable.ic_close),
+                            contentDescription = "Close",
+                            tint = MapTalkColors.Subtle,
+                        )
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = state.thread?.title ?: "Chat",
                             style = MaterialTheme.typography.titleMedium,
+                            color = MapTalkColors.Text,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -431,13 +456,6 @@ fun ThreadScreen(
                             }
                         }
                     }
-                },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(painterResource(R.drawable.ic_arrow_back), contentDescription = "Back")
-                    }
-                },
-                actions = {
                     val thread = state.thread
                     if (thread != null && thread.authorId != author.uid) {
                         IconButton(
@@ -455,8 +473,9 @@ fun ThreadScreen(
                             Text("⊘", color = MapTalkColors.Subtle, fontSize = 16.sp)
                         }
                     }
-                },
-            )
+                }
+                HorizontalDivider(color = MapTalkColors.Hairline)
+            }
         },
     ) { padding ->
         Column(

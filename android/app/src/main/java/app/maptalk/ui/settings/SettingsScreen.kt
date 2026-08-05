@@ -2,6 +2,12 @@ package app.maptalk.ui.settings
 
 import android.app.Activity
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -22,8 +28,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -62,6 +66,7 @@ import kotlinx.coroutines.launch
 fun SettingsScreen(
     author: Author,
     onBack: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     val activity = context as? Activity
@@ -76,21 +81,49 @@ fun SettingsScreen(
     val linkIsError by viewModel.linkIsError.collectAsStateWithLifecycle()
 
     Scaffold(
+        modifier = modifier,
         containerColor = MapTalkColors.Base,
         topBar = {
-            TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MapTalkColors.Surface,
-                    titleContentColor = MapTalkColors.Text,
-                    navigationIconContentColor = MapTalkColors.Text,
-                ),
-                title = { Text("Settings") },
-                navigationIcon = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MapTalkColors.Surface),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 10.dp, bottom = 6.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .width(36.dp)
+                            .height(4.dp)
+                            .background(MapTalkColors.Hairline, RoundedCornerShape(2.dp)),
+                    )
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     IconButton(onClick = onBack) {
-                        Icon(painterResource(R.drawable.ic_arrow_back), contentDescription = "Back")
+                        Icon(
+                            painterResource(R.drawable.ic_close),
+                            contentDescription = "Close",
+                            tint = MapTalkColors.Subtle,
+                        )
                     }
-                },
-            )
+                    Text(
+                        text = "Settings",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MapTalkColors.Text,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                HorizontalDivider(color = MapTalkColors.Hairline)
+            }
         },
     ) { padding ->
         LazyColumn(

@@ -29,6 +29,12 @@ struct MapScreen: View {
     /// whenever you ask, but a late fix never yanks the camera away while you are panning.
     @State private var wantsToCenterOnUser = !Self.startsInDemo
 
+    private var openThreadBinding: Binding<ThreadRoute?> {
+        Binding(
+            get: { openThreadId.map(ThreadRoute.init(id:)) },
+            set: { openThreadId = $0?.id }
+        )
+    }
     /// Local / emulator / live Debug all open on Cebu (seeded neighbourhood). Release live
     /// centres on the user once location arrives.
     private static var startsInDemo: Bool {
@@ -56,67 +62,71 @@ struct MapScreen: View {
     private var location: LocationProvider { environment.locationProvider }
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                map
-                crosshair
-                overlay
-            }
-            .navigationBarHidden(true)
-            .navigationDestination(item: $openThreadId) { threadId in
-                ThreadScreen(
-                    environment: environment,
-                    author: author,
-                    threadId: threadId
-                )
-            }
-            .sheet(isPresented: $showSettings) {
-                NavigationStack {
-                    SettingsScreen(environment: environment, author: author)
-                }
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-                .presentationBackground(Theme.base)
-            }
-            .sheet(isPresented: $isComposing) {
-                NewThreadSheet(position: model.visibleCenter) { title, kind in
-                    isComposing = false
-                    openThreadId = model.createThread(
-                        title: title,
-                        kind: kind,
-                        position: model.visibleCenter,
-                        author: author
-                    )
-                }
-                .presentationDetents([.height(380)])
-                .presentationDragIndicator(.visible)
-                .presentationBackground(Theme.surface)
-            }
-            .alert(
-                "Something went wrong",
-                isPresented: Binding(
-                    get: { model.errorMessage != nil },
-                    set: { if !$0 { model.errorMessage = nil } }
-                )
-            ) {
-                Button("OK") { model.errorMessage = nil }
-            } message: {
-                Text(model.errorMessage ?? "")
-            }
-            .onAppear {
-                model.start()
-                if Self.startsInDemo {
-                    // Don't wait for MapKit's first camera callback — pin the query on Cebu now.
-                    let center = GeoPoint(lat: 10.3157, lng: 123.8854)
-                    model.cameraChanged(center: center, radiusKm: 3)
-                } else if location.isAuthorized {
-                    location.locateMe()
-                }
-                centerOnUserIfWanted()
-            }
-            .onDisappear { model.stop() }
-            .onChange(of: location.lastLocation) { _, _ in centerOnUserIfWanted() }
+        ZStack {
+            map
+            crosshair
+            overlay
         }
+        .sheet(item: openThreadBinding) { route in
+            ThreadScreen(
+                environment: environment,
+                author: author,
+                threadId: route.id
+            )
+            .presentationDetents([.fraction(0.94), .large])
+            .presentationDragIndicator(.hidden)
+            .presentationCornerRadius(28)
+            .presentationBackground(Theme.base)
+            .presentationContentInteraction(.scrolls)
+        }
+        .sheet(isPresented: $showSettings) {
+            NavigationStack {
+                SettingsScreen(environment: environment, author: author)
+            }
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+            .presentationCornerRadius(28)
+            .presentationBackground(Theme.base)
+        }
+        .sheet(isPresented: $isComposing) {
+            NewThreadSheet(position: model.visibleCenter) { title, kind in
+                isComposing = false
+                openThreadId = model.createThread(
+                    title: title,
+                    kind: kind,
+                    position: model.visibleCenter,
+                    author: author
+                )
+            }
+            .presentationDetents([.height(380)])
+            .presentationDragIndicator(.visible)
+            .presentationCornerRadius(24)
+            .presentationBackground(Theme.surface)
+        }
+        .alert(
+            "Something went wrong",
+            isPresented: Binding(
+                get: { model.errorMessage != nil },
+                set: { if !$0 { model.errorMessage = nil } }
+            )
+        ) {
+            Button("OK") { model.errorMessage = nil }
+        } message: {
+            Text(model.errorMessage ?? "")
+        }
+        .onAppear {
+            model.start()
+            if Self.startsInDemo {
+                // Don't wait for MapKit's first camera callback — pin the query on Cebu now.
+                let center = GeoPoint(lat: 10.3157, lng: 123.8854)
+                model.cameraChanged(center: center, radiusKm: 3)
+            } else if location.isAuthorized {
+                location.locateMe()
+            }
+            centerOnUserIfWanted()
+        }
+        .onDisappear { model.stop() }
+        .onChange(of: location.lastLocation) { _, _ in centerOnUserIfWanted() }
     }
 
     private var map: some View {
@@ -129,7 +139,15 @@ struct MapScreen: View {
                 }
             }
         }
-        .mapStyle(.standard(elevation: .flat, pointsOfInterest: .excludingAll))
+        .mapStyle(
+            .standard(
+                elevation: .flat,
+                emphasis: .muted,
+                pointsOfInterest: .excludingAll
+            )
+        )
+        .environment(\.colorScheme, .dark)
+        .background(Theme.base)
         .mapControls { MapCompass() }
         .onMapCameraChange(frequency: .onEnd) { context in
             let region = context.region
@@ -359,4 +377,8 @@ private struct BubbleMarker: View {
             .shadow(color: .black.opacity(0.45), radius: 8, y: 3)
         }
     }
+}
+
+private struct ThreadRoute: Identifiable {
+    let id: String
 }

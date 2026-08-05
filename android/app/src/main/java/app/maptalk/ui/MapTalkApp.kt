@@ -26,11 +26,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.navigation.NavType
-import androidx.navigation.compose.NavHost
-import androidx.navigation.compose.composable
-import androidx.navigation.compose.rememberNavController
-import androidx.navigation.navArgument
 import app.maptalk.R
 import app.maptalk.appContainer
 import app.maptalk.data.Session
@@ -39,12 +34,6 @@ import app.maptalk.ui.map.MapScreen
 import app.maptalk.ui.onboarding.DisplayNameScreen
 import app.maptalk.ui.theme.MapTalkColors
 import app.maptalk.ui.theme.MapTalkShapes
-import app.maptalk.ui.thread.ThreadScreen
-
-private const val ROUTE_MAP = "map"
-private const val ROUTE_SETTINGS = "settings"
-private const val ARG_THREAD_ID = "threadId"
-private const val ROUTE_THREAD = "thread/{$ARG_THREAD_ID}"
 
 @Composable
 fun MapTalkApp() {
@@ -82,32 +71,7 @@ fun MapTalkApp() {
                 }
             }
 
-            val navController = rememberNavController()
-            NavHost(navController = navController, startDestination = ROUTE_MAP) {
-                composable(ROUTE_MAP) {
-                    MapScreen(
-                        author = current.author,
-                        onOpenThread = { threadId -> navController.navigate("thread/$threadId") },
-                        onOpenSettings = { navController.navigate(ROUTE_SETTINGS) },
-                    )
-                }
-                composable(ROUTE_SETTINGS) {
-                    app.maptalk.ui.settings.SettingsScreen(
-                        author = current.author,
-                        onBack = navController::popBackStack,
-                    )
-                }
-                composable(
-                    route = ROUTE_THREAD,
-                    arguments = listOf(navArgument(ARG_THREAD_ID) { type = NavType.StringType }),
-                ) { backStackEntry ->
-                    ThreadScreen(
-                        threadId = backStackEntry.arguments?.getString(ARG_THREAD_ID).orEmpty(),
-                        author = current.author,
-                        onBack = navController::popBackStack,
-                    )
-                }
-            }
+            MapScreen(author = current.author)
         }
     }
 }

@@ -126,39 +126,73 @@ struct ThreadScreen: View {
     }
 
     private var threadChrome: some View {
-        messages
-            .background(Theme.base)
-            .safeAreaInset(edge: .bottom) { composer }
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(Theme.surface, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .principal) { header }
-                ToolbarItem(placement: .topBarTrailing) { threadOptionsMenu }
+        VStack(spacing: 0) {
+            sheetHeader
+            messages
+        }
+        .background(Theme.base)
+        .safeAreaInset(edge: .bottom) { composer }
+        .onAppear { model.start() }
+        .onDisappear {
+            model.stop()
+            recorder.cancel()
+            cancelVideoSend()
+        }
+        .onChange(of: model.shouldDismiss) { _, dismissNow in
+            if dismissNow { dismiss() }
+        }
+        .onChange(of: pickerItem) { _, item in
+            guard let item else { return }
+            Task { await loadPickerItem(item) }
+        }
+        .onChange(of: videoPickerItem) { _, item in
+            guard let item else { return }
+            videoTask?.cancel()
+            videoTask = Task { await loadVideoItem(item) }
+        }
+        .overlay { longPressOverlay }
+        .coordinateSpace(name: "thread")
+        .onPreferenceChange(BubbleFrameKey.self) { bubbleFrames = $0 }
+        .sheet(item: $reportTarget) { target in
+            reportSheet(for: target)
+        }
+    }
+
+    private var sheetHeader: some View {
+        VStack(spacing: 0) {
+            Capsule()
+                .fill(Theme.hairline)
+                .frame(width: 36, height: 4)
+                .padding(.top, 10)
+                .padding(.bottom, 8)
+
+            HStack(alignment: .center, spacing: 12) {
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(Theme.subtle)
+                        .frame(width: 32, height: 32)
+                        .background(Theme.raised, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close")
+
+                header
+                    .frame(maxWidth: .infinity)
+
+                threadOptionsMenu
+                    .frame(width: 32, height: 32)
             }
-            .onAppear { model.start() }
-            .onDisappear {
-                model.stop()
-                recorder.cancel()
-                cancelVideoSend()
-            }
-            .onChange(of: model.shouldDismiss) { _, dismissNow in
-                if dismissNow { dismiss() }
-            }
-            .onChange(of: pickerItem) { _, item in
-                guard let item else { return }
-                Task { await loadPickerItem(item) }
-            }
-            .onChange(of: videoPickerItem) { _, item in
-                guard let item else { return }
-                videoTask?.cancel()
-                videoTask = Task { await loadVideoItem(item) }
-            }
-            .overlay { longPressOverlay }
-            .coordinateSpace(name: "thread")
-            .onPreferenceChange(BubbleFrameKey.self) { bubbleFrames = $0 }
-            .sheet(item: $reportTarget) { target in
-                reportSheet(for: target)
-            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 12)
+
+            Rectangle()
+                .fill(Theme.hairline)
+                .frame(height: 1)
+        }
+        .background(Theme.surface)
     }
 
     @ViewBuilder
@@ -176,9 +210,14 @@ struct ThreadScreen: View {
                 }
             } label: {
                 Image(systemName: "ellipsis")
+                    .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Theme.subtle)
+                    .frame(width: 32, height: 32)
+                    .background(Theme.raised, in: Circle())
             }
             .accessibilityLabel("Chat options")
+        } else {
+            Color.clear.frame(width: 32, height: 32)
         }
     }
 
