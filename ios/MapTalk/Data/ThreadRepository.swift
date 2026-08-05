@@ -13,7 +13,7 @@ import Foundation
 final class ThreadRepository {
 
     private enum Backend {
-        case firestore(Firestore, MediaUploader)
+        case firestore(Firestore, MediaUploading)
         case local(LocalDemoStore)
     }
 
@@ -22,7 +22,7 @@ final class ThreadRepository {
 
     private let messagePageSize = 200
 
-    init(firestore: Firestore, mediaUploader: MediaUploader) {
+    init(firestore: Firestore, mediaUploader: MediaUploading) {
         backend = .firestore(firestore, mediaUploader)
     }
 

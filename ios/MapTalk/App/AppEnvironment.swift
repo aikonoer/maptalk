@@ -16,17 +16,22 @@ final class AppEnvironment {
     /// Only set for Firebase-backed environments; local demo has nothing to flush.
     private let firestore: Firestore?
 
-    init(
-        auth: Auth = .auth(),
-        firestore: Firestore = .firestore(),
-        storage: Storage = .storage()
-    ) {
+    /// Live Firebase + Cloudflare R2 photo uploads.
+    init(auth: Auth = .auth(), firestore: Firestore = .firestore()) {
         self.firestore = firestore
         authRepository = AuthRepository(auth: auth, firestore: firestore)
+        let endpoint = URL(string: "https://maptalk-media.hhypkfpshg.workers.dev/v1/images")!
         threadRepository = ThreadRepository(
             firestore: firestore,
-            mediaUploader: MediaUploader(storage: storage)
+            mediaUploader: R2MediaUploader(auth: auth, endpoint: endpoint)
         )
+        locationProvider = LocationProvider()
+    }
+
+    private init(auth: Auth, firestore: Firestore, mediaUploader: MediaUploading) {
+        self.firestore = firestore
+        authRepository = AuthRepository(auth: auth, firestore: firestore)
+        threadRepository = ThreadRepository(firestore: firestore, mediaUploader: mediaUploader)
         locationProvider = LocationProvider()
     }
 
@@ -88,6 +93,10 @@ final class AppEnvironment {
         let storage = Storage.storage(app: app)
         storage.useEmulator(withHost: host, port: storagePort)
 
-        return AppEnvironment(auth: auth, firestore: firestore, storage: storage)
+        return AppEnvironment(
+            auth: auth,
+            firestore: firestore,
+            mediaUploader: FirebaseStorageUploader(storage: storage)
+        )
     }
 }

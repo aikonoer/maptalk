@@ -31,8 +31,10 @@ firebase-debug.log
 firestore-debug.log
 ui-debug.log
 
-# --- Node (rules tests) ---
+# --- Node (rules tests / workers) ---
 node_modules/
+workers/media/node_modules/
+workers/media/.wrangler/
 
 # --- macOS ---
 .DS_Store

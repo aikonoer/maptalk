@@ -40,10 +40,13 @@ Images are compressed on the device (max edge 1280 px, JPEG ~0.72) before storag
 | Mode | Where bytes live | What `imagePath` holds |
 | ---- | ---------------- | ---------------------- |
 | Local demo | App files directory | Relative filename |
-| Emulator / live | Firebase Storage (`threads/{threadId}/{messageId}.jpg`) | HTTPS download URL |
+| Emulator | Firebase Storage emulator | Emulator download URL |
+| Live | Cloudflare R2 via `workers/media` | `https://pub-….r2.dev/threads/…/….jpg` |
 
-Cloudflare R2 can replace Storage later for free egress; the Firestore field stays a URL either way.
-Storage rules live in `firebase/storage.rules` (signed-in read/write, JPEG under 2 MB).
+R2 is the production store (zero egress). The Worker verifies the Firebase ID token before
+accepting a JPEG. Object layout: `threads/{threadId}/{messageId}.jpg`.
+
+Firebase Storage rules in `firebase/storage.rules` remain for the emulator path.
 
 ### `users/{uid}`
 

@@ -8,47 +8,27 @@ Local SDK configs are already downloaded (gitignored):
 - `android/app/google-services.json`
 - `ios/MapTalk/GoogleService-Info.plist`
 
-## Done from the CLI
+## Done
 
-- [x] Created Firebase project `maptalk-app` (separate from HoopsLive)
-- [x] Registered Android (`app.maptalk`) and iOS (`app.maptalk`) apps
-- [x] Created Firestore `(default)` in `australia-southeast1`
-- [x] Deployed Firestore rules + indexes
-- [x] Wrote `firebase/.firebaserc` → default `maptalk-app`
+- [x] Firebase project `maptalk-app` (separate from HoopsLive)
+- [x] Android + iOS apps registered (`app.maptalk`)
+- [x] Firestore `(default)` in `australia-southeast1` + rules/indexes deployed
+- [x] Anonymous Auth enabled (console)
+- [x] Cloudflare R2 activated; bucket **`maptalk-media`** (Oceania)
+- [x] Public reads: `https://pub-7c910bfa4a884bb6bd039db548455d5e.r2.dev`
+- [x] Upload Worker: `https://maptalk-media.hhypkfpshg.workers.dev` (`workers/media`)
 
-## Needs a click in your browsers (API blocked)
+## Photo upload path (live)
 
-### 1. Anonymous Auth (~30s)
+1. Client compresses JPEG on device  
+2. Client POSTs bytes to Worker with Firebase ID token  
+3. Worker writes `threads/{threadId}/{messageId}.jpg` into R2  
+4. Firestore message stores the public `https://pub-….r2.dev/…` URL  
 
-https://console.firebase.google.com/project/maptalk-app/authentication/providers
+Emulator / mock-data still uses Firebase Storage emulator. Local demo keeps files on device.
 
-1. Get started if prompted  
-2. Enable **Anonymous** → Save  
+## Optional later
 
-### 2. Firebase Storage / Blaze (~2 min) — for live cloud photos
-
-Storage needs billing on the project (Spark cannot create the bucket):
-
-https://console.firebase.google.com/project/maptalk-app/usage/details
-
-1. Upgrade **maptalk-app** to **Blaze** (same billing account as HoopsLive is fine)  
-2. Then open https://console.firebase.google.com/project/maptalk-app/storage and **Get started**  
-3. Tell me when that’s done — I’ll deploy `storage.rules`
-
-Until then: **local demo photos still work** on device; emulator Storage works without Blaze.
-
-### 3. Cloudflare R2 (optional, free egress)
-
-Wrangler is logged into **hoops live account**, but R2 is not enabled yet:
-
-https://dash.cloudflare.com/9f3ffd7ed0ebbff87bcf2f5466e501c6/r2
-
-1. Enable R2 (accept terms)  
-2. Tell me — I’ll create bucket `maptalk-media` and wire uploads  
-
-HoopsLive itself still uses Firebase Storage for chat photos; R2 was only planned there.
-
-## Do not do
-
-- Do not reuse project `hoopslive-9da9e` for MapTalk  
-- Do not commit `google-services.json` / `GoogleService-Info.plist`
+- Firebase Storage / Blaze — only if you want Storage as a fallback; **not required** for R2 photos  
+- Custom domain instead of `*.r2.dev` / `*.workers.dev`  
+- Deploy Worker updates: `cd workers/media && npm run deploy`

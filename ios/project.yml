@@ -89,3 +89,13 @@ schemes:
       config: Debug
       environmentVariables:
         MAPTALK_MODE: "local"
+
+  # Real Firebase (maptalk-app) + Cloudflare R2 photo uploads.
+  MapTalk Live:
+    build:
+      targets:
+        MapTalk: all
+    run:
+      config: Debug
+      environmentVariables:
+        MAPTALK_MODE: "live"

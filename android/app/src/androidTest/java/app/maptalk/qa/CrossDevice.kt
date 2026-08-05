@@ -39,7 +39,7 @@ object CrossDevice {
             auth = AuthRepository(firebase.auth, firebase.firestore),
             threads = ThreadRepository(
                 firestore = firebase.firestore,
-                mediaUploader = MediaUploader(firebase.storage),
+                mediaUploader = MediaUploader.Firebase(firebase.storage),
             ),
             firestore = firebase.firestore,
         )

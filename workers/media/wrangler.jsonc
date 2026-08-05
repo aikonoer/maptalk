@@ -1,0 +1,16 @@
+{
+  "name": "maptalk-media",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-05",
+  "workers_dev": true,
+  "vars": {
+    "FIREBASE_PROJECT_ID": "maptalk-app",
+    "PUBLIC_BASE_URL": "https://pub-7c910bfa4a884bb6bd039db548455d5e.r2.dev"
+  },
+  "r2_buckets": [
+    {
+      "binding": "MEDIA",
+      "bucket_name": "maptalk-media"
+    }
+  ]
+}

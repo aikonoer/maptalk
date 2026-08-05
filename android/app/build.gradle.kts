@@ -44,6 +44,12 @@ android {
         manifestPlaceholders["mapsApiKey"] = mapsApiKey
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("boolean", "USE_FIREBASE_EMULATOR", useFirebaseEmulator.toString())
+        // Cloudflare Worker that writes compressed JPEGs into R2 (see workers/media).
+        buildConfigField(
+            "String",
+            "MAPTALK_MEDIA_UPLOAD_URL",
+            "\"https://maptalk-media.hhypkfpshg.workers.dev/v1/images\"",
+        )
     }
 
     buildTypes {

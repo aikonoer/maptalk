@@ -1,0 +1,13 @@
+{
+  "name": "maptalk-media",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2",
+    "wrangler": "^4.47.0"
+  }
+}

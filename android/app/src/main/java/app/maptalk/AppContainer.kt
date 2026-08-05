@@ -56,7 +56,13 @@ class AppContainer(context: Context) {
         localStore?.let { ThreadRepository(it) }
             ?: ThreadRepository(
                 firestore = firebase.firestore,
-                mediaUploader = MediaUploader(firebase.storage),
+                mediaUploader = when (BuildConfig.MAPTALK_MODE) {
+                    "emulator" -> MediaUploader.Firebase(firebase.storage)
+                    else -> MediaUploader.R2(
+                        auth = firebase.auth,
+                        endpoint = BuildConfig.MAPTALK_MEDIA_UPLOAD_URL,
+                    )
+                },
             )
     }
 
