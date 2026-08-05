@@ -184,11 +184,15 @@ class ThreadRepository private constructor(
         video: PreparedVideo? = null,
         sticker: String? = null,
         reply: MessageReply? = null,
+        onFinished: (() -> Unit)? = null,
     ) {
         when (val backend = backend) {
             is Backend.Firestore -> {
                 val trimmed = text.trim()
-                if (image == null && audio == null && video == null && sticker == null && trimmed.isEmpty()) return
+                if (image == null && audio == null && video == null && sticker == null && trimmed.isEmpty()) {
+                    onFinished?.invoke()
+                    return
+                }
                 val threadRef = backend.db.collection(Fs.THREADS).document(threadId)
                 val messageRef = threadRef.collection(Fs.MESSAGES).document()
                 val replyFields = reply?.let {
@@ -213,86 +217,102 @@ class ThreadRepository private constructor(
                                 Fs.CREATED_AT to FieldValue.serverTimestamp(),
                             ) + replyFields,
                         )
+                        onFinished?.invoke()
                     }
                     image != null -> {
                         val uploader = mediaUploader
                         if (uploader == null) {
                             _errors.tryEmit(IllegalStateException("Photo upload is not configured"))
+                            onFinished?.invoke()
                             return
                         }
                         scope.launch {
-                            runCatching {
-                                val url = uploader.upload(threadId, messageRef.id, image)
-                                commitFirestoreMessage(
-                                    db = backend.db,
-                                    threadRef = threadRef,
-                                    messageRef = messageRef,
-                                    fields = mapOf(
-                                        Fs.TEXT to trimmed,
-                                        Fs.MESSAGE_KIND to MessageKind.IMAGE.id,
-                                        Fs.IMAGE_PATH to url,
-                                        Fs.IMAGE_WIDTH to image.width,
-                                        Fs.IMAGE_HEIGHT to image.height,
-                                        Fs.AUTHOR_ID to author.uid,
-                                        Fs.AUTHOR_NAME to author.displayName,
-                                        Fs.CREATED_AT to FieldValue.serverTimestamp(),
-                                    ) + replyFields,
-                                )
-                            }.onFailure { _errors.emit(it) }
+                            try {
+                                runCatching {
+                                    val url = uploader.upload(threadId, messageRef.id, image)
+                                    commitFirestoreMessage(
+                                        db = backend.db,
+                                        threadRef = threadRef,
+                                        messageRef = messageRef,
+                                        fields = mapOf(
+                                            Fs.TEXT to trimmed,
+                                            Fs.MESSAGE_KIND to MessageKind.IMAGE.id,
+                                            Fs.IMAGE_PATH to url,
+                                            Fs.IMAGE_WIDTH to image.width,
+                                            Fs.IMAGE_HEIGHT to image.height,
+                                            Fs.AUTHOR_ID to author.uid,
+                                            Fs.AUTHOR_NAME to author.displayName,
+                                            Fs.CREATED_AT to FieldValue.serverTimestamp(),
+                                        ) + replyFields,
+                                    )
+                                }.onFailure { _errors.emit(it) }
+                            } finally {
+                                onFinished?.invoke()
+                            }
                         }
                     }
                     video != null -> {
                         val uploader = mediaUploader
                         if (uploader == null) {
                             _errors.tryEmit(IllegalStateException("Video upload is not configured"))
+                            onFinished?.invoke()
                             return
                         }
                         scope.launch {
-                            runCatching {
-                                val url = uploader.upload(threadId, messageRef.id, video)
-                                commitFirestoreMessage(
-                                    db = backend.db,
-                                    threadRef = threadRef,
-                                    messageRef = messageRef,
-                                    fields = mapOf(
-                                        Fs.TEXT to "",
-                                        Fs.MESSAGE_KIND to MessageKind.VIDEO.id,
-                                        Fs.VIDEO_PATH to url,
-                                        Fs.VIDEO_DURATION_MS to video.durationMs,
-                                        Fs.VIDEO_WIDTH to video.width,
-                                        Fs.VIDEO_HEIGHT to video.height,
-                                        Fs.AUTHOR_ID to author.uid,
-                                        Fs.AUTHOR_NAME to author.displayName,
-                                        Fs.CREATED_AT to FieldValue.serverTimestamp(),
-                                    ) + replyFields,
-                                )
-                            }.onFailure { _errors.emit(it) }
+                            try {
+                                runCatching {
+                                    val url = uploader.upload(threadId, messageRef.id, video)
+                                    commitFirestoreMessage(
+                                        db = backend.db,
+                                        threadRef = threadRef,
+                                        messageRef = messageRef,
+                                        fields = mapOf(
+                                            Fs.TEXT to "",
+                                            Fs.MESSAGE_KIND to MessageKind.VIDEO.id,
+                                            Fs.VIDEO_PATH to url,
+                                            Fs.VIDEO_DURATION_MS to video.durationMs,
+                                            Fs.VIDEO_WIDTH to video.width,
+                                            Fs.VIDEO_HEIGHT to video.height,
+                                            Fs.AUTHOR_ID to author.uid,
+                                            Fs.AUTHOR_NAME to author.displayName,
+                                            Fs.CREATED_AT to FieldValue.serverTimestamp(),
+                                        ) + replyFields,
+                                    )
+                                }.onFailure { _errors.emit(mapMediaUploadError(it)) }
+                            } finally {
+                                onFinished?.invoke()
+                            }
                         }
                     }
                     audio != null -> {
                         val uploader = mediaUploader
                         if (uploader == null) {
                             _errors.tryEmit(IllegalStateException("Audio upload is not configured"))
+                            onFinished?.invoke()
                             return
                         }
                         scope.launch {
-                            runCatching {
-                                val url = uploader.upload(threadId, messageRef.id, audio)
-                                commitFirestoreMessage(
-                                    db = backend.db,
-                                    threadRef = threadRef,
-                                    messageRef = messageRef,
-                                    fields = mapOf(
-                                        Fs.TEXT to "",
-                                        Fs.MESSAGE_KIND to MessageKind.VOICE.id,
-                                        Fs.AUDIO_PATH to url,
-                                        Fs.AUDIO_DURATION_MS to audio.durationMs,
-                                        Fs.AUTHOR_ID to author.uid,
-                                        Fs.AUTHOR_NAME to author.displayName,
-                                        Fs.CREATED_AT to FieldValue.serverTimestamp(),
-                                    ) + replyFields,
-                                )
-                            }.onFailure { _errors.emit(it) }
+                            try {
+                                runCatching {
+                                    val url = uploader.upload(threadId, messageRef.id, audio)
+                                    commitFirestoreMessage(
+                                        db = backend.db,
+                                        threadRef = threadRef,
+                                        messageRef = messageRef,
+                                        fields = mapOf(
+                                            Fs.TEXT to "",
+                                            Fs.MESSAGE_KIND to MessageKind.VOICE.id,
+                                            Fs.AUDIO_PATH to url,
+                                            Fs.AUDIO_DURATION_MS to audio.durationMs,
+                                            Fs.AUTHOR_ID to author.uid,
+                                            Fs.AUTHOR_NAME to author.displayName,
+                                            Fs.CREATED_AT to FieldValue.serverTimestamp(),
+                                        ) + replyFields,
+                                    )
+                                }.onFailure { _errors.emit(it) }
+                            } finally {
+                                onFinished?.invoke()
+                            }
                         }
                     }
                     else -> {
@@ -308,20 +328,37 @@ class ThreadRepository private constructor(
                                 Fs.CREATED_AT to FieldValue.serverTimestamp(),
                             ) + replyFields,
                         )
+                        onFinished?.invoke()
                     }
                 }
             }
-            is Backend.Local -> backend.store.postMessage(
-                threadId = threadId,
-                text = text,
-                author = author,
-                image = image,
-                audio = audio,
-                video = video,
-                sticker = sticker,
-                reply = reply,
-            )
+            is Backend.Local -> {
+                backend.store.postMessage(
+                    threadId = threadId,
+                    text = text,
+                    author = author,
+                    image = image,
+                    audio = audio,
+                    video = video,
+                    sticker = sticker,
+                    reply = reply,
+                )
+                onFinished?.invoke()
+            }
         }
+    }
+
+    private fun mapMediaUploadError(error: Throwable): Throwable {
+        val raw = error.message.orEmpty()
+        val message = when {
+            "413" in raw || "bad_size" in raw -> "Video is too large to upload"
+            "415" in raw || "bad_magic" in raw || "unsupported_type" in raw ->
+                "That video format is not supported"
+            "429" in raw || "rate_limited" in raw -> "Slow down — try again in a minute"
+            "401" in raw || "invalid_token" in raw -> "Sign in again to send video"
+            else -> error.message ?: "Video could not be sent"
+        }
+        return IllegalStateException(message, error)
     }
 
     /** Toggle one emoji reaction from this user. One emoji per user (switching replaces). */

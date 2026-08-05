@@ -13,8 +13,9 @@ iOS delivery won’t work without the key.
 
 ## Video messages
 
-Shipped: pick ≤30s MP4, upload via R2 `POST /v1/video`, play in-thread on iOS and Android.
-Caps: duration 1–30s, body ≤12 MB, rate 4 videos / uid / 10 min on the Worker.
+Shipped MVP: pick ≤30s MP4, R2 `POST /v1/video`, in-thread play.
+
+Production hardening checklist: [`VIDEO_PRODUCTION.md`](VIDEO_PRODUCTION.md).
 
 ## Account extras (not in identity slice)
 

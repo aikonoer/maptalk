@@ -134,6 +134,7 @@ fun ThreadScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val isPreparingImage by viewModel.isPreparingImage.collectAsStateWithLifecycle()
     val isPreparingVideo by viewModel.isPreparingVideo.collectAsStateWithLifecycle()
+    val videoSendPhase by viewModel.videoSendPhase.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
     var pendingImage by remember { mutableStateOf<PreparedImage?>(null) }
@@ -160,9 +161,7 @@ fun ThreadScreen(
         ActivityResultContracts.PickVisualMedia(),
     ) { uri ->
         if (uri != null) {
-            viewModel.prepareVideo(uri) { prepared ->
-                viewModel.send(text = "", author = author, video = prepared)
-            }
+            viewModel.prepareAndSendVideo(uri, author)
         }
     }
 
@@ -484,6 +483,11 @@ fun ThreadScreen(
                 showStickers = showStickers,
                 isPreparingImage = isPreparingImage,
                 isPreparingVideo = isPreparingVideo,
+                videoStatus = when (videoSendPhase) {
+                    VideoSendPhase.Compressing -> "Compressing video…"
+                    VideoSendPhase.Uploading -> "Uploading video…"
+                    VideoSendPhase.Idle -> null
+                },
                 isRecording = isRecording,
                 recordElapsedMs = recordElapsedMs,
                 onClearPending = { pendingImage = null },
@@ -831,6 +835,7 @@ private fun VideoBubble(
     width: Int?,
     height: Int?,
 ) {
+    val context = LocalContext.current
     val displayWidth = 220.dp
     val displayHeight = remember(width, height) {
         if (width != null && height != null && width > 0) {
@@ -841,6 +846,9 @@ private fun VideoBubble(
     }
     var isPlaying by remember(path) { mutableStateOf(false) }
     var videoView by remember { mutableStateOf<VideoView?>(null) }
+    val poster = remember(path, file?.absolutePath) {
+        loadVideoPoster(context, path, file)
+    }
 
     DisposableEffect(path) {
         onDispose {
@@ -870,6 +878,14 @@ private fun VideoBubble(
             },
         contentAlignment = Alignment.Center,
     ) {
+        if (!isPlaying && poster != null) {
+            Image(
+                bitmap = poster.asImageBitmap(),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
         AndroidView(
             factory = { ctx ->
                 VideoView(ctx).also { vv ->
@@ -884,13 +900,14 @@ private fun VideoBubble(
                         vv.setOnCompletionListener { isPlaying = false }
                         vv.setOnPreparedListener { mp ->
                             mp.isLooping = false
-                            // Show first frame without starting.
                             vv.seekTo(1)
                         }
                     }
                 }
             },
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer { alpha = if (isPlaying) 1f else 0f },
         )
         if (!isPlaying) {
             Icon(
@@ -913,6 +930,28 @@ private fun VideoBubble(
                 .background(Color.Black.copy(alpha = 0.55f), CircleShape)
                 .padding(horizontal = 8.dp, vertical = 4.dp),
         )
+    }
+}
+
+private fun loadVideoPoster(
+    context: android.content.Context,
+    path: String,
+    file: File?,
+): android.graphics.Bitmap? {
+    val retriever = android.media.MediaMetadataRetriever()
+    return try {
+        when {
+            path.startsWith("http://") || path.startsWith("https://") ->
+                retriever.setDataSource(path, HashMap())
+            file != null && file.exists() ->
+                retriever.setDataSource(file.absolutePath)
+            else -> return null
+        }
+        retriever.getFrameAtTime(0, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+    } catch (_: Exception) {
+        null
+    } finally {
+        runCatching { retriever.release() }
     }
 }
 
@@ -1110,6 +1149,7 @@ private fun Composer(
     showStickers: Boolean,
     isPreparingImage: Boolean,
     isPreparingVideo: Boolean,
+    videoStatus: String?,
     isRecording: Boolean,
     recordElapsedMs: Int,
     onClearPending: () -> Unit,
@@ -1137,6 +1177,17 @@ private fun Composer(
     }
 
     Column(modifier = modifier.fillMaxWidth()) {
+        videoStatus?.let { status ->
+            Text(
+                text = status,
+                style = MaterialTheme.typography.labelMedium,
+                color = MapTalkColors.Subtle,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+            )
+        }
+
         replyTarget?.let { reply ->
             Row(
                 modifier = Modifier

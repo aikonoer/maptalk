@@ -44,6 +44,12 @@ data class ThreadUiState(
     val shouldDismiss: Boolean = false,
 )
 
+enum class VideoSendPhase {
+    Idle,
+    Compressing,
+    Uploading,
+}
+
 class ThreadViewModel(
     private val threadId: String,
     private val threadRepository: ThreadRepository,
@@ -60,8 +66,12 @@ class ThreadViewModel(
     private val _isPreparingImage = MutableStateFlow(false)
     val isPreparingImage: StateFlow<Boolean> = _isPreparingImage.asStateFlow()
 
-    private val _isPreparingVideo = MutableStateFlow(false)
-    val isPreparingVideo: StateFlow<Boolean> = _isPreparingVideo.asStateFlow()
+    private val _videoSendPhase = MutableStateFlow(VideoSendPhase.Idle)
+    val videoSendPhase: StateFlow<VideoSendPhase> = _videoSendPhase.asStateFlow()
+
+    val isPreparingVideo: StateFlow<Boolean> = _videoSendPhase
+        .map { it != VideoSendPhase.Idle }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
     private val _replyTarget = MutableStateFlow<Message?>(null)
     private val _shouldDismiss = MutableStateFlow(false)
@@ -110,8 +120,12 @@ class ThreadViewModel(
         audio: PreparedAudio? = null,
         video: PreparedVideo? = null,
         sticker: String? = null,
+        onFinished: (() -> Unit)? = null,
     ) {
-        if (text.isBlank() && image == null && audio == null && video == null && sticker == null) return
+        if (text.isBlank() && image == null && audio == null && video == null && sticker == null) {
+            onFinished?.invoke()
+            return
+        }
         val target = _replyTarget.value
         val reply = target?.let {
             MessageReply(
@@ -135,8 +149,47 @@ class ThreadViewModel(
             video = video,
             sticker = sticker,
             reply = reply,
+            onFinished = onFinished,
         )
         _replyTarget.value = null
+    }
+
+    fun prepareAndSendVideo(uri: Uri, author: Author) {
+        viewModelScope.launch {
+            _videoSendPhase.value = VideoSendPhase.Compressing
+            // Transformer must hop to Main internally; keep IO for file IO around it.
+            when (val result = VideoCompressor.prepare(appContext, uri)) {
+                is VideoCompressor.Result.Err -> {
+                    _errors.emit(IllegalStateException(result.message))
+                    _videoSendPhase.value = VideoSendPhase.Idle
+                }
+                is VideoCompressor.Result.Ok -> {
+                    _videoSendPhase.value = VideoSendPhase.Uploading
+                    send(
+                        text = "",
+                        author = author,
+                        video = result.video,
+                        onFinished = { _videoSendPhase.value = VideoSendPhase.Idle },
+                    )
+                }
+            }
+        }
+    }
+
+    fun prepareImage(uri: Uri, onReady: (PreparedImage) -> Unit) {
+        viewModelScope.launch {
+            _isPreparingImage.value = true
+            val prepared = withContext(Dispatchers.IO) {
+                val bytes = readBytes(uri) ?: return@withContext null
+                ImageCompressor.prepare(bytes)
+            }
+            _isPreparingImage.value = false
+            if (prepared == null) {
+                _errors.emit(IllegalStateException("That photo could not be prepared"))
+            } else {
+                onReady(prepared)
+            }
+        }
     }
 
     fun toggleReaction(emoji: String, message: Message, author: Author) {
@@ -163,39 +216,6 @@ class ThreadViewModel(
             reason = reason,
             author = author,
         )
-    }
-
-    fun prepareImage(uri: Uri, onReady: (PreparedImage) -> Unit) {
-        viewModelScope.launch {
-            _isPreparingImage.value = true
-            val prepared = withContext(Dispatchers.IO) {
-                val bytes = readBytes(uri) ?: return@withContext null
-                ImageCompressor.prepare(bytes)
-            }
-            _isPreparingImage.value = false
-            if (prepared == null) {
-                _errors.emit(IllegalStateException("That photo could not be prepared"))
-            } else {
-                onReady(prepared)
-            }
-        }
-    }
-
-    fun prepareVideo(uri: Uri, onReady: (PreparedVideo) -> Unit) {
-        viewModelScope.launch {
-            _isPreparingVideo.value = true
-            val prepared = withContext(Dispatchers.IO) {
-                VideoCompressor.prepare(appContext, uri)
-            }
-            _isPreparingVideo.value = false
-            if (prepared == null) {
-                _errors.emit(
-                    IllegalStateException("Use an MP4 under 30 seconds and 12 MB"),
-                )
-            } else {
-                onReady(prepared)
-            }
-        }
     }
 
     companion object {

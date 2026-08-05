@@ -198,16 +198,21 @@ final class ThreadRepository {
         audio: PreparedAudio? = nil,
         video: PreparedVideo? = nil,
         sticker: String? = nil,
-        reply: MessageReply? = nil
+        reply: MessageReply? = nil,
+        onFinished: (() -> Void)? = nil
     ) {
         switch backend {
         case let .firestore(firestore, uploader):
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard image != nil || audio != nil || video != nil || sticker != nil || !trimmed.isEmpty else { return }
+            guard image != nil || audio != nil || video != nil || sticker != nil || !trimmed.isEmpty else {
+                onFinished?()
+                return
+            }
             let threadRef = firestore.collection(Fs.threads).document(threadId)
             let messageRef = threadRef.collection(Fs.messages).document()
 
             Task { [weak self] in
+                defer { onFinished?() }
                 do {
                     var fields: [String: Any] = [
                         Fs.text: sticker ?? trimmed,
@@ -270,7 +275,7 @@ final class ThreadRepository {
                     )
                     try await batch.commit()
                 } catch {
-                    self?.onError?(error)
+                    self?.onError?(Self.mapMediaUploadError(error))
                 }
             }
         case let .local(store):
@@ -284,7 +289,29 @@ final class ThreadRepository {
                 sticker: sticker,
                 reply: reply
             )
+            onFinished?()
         }
+    }
+
+    private static func mapMediaUploadError(_ error: Error) -> Error {
+        let raw = error.localizedDescription
+        let message: String
+        if raw.contains("413") || raw.contains("bad_size") {
+            message = "Video is too large to upload"
+        } else if raw.contains("415") || raw.contains("bad_magic") || raw.contains("unsupported_type") {
+            message = "That video format is not supported"
+        } else if raw.contains("429") || raw.contains("rate_limited") {
+            message = "Slow down — try again in a minute"
+        } else if raw.contains("401") || raw.contains("invalid_token") {
+            message = "Sign in again to send video"
+        } else {
+            return error
+        }
+        return NSError(
+            domain: "MapTalk.MediaUploader",
+            code: (error as NSError).code,
+            userInfo: [NSLocalizedDescriptionKey: message]
+        )
     }
 
     /// Toggle one emoji reaction from this user. One emoji per user (switching replaces).

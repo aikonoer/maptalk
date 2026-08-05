@@ -14,7 +14,7 @@ struct ThreadScreen: View {
     @State private var videoPickerItem: PhotosPickerItem?
     @State private var pendingImage: UIImage?
     @State private var isPreparingImage = false
-    @State private var isPreparingVideo = false
+    @State private var videoSendPhase: VideoSendPhase = .idle
     @State private var showStickers = false
     @State private var longPressTarget: Message?
     @State private var longPressFrame: CGRect = .zero
@@ -38,6 +38,8 @@ struct ThreadScreen: View {
             )
         )
     }
+
+    private var isPreparingVideo: Bool { videoSendPhase != .idle }
 
     private var trimmedDraft: String {
         draft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -307,6 +309,15 @@ struct ThreadScreen: View {
                 .padding(.top, 10)
             }
 
+            if let status = videoSendPhase.statusCopy {
+                Text(status)
+                    .font(.meta)
+                    .foregroundStyle(Theme.subtle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 8)
+            }
+
             if showStickers {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 12) {
@@ -476,21 +487,27 @@ struct ThreadScreen: View {
     }
 
     private func loadVideoItem(_ item: PhotosPickerItem) async {
-        isPreparingVideo = true
-        defer {
-            isPreparingVideo = false
-            videoPickerItem = nil
-        }
+        videoSendPhase = .compressing
+        defer { videoPickerItem = nil }
         guard let movie = try? await item.loadTransferable(type: PickedMovie.self) else {
-            model.errorMessage = "That video could not be loaded"
+            model.errorMessage = VideoCompressor.PrepareError.unreadable.localizedDescription
+            videoSendPhase = .idle
             return
         }
         defer { try? FileManager.default.removeItem(at: movie.url) }
-        guard let prepared = await VideoCompressor.prepare(from: movie.url) else {
-            model.errorMessage = "Use a video under 30 seconds"
-            return
+        switch await VideoCompressor.prepare(from: movie.url) {
+        case .failure(let error):
+            model.errorMessage = error.localizedDescription
+            videoSendPhase = .idle
+        case .success(let prepared):
+            videoSendPhase = .uploading
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                model.send("", as: author, video: prepared) {
+                    cont.resume()
+                }
+            }
+            videoSendPhase = .idle
         }
-        model.send("", as: author, video: prepared)
     }
 
     private func scroll(_ proxy: ScrollViewProxy, animated: Bool) {
@@ -1146,6 +1163,20 @@ private struct FullscreenImageViewer: View {
     }
 }
 
+private enum VideoSendPhase {
+    case idle
+    case compressing
+    case uploading
+
+    var statusCopy: String? {
+        switch self {
+        case .idle: nil
+        case .compressing: "Compressing video…"
+        case .uploading: "Uploading video…"
+        }
+    }
+}
+
 private struct VideoBubble: View {
     let path: String
     let durationMs: Int
@@ -1154,6 +1185,7 @@ private struct VideoBubble: View {
 
     @State private var player: AVPlayer?
     @State private var isPlaying = false
+    @State private var poster: UIImage?
 
     private var mediaURL: URL? {
         if path.hasPrefix("http://") || path.hasPrefix("https://") {
@@ -1168,7 +1200,13 @@ private struct VideoBubble: View {
 
             if let player, isPlaying {
                 VideoPlayer(player: player)
-            } else {
+            } else if let poster {
+                Image(uiImage: poster)
+                    .resizable()
+                    .scaledToFill()
+            }
+
+            if !isPlaying {
                 Image(systemName: "play.circle.fill")
                     .font(.system(size: 44))
                     .foregroundStyle(.white.opacity(0.9))
@@ -1187,6 +1225,7 @@ private struct VideoBubble: View {
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .onTapGesture { toggle() }
+        .task(id: path) { await loadPoster() }
         .onDisappear { stop() }
         .accessibilityLabel("Video")
         .accessibilityAddTraits(.isButton)
@@ -1196,6 +1235,17 @@ private struct VideoBubble: View {
     private var displayHeight: CGFloat {
         guard let width, let height, width > 0 else { return 160 }
         return min(280, displayWidth * CGFloat(height) / CGFloat(width))
+    }
+
+    private func loadPoster() async {
+        guard poster == nil, let url = mediaURL else { return }
+        let asset = AVURLAsset(url: url)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 440, height: 440)
+        let time = CMTime(seconds: 0.05, preferredTimescale: 600)
+        guard let cg = try? await generator.image(at: time).image else { return }
+        poster = UIImage(cgImage: cg)
     }
 
     private func toggle() {

@@ -86,10 +86,14 @@ final class ThreadModel {
         image: PreparedImage? = nil,
         audio: PreparedAudio? = nil,
         video: PreparedVideo? = nil,
-        sticker: String? = nil
+        sticker: String? = nil,
+        onFinished: (() -> Void)? = nil
     ) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard image != nil || audio != nil || video != nil || sticker != nil || !trimmed.isEmpty else { return }
+        guard image != nil || audio != nil || video != nil || sticker != nil || !trimmed.isEmpty else {
+            onFinished?()
+            return
+        }
         let reply = replyTarget.map {
             MessageReply(
                 id: $0.id,
@@ -105,7 +109,8 @@ final class ThreadModel {
             audio: audio,
             video: video,
             sticker: sticker,
-            reply: reply
+            reply: reply,
+            onFinished: onFinished
         )
         replyTarget = nil
     }
