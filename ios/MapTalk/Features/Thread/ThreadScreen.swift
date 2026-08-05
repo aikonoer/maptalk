@@ -14,6 +14,8 @@ struct ThreadScreen: View {
     @State private var isPreparingImage = false
     @State private var showStickers = false
     @State private var longPressTarget: Message?
+    @State private var longPressFrame: CGRect = .zero
+    @State private var bubbleFrames: [String: CGRect] = [:]
     @State private var reportTarget: ReportSheetTarget?
     @State private var blockConfirm: BlockConfirm?
     @State private var reportThanks = false
@@ -87,32 +89,29 @@ struct ThreadScreen: View {
                         message: message,
                         isMine: message.authorId == author.uid,
                         myUid: author.uid,
+                        anchor: bubbleFrames[message.id] ?? longPressFrame,
                         onReact: { emoji in
                             model.toggleReaction(emoji, on: message, as: author)
-                            longPressTarget = nil
                         },
                         onReply: {
                             model.setReply(to: message)
-                            longPressTarget = nil
                         },
                         onReport: {
                             reportTarget = .message(message)
-                            longPressTarget = nil
                         },
                         onBlock: {
                             blockConfirm = BlockConfirm(
                                 uid: message.authorId,
                                 name: message.authorName
                             )
-                            longPressTarget = nil
                         },
-                        onDismiss: { longPressTarget = nil }
+                        onDismiss: dismissLongPress
                     )
-                    .transition(.opacity)
                     .zIndex(20)
                 }
             }
-            .animation(.easeOut(duration: 0.18), value: longPressTarget?.id)
+            .coordinateSpace(name: "thread")
+            .onPreferenceChange(BubbleFrameKey.self) { bubbleFrames = $0 }
             .sheet(item: $reportTarget) { target in
                 ReportReasonSheet { reason in
                     switch target {
@@ -222,7 +221,12 @@ struct ThreadScreen: View {
                                 myUid: author.uid,
                                 startsRun: startsRun(at: index),
                                 endsRun: endsRun(at: index),
-                                onLongPress: { longPressTarget = message },
+                                isLifted: longPressTarget?.id == message.id,
+                                onLongPress: {
+                                    longPressFrame = bubbleFrames[message.id] ?? .zero
+                                    isComposing = false
+                                    longPressTarget = message
+                                },
                                 onToggleReaction: { emoji in
                                     model.toggleReaction(emoji, on: message, as: author)
                                 }
@@ -465,6 +469,19 @@ struct ThreadScreen: View {
         guard index < model.messages.count - 1 else { return true }
         return !model.messages[index + 1].follows(model.messages[index])
     }
+
+    private func dismissLongPress() {
+        longPressTarget = nil
+        longPressFrame = .zero
+    }
+}
+
+private struct BubbleFrameKey: PreferenceKey {
+    nonisolated(unsafe) static var defaultValue: [String: CGRect] = [:]
+
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
 }
 
 private extension Message {
@@ -523,50 +540,89 @@ private struct ReportReasonSheet: View {
     }
 }
 
-/// Facebook-style long-press: dimmed scrim, reaction pill, action list.
+/// Facebook-style long-press: photo stays put; scrim + chrome animate around it.
 private struct MessageLongPressOverlay: View {
     let message: Message
     let isMine: Bool
     let myUid: String
+    let anchor: CGRect
     let onReact: (String) -> Void
     let onReply: () -> Void
     let onReport: () -> Void
     let onBlock: () -> Void
     let onDismiss: () -> Void
 
-    var body: some View {
-        ZStack {
-            Color.black.opacity(0.55)
-                .ignoresSafeArea()
-                .onTapGesture(perform: onDismiss)
+    @State private var scrim = false
+    @State private var chromeIn = false
+    @State private var emojiPop: [Bool]
+    @State private var isExiting = false
 
-            VStack(spacing: 14) {
-                Spacer(minLength: 40)
-
-                reactionBar
-                    .scaleEffect(1)
-                    .transition(.scale.combined(with: .opacity))
-
-                previewBubble
-                    .frame(maxWidth: 280)
-                    .frame(maxWidth: .infinity, alignment: isMine ? .trailing : .leading)
-                    .padding(.horizontal, 28)
-
-                actionMenu
-                    .frame(maxWidth: 260)
-                    .frame(maxWidth: .infinity, alignment: isMine ? .trailing : .leading)
-                    .padding(.horizontal, 28)
-
-                Spacer(minLength: 80)
-            }
-        }
+    init(
+        message: Message,
+        isMine: Bool,
+        myUid: String,
+        anchor: CGRect,
+        onReact: @escaping (String) -> Void,
+        onReply: @escaping () -> Void,
+        onReport: @escaping () -> Void,
+        onBlock: @escaping () -> Void,
+        onDismiss: @escaping () -> Void
+    ) {
+        self.message = message
+        self.isMine = isMine
+        self.myUid = myUid
+        self.anchor = anchor
+        self.onReact = onReact
+        self.onReply = onReply
+        self.onReport = onReport
+        self.onBlock = onBlock
+        self.onDismiss = onDismiss
+        _emojiPop = State(initialValue: Array(repeating: false, count: ReactionEmoji.allCases.count))
     }
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Color.black.opacity(scrim ? 0.55 : 0)
+                .ignoresSafeArea()
+                .onTapGesture(perform: dismissAnimated)
+
+            // Photo never moves — pinned to the bubble's real frame.
+            liftedMessage
+                .shadow(color: .black.opacity(chromeIn ? 0.4 : 0), radius: chromeIn ? 18 : 0, y: chromeIn ? 10 : 0)
+                .offset(x: anchor.minX, y: anchor.minY)
+                .allowsHitTesting(false)
+
+            reactionBar
+                .fixedSize()
+                .scaleEffect(chromeIn ? 1 : 0.82)
+                .opacity(chromeIn ? 1 : 0)
+                .offset(
+                    x: anchor.midX - reactionBarWidth / 2,
+                    y: anchor.minY - 58
+                )
+
+            actionMenu
+                .fixedSize()
+                .scaleEffect(chromeIn ? 1 : 0.94, anchor: isMine ? .topTrailing : .topLeading)
+                .opacity(chromeIn ? 1 : 0)
+                .offset(
+                    x: isMine ? anchor.maxX - menuWidth : anchor.minX,
+                    y: anchor.maxY + 10
+                )
+        }
+        .onAppear(perform: playEnter)
+    }
+
+    // Approximate widths so we can center chrome without a second layout pass.
+    private var reactionBarWidth: CGFloat { 286 }
+    private var menuWidth: CGFloat { isMine ? 160 : 220 }
 
     private var reactionBar: some View {
         HStack(spacing: 10) {
-            ForEach(ReactionEmoji.allCases, id: \.rawValue) { reaction in
+            ForEach(Array(ReactionEmoji.allCases.enumerated()), id: \.element.rawValue) { index, reaction in
                 Button {
                     onReact(reaction.rawValue)
+                    dismissAnimated()
                 } label: {
                     Text(reaction.rawValue)
                         .font(.system(size: 30))
@@ -577,6 +633,8 @@ private struct MessageLongPressOverlay: View {
                                 : Color.clear,
                             in: Circle()
                         )
+                        .scaleEffect(emojiPop.indices.contains(index) && emojiPop[index] ? 1 : 0.4)
+                        .opacity(emojiPop.indices.contains(index) && emojiPop[index] ? 1 : 0)
                 }
                 .buttonStyle(.pressable)
             }
@@ -591,55 +649,93 @@ private struct MessageLongPressOverlay: View {
     }
 
     @ViewBuilder
-    private var previewBubble: some View {
+    private var liftedMessage: some View {
         if message.isSticker {
             Text(message.text)
-                .font(.system(size: 64))
-                .padding(8)
+                .font(.system(size: 56))
+                .padding(4)
         } else {
+            let imageOnly = message.hasImage && message.text.isEmpty && message.reply == nil
             VStack(alignment: .leading, spacing: 6) {
-                if message.hasImage {
-                    Label("Photo", systemImage: "photo")
-                        .font(.subheadline)
-                        .foregroundStyle(isMine ? Color.white.opacity(0.85) : Theme.subtle)
+                if let reply = message.reply {
+                    HStack(spacing: 8) {
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(isMine ? Color.white.opacity(0.7) : Theme.accent)
+                            .frame(width: 3)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(reply.authorName)
+                                .font(.meta)
+                                .foregroundStyle(isMine ? Color.white.opacity(0.85) : Theme.accent)
+                            Text(reply.text)
+                                .font(.subheadline)
+                                .foregroundStyle(isMine ? Color.white.opacity(0.75) : Theme.subtle)
+                                .lineLimit(2)
+                        }
+                    }
+                    .padding(8)
+                    .background(
+                        (isMine ? Color.white.opacity(0.12) : Theme.base.opacity(0.55)),
+                        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    )
                 }
-                if message.hasVoice {
-                    Label("Voice note", systemImage: "waveform")
-                        .font(.subheadline)
-                        .foregroundStyle(isMine ? Color.white.opacity(0.85) : Theme.subtle)
+
+                if message.hasImage, let path = message.imagePath {
+                    MessageImage(
+                        path: path,
+                        width: message.imageWidth,
+                        height: message.imageHeight,
+                        allowsFullscreen: false
+                    )
                 }
+
+                if message.hasVoice, let path = message.audioPath {
+                    VoiceBubble(
+                        path: path,
+                        durationMs: message.audioDurationMs ?? 0,
+                        isMine: isMine
+                    )
+                }
+
                 if !message.text.isEmpty, !message.hasVoice {
                     Text(message.text)
                         .font(.body)
                         .foregroundStyle(isMine ? .white : Theme.text)
-                        .lineLimit(4)
+                        .lineLimit(8)
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
+            .padding(.horizontal, imageOnly ? 4 : 12)
+            .padding(.vertical, imageOnly ? 4 : 9)
             .background(
                 isMine ? Theme.accent : Theme.raised,
                 in: RoundedRectangle(cornerRadius: Theme.Radius.bubble, style: .continuous)
             )
-            .shadow(color: .black.opacity(0.3), radius: 12, y: 6)
         }
     }
 
     private var actionMenu: some View {
         VStack(spacing: 0) {
-            menuRow(title: "Reply", systemImage: "arrowshape.turn.up.left", action: onReply)
+            menuRow(title: "Reply", systemImage: "arrowshape.turn.up.left") {
+                onReply()
+                dismissAnimated()
+            }
             if !isMine {
                 Divider().overlay(Theme.hairline)
-                menuRow(title: "Report", systemImage: "flag", action: onReport)
+                menuRow(title: "Report", systemImage: "flag") {
+                    onReport()
+                    dismissAnimated()
+                }
                 Divider().overlay(Theme.hairline)
                 menuRow(
                     title: "Block \(message.authorName)",
                     systemImage: "hand.raised",
-                    tint: Theme.danger,
-                    action: onBlock
-                )
+                    tint: Theme.danger
+                ) {
+                    onBlock()
+                    dismissAnimated()
+                }
             }
         }
+        .frame(width: menuWidth, alignment: .leading)
         .background(Theme.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -670,6 +766,33 @@ private struct MessageLongPressOverlay: View {
         }
         .buttonStyle(.plain)
     }
+
+    private func playEnter() {
+        withAnimation(.easeOut(duration: 0.22)) { scrim = true }
+        withAnimation(.spring(response: 0.36, dampingFraction: 0.78)) {
+            chromeIn = true
+        }
+        for index in ReactionEmoji.allCases.indices {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.55).delay(0.04 + Double(index) * 0.028)) {
+                if emojiPop.indices.contains(index) {
+                    emojiPop[index] = true
+                }
+            }
+        }
+    }
+
+    private func dismissAnimated() {
+        guard !isExiting else { return }
+        isExiting = true
+        withAnimation(.easeOut(duration: 0.2)) {
+            chromeIn = false
+            scrim = false
+            emojiPop = Array(repeating: false, count: emojiPop.count)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
+            onDismiss()
+        }
+    }
 }
 
 // MARK: - Rows
@@ -680,6 +803,7 @@ private struct MessageRow: View {
     let myUid: String
     let startsRun: Bool
     let endsRun: Bool
+    var isLifted: Bool = false
     let onLongPress: () -> Void
     let onToggleReaction: (String) -> Void
 
@@ -702,10 +826,19 @@ private struct MessageRow: View {
                 }
 
                 bubble
+                    .background {
+                        GeometryReader { geo in
+                            Color.clear.preference(
+                                key: BubbleFrameKey.self,
+                                value: [message.id: geo.frame(in: .named("thread"))]
+                            )
+                        }
+                    }
                     .onLongPressGesture(minimumDuration: 0.35) {
                         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                         onLongPress()
                     }
+                    .opacity(isLifted ? 0 : 1)
 
                 if !message.reactions.isEmpty {
                     ReactionStrip(
@@ -713,6 +846,7 @@ private struct MessageRow: View {
                         myUid: myUid,
                         onToggle: onToggleReaction
                     )
+                    .opacity(isLifted ? 0 : 1)
                 }
 
                 if endsRun {
@@ -720,6 +854,7 @@ private struct MessageRow: View {
                         .font(.meta)
                         .foregroundStyle(Theme.faint)
                         .padding(.horizontal, 2)
+                        .opacity(isLifted ? 0 : 1)
                 }
             }
 
@@ -830,6 +965,7 @@ private struct MessageImage: View {
     let path: String
     let width: Int?
     let height: Int?
+    var allowsFullscreen: Bool = true
 
     @State private var showFullscreen = false
     @State private var remoteImage: UIImage?
@@ -865,7 +1001,10 @@ private struct MessageImage: View {
         .frame(width: displayWidth, height: displayHeight)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .onTapGesture { showFullscreen = true }
+        .onTapGesture {
+            guard allowsFullscreen else { return }
+            showFullscreen = true
+        }
         .task(id: path) {
             guard isRemote, remoteImage == nil, let url = URL(string: path) else { return }
             if let (data, _) = try? await URLSession.shared.data(from: url) {

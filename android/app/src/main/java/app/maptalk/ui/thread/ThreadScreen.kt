@@ -10,6 +10,12 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
@@ -27,6 +33,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -63,12 +70,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -78,6 +88,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import kotlinx.coroutines.launch
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -231,22 +242,19 @@ fun ThreadScreen(
             message = message,
             isMine = message.authorId == author.uid,
             myUid = author.uid,
+            resolveMedia = viewModel::mediaFile,
             onDismiss = { longPressTarget = null },
             onReact = { emoji ->
                 viewModel.toggleReaction(emoji, message, author)
-                longPressTarget = null
             },
             onReply = {
                 viewModel.setReply(message)
-                longPressTarget = null
             },
             onReport = {
                 reportTarget = ReportTarget.Message(message)
-                longPressTarget = null
             },
             onBlock = {
                 blockConfirm = message.authorId to message.authorName
-                longPressTarget = null
             },
         )
     }
@@ -441,6 +449,7 @@ fun ThreadScreen(
                                 myUid = author.uid,
                                 startsRun = startsRun(state.messages, index),
                                 endsRun = endsRun(state.messages, index),
+                                isLifted = longPressTarget?.id == message.id,
                                 resolveMedia = viewModel::mediaFile,
                                 onImageClick = { path -> fullscreenPath = path },
                                 onReply = { viewModel.setReply(message) },
@@ -561,6 +570,7 @@ private fun MessageRow(
     myUid: String,
     startsRun: Boolean,
     endsRun: Boolean,
+    isLifted: Boolean = false,
     resolveMedia: (String) -> File?,
     onImageClick: (String) -> Unit,
     onReply: () -> Unit,
@@ -571,7 +581,8 @@ private fun MessageRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = if (startsRun) 12.dp else 2.dp),
+            .padding(top = if (startsRun) 12.dp else 2.dp)
+            .graphicsLayer { alpha = if (isLifted) 0f else 1f },
         horizontalArrangement = if (isMine) Arrangement.End else Arrangement.Start,
     ) {
         if (!isMine) {
@@ -1235,14 +1246,95 @@ private fun MessageLongPressDialog(
     message: Message,
     isMine: Boolean,
     myUid: String,
+    resolveMedia: (String) -> File?,
     onDismiss: () -> Unit,
     onReact: (String) -> Unit,
     onReply: () -> Unit,
     onReport: () -> Unit,
     onBlock: () -> Unit,
 ) {
+    val scope = rememberCoroutineScope()
+    var visible by remember { mutableStateOf(false) }
+    val scrim by animateFloatAsState(
+        targetValue = if (visible) 0.58f else 0f,
+        animationSpec = tween(280, easing = FastOutSlowInEasing),
+        label = "scrim",
+    )
+    val reactionScale = remember { Animatable(0.55f) }
+    val reactionAlpha = remember { Animatable(0f) }
+    val previewScale = remember { Animatable(1f) }
+    val menuScale = remember { Animatable(0.92f) }
+    val menuAlpha = remember { Animatable(0f) }
+    val menuOffset = remember { Animatable(-8f) }
+    val emojiScales = remember {
+        ReactionEmoji.ALL.map { Animatable(0.4f) }
+    }
+    val imageOnly = message.hasImage && message.text.isEmpty() && message.reply == null
+
+    fun playExit(then: () -> Unit) {
+        scope.launch {
+            visible = false
+            launch {
+                reactionScale.animateTo(0.7f, tween(180, easing = FastOutSlowInEasing))
+            }
+            launch {
+                reactionAlpha.animateTo(0f, tween(180, easing = FastOutSlowInEasing))
+            }
+            launch {
+                previewScale.animateTo(1f, spring(dampingRatio = 0.9f, stiffness = Spring.StiffnessMediumLow))
+            }
+            launch {
+                menuScale.animateTo(0.94f, tween(180, easing = FastOutSlowInEasing))
+            }
+            launch {
+                menuAlpha.animateTo(0f, tween(180, easing = FastOutSlowInEasing))
+            }
+            launch {
+                menuOffset.animateTo(-6f, tween(180, easing = FastOutSlowInEasing))
+            }
+            emojiScales.forEach {
+                launch { it.animateTo(0.5f, tween(140, easing = FastOutSlowInEasing)) }
+            }
+            delay(300)
+            then()
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        visible = true
+        launch {
+            previewScale.animateTo(1.05f, spring(dampingRatio = 0.78f, stiffness = Spring.StiffnessMedium))
+        }
+        delay(40)
+        launch {
+            reactionScale.animateTo(1f, spring(dampingRatio = 0.72f, stiffness = Spring.StiffnessMedium))
+        }
+        launch {
+            reactionAlpha.animateTo(1f, tween(160))
+        }
+        delay(40)
+        launch {
+            menuScale.animateTo(1f, spring(dampingRatio = 0.78f, stiffness = Spring.StiffnessMedium))
+        }
+        launch {
+            menuAlpha.animateTo(1f, tween(180))
+        }
+        launch {
+            menuOffset.animateTo(0f, spring(dampingRatio = 0.78f, stiffness = Spring.StiffnessMedium))
+        }
+        ReactionEmoji.ALL.indices.forEach { index ->
+            launch {
+                delay(60L + index * 30L)
+                emojiScales[index].animateTo(
+                    1f,
+                    spring(dampingRatio = 0.55f, stiffness = Spring.StiffnessMediumLow),
+                )
+            }
+        }
+    }
+
     Dialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { playExit(onDismiss) },
         properties = DialogProperties(
             usePlatformDefaultWidth = false,
             dismissOnBackPress = true,
@@ -1252,41 +1344,54 @@ private fun MessageLongPressDialog(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.55f))
-                .clickable(onClick = onDismiss),
+                .background(Color.Black.copy(alpha = scrim))
+                .clickable { playExit(onDismiss) },
             contentAlignment = Alignment.Center,
         ) {
             Column(
                 horizontalAlignment = if (isMine) Alignment.End else Alignment.Start,
-                verticalArrangement = Arrangement.spacedBy(14.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 28.dp),
+                    .padding(horizontal = 28.dp)
+                    .clickable(enabled = false) {},
             ) {
                 Surface(
                     shape = CircleShape,
                     color = MapTalkColors.Surface.copy(alpha = 0.95f),
                     border = BorderStroke(1.dp, MapTalkColors.Hairline),
                     shadowElevation = 12.dp,
-                    modifier = Modifier.align(Alignment.CenterHorizontally),
+                    modifier = Modifier
+                        .graphicsLayer {
+                            scaleX = reactionScale.value
+                            scaleY = reactionScale.value
+                            alpha = reactionAlpha.value
+                            translationY = (1f - reactionAlpha.value) * 18f
+                        },
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        ReactionEmoji.ALL.forEach { emoji ->
+                        ReactionEmoji.ALL.forEachIndexed { index, emoji ->
                             val mine = message.reacted(by = myUid, emoji = emoji)
                             Text(
                                 text = emoji,
                                 fontSize = 28.sp,
                                 modifier = Modifier
+                                    .graphicsLayer {
+                                        val s = emojiScales[index].value
+                                        scaleX = s
+                                        scaleY = s
+                                        alpha = s.coerceIn(0f, 1f)
+                                    }
                                     .clip(CircleShape)
                                     .background(
                                         if (mine) MapTalkColors.Accent.copy(alpha = 0.25f)
                                         else Color.Transparent,
                                     )
-                                    .clickable { onReact(emoji) }
+                                    .clickable { onReact(emoji); playExit(onDismiss) }
                                     .padding(6.dp),
                             )
                         }
@@ -1297,21 +1402,51 @@ private fun MessageLongPressDialog(
                     shape = RoundedCornerShape(18.dp),
                     color = if (isMine) MapTalkColors.Accent else MapTalkColors.Raised,
                     contentColor = if (isMine) Color.White else MapTalkColors.Text,
-                    shadowElevation = 10.dp,
-                    modifier = Modifier.widthIn(max = 280.dp),
+                    shadowElevation = 16.dp,
+                    modifier = Modifier
+                        .widthIn(max = 280.dp)
+                        .graphicsLayer {
+                            scaleX = previewScale.value
+                            scaleY = previewScale.value
+                        },
                 ) {
-                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
-                        when {
-                            message.isSticker -> Text(message.text, fontSize = 48.sp)
-                            message.hasVoice -> Text("Voice note", style = MaterialTheme.typography.bodyMedium)
-                            message.hasImage && message.text.isEmpty() ->
-                                Text("Photo", style = MaterialTheme.typography.bodyMedium)
-                            else -> Text(
-                                text = message.text.ifEmpty { "Photo" },
-                                style = MaterialTheme.typography.bodyLarge,
-                                maxLines = 4,
-                                overflow = TextOverflow.Ellipsis,
-                            )
+                    when {
+                        message.isSticker -> Text(
+                            text = message.text,
+                            fontSize = 48.sp,
+                            modifier = Modifier.padding(8.dp),
+                        )
+                        else -> Column(
+                            modifier = Modifier.padding(
+                                horizontal = if (imageOnly) 4.dp else 12.dp,
+                                vertical = if (imageOnly) 4.dp else 9.dp,
+                            ),
+                        ) {
+                            if (message.hasImage) {
+                                message.imagePath?.let { path ->
+                                    val remote = path.takeIf {
+                                        it.startsWith("http://") || it.startsWith("https://")
+                                    }
+                                    MessageImage(
+                                        file = if (remote == null) resolveMedia(path) else null,
+                                        remoteUrl = remote,
+                                        width = message.imageWidth,
+                                        height = message.imageHeight,
+                                        onClick = {},
+                                    )
+                                }
+                            }
+                            if (message.hasVoice) {
+                                Text("Voice note", style = MaterialTheme.typography.bodyMedium)
+                            }
+                            if (message.text.isNotEmpty() && !message.hasVoice) {
+                                Text(
+                                    text = message.text,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    maxLines = 8,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
                         }
                     }
                 }
@@ -1321,19 +1456,38 @@ private fun MessageLongPressDialog(
                     color = MapTalkColors.Surface,
                     border = BorderStroke(1.dp, MapTalkColors.Hairline),
                     shadowElevation = 14.dp,
-                    modifier = Modifier.widthIn(max = 260.dp),
+                    modifier = Modifier
+                        .widthIn(max = 260.dp)
+                        .offset(y = menuOffset.value.dp)
+                        .graphicsLayer {
+                            scaleX = menuScale.value
+                            scaleY = menuScale.value
+                            alpha = menuAlpha.value
+                            transformOrigin = TransformOrigin(
+                                pivotFractionX = if (isMine) 1f else 0f,
+                                pivotFractionY = 0f,
+                            )
+                        },
                 ) {
                     Column {
-                        LongPressMenuRow("Reply", onClick = onReply)
+                        LongPressMenuRow("Reply") {
+                            onReply()
+                            playExit(onDismiss)
+                        }
                         if (!isMine) {
                             HorizontalDivider(color = MapTalkColors.Hairline)
-                            LongPressMenuRow("Report", onClick = onReport)
+                            LongPressMenuRow("Report") {
+                                onReport()
+                                playExit(onDismiss)
+                            }
                             HorizontalDivider(color = MapTalkColors.Hairline)
                             LongPressMenuRow(
                                 title = "Block ${message.authorName}",
                                 tint = MapTalkColors.Danger,
-                                onClick = onBlock,
-                            )
+                            ) {
+                                onBlock()
+                                playExit(onDismiss)
+                            }
                         }
                     }
                 }
