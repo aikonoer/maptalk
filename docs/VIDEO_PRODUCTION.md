@@ -2,6 +2,8 @@
 
 Track hardening of ≤30s video messages beyond the first ship (`d63a49e`).
 
+Parked follow-ups (S3 secrets, moderation, APNs, accounts): [`PARKING.md`](PARKING.md).
+
 ## Envelope (shared)
 
 Target for both platforms before upload:
@@ -32,21 +34,23 @@ Target for both platforms before upload:
 - [x] Cancel in-flight prepare/upload when leaving the thread
 - [x] Prefer streaming / signed PUT over full-body buffers (Worker + device RAM)
   - Video: clients prefer `POST /v1/video/presign` → direct R2 PUT → `POST /v1/video/confirm`
-  - Falls back to Worker `PUT /v1/video` when R2 S3 secrets are unset
+  - Falls back to Worker `PUT /v1/video` when R2 S3 secrets are unset ([parked](PARKING.md))
   - Images/audio still POST buffered (small caps)
+
 ## 3. Abuse & integrity
 
 - [x] Server-side duration/size check from the file (not only client-written Firestore fields)
   - Worker parses `mvhd` duration; optional `X-MapTalk-Duration-Ms` cross-check
 - [x] Durable rate limits (KV / Durable Object), not per-isolate maps
 - [x] Constrain `videoPath` to our public media base + expected key shape (Firestore rules)
-- [ ] Optional: async moderation / hash later
+- [ ] Optional: async moderation / hash later ([parked](PARKING.md))
 
 ## 4. Playback UX
 
 - [x] Poster / first-frame thumbnail on bubbles (no black rectangle before play)
 - [x] Robust players (ExoPlayer / polished AVPlayer): buffering, pause others, mute
-  - Shared mute toggle; optimistic outgoing bubble + composer thumbnail while uploading- [x] Disk cache for recent clips
+  - Shared mute toggle; optimistic outgoing bubble + composer thumbnail while uploading
+- [x] Disk cache for recent clips
 - [x] Optional cellular / large-size warning (≥5 MB or metered/cellular)
 
 ## 5. Cost & CDN
@@ -60,8 +64,7 @@ Target for both platforms before upload:
 
 ## 6. Ship
 
-- [x] Push `main` + store release with Live video
-  - Partial: `main` pushed; store release still pending
+- [x] Code on `main` with Live video (store release still pending)
 - [x] Metrics: upload success %, p95 duration/size, Worker 413/415/429
   - Daily status counters + rolling p50/p95 size (and video duration) on `/health`
 - [ ] Device matrix (run on a physical phone before store submit):
@@ -72,18 +75,15 @@ Target for both platforms before upload:
   - [ ] Offline / airplane during upload → clear error + retry
   - [ ] Cellular / ≥5 MB confirm dialog
   - [ ] Pause-others when a second bubble plays
+  - [ ] Mute / unmute on a playing bubble
+  - [ ] Optimistic “Sending…” bubble + composer thumbnail while uploading
   - [ ] Home-screen relaunch stays Live (iOS Live config / Android `-Pmaptalk.mode=live`)
+- [ ] App Store / Play release ([parked until matrix done](PARKING.md))
 
 ---
 
-## Still open
+## Next
 
-- True client→R2 presigned PUT — code ready; needs R2 S3 API token secrets on Worker:
-  - `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ACCOUNT_ID`
-  - Optional `R2_BUCKET_NAME` (defaults to `maptalk-media`)
-  - Until secrets are set, clients fall back to legacy Worker `PUT /v1/video`
-- Device matrix checkboxes + App Store / Play release
+**Device matrix** on a physical phone (checklist above), then store submit.
 
-## Current slice
-
-Video send UX (composer thumbnail, optimistic bubble, mute) + client→R2 presign path.
+Everything else is in [`PARKING.md`](PARKING.md).
