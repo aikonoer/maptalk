@@ -31,6 +31,10 @@ class AppContainer(context: Context) {
 
     val isLocalDemo: Boolean = BuildConfig.MAPTALK_MODE == "local"
 
+    /** Open the map on the seeded Cebu neighbourhood (local demo or live Debug). */
+    val opensOnCebu: Boolean =
+        isLocalDemo || BuildConfig.MAPTALK_MODE == "live" || BuildConfig.MAPTALK_MODE == "emulator"
+
     private val localStore: LocalDemoStore? by lazy {
         if (isLocalDemo) LocalDemoStore(appContext) else null
     }

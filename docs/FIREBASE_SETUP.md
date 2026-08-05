@@ -27,8 +27,18 @@ Local SDK configs are already downloaded (gitignored):
 
 Emulator / mock-data still uses Firebase Storage emulator. Local demo keeps files on device.
 
+## Seed sample chats (live)
+
+```bash
+node scripts/seed-live.mjs
+```
+
+Writes the Cebu neighbourhood (plus a couple of other cities) into `maptalk-app` so Live
+opens with bubbles to tap. Safe to re-run; document IDs are stable.
+
 ## Optional later
 
 - Firebase Storage / Blaze — only if you want Storage as a fallback; **not required** for R2 photos  
 - Custom domain instead of `*.r2.dev` / `*.workers.dev`  
 - Deploy Worker updates: `cd workers/media && npm run deploy`
+- `git push` when you want GitHub to catch up (several commits ahead of origin)

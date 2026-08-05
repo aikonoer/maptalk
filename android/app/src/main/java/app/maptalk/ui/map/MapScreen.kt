@@ -76,7 +76,7 @@ fun MapScreen(
 
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
-    val startsInDemo = container.isLocalDemo
+    val startsInDemo = container.opensOnCebu
     val cameraPositionState = rememberCameraPositionState {
         position = if (startsInDemo) {
             CameraPosition.fromLatLngZoom(CebuCenter, NEARBY_ZOOM)
