@@ -274,7 +274,105 @@ describe('messages', () => {
     );
   });
 
-  it('rejects editing or deleting a message', async () => {
+  it('accepts a voice note with empty text and a duration', async () => {
+    const threadId = await seedThread();
+    const db = testEnv.authenticatedContext(ALICE).firestore();
+    await assertSucceeds(
+      setDoc(doc(db, 'threads', threadId, 'messages', 'voice'), {
+        text: '',
+        authorId: ALICE,
+        authorName: 'Alice',
+        createdAt: serverTimestamp(),
+        messageKind: 'voice',
+        audioPath: 'https://example.com/note.m4a',
+        audioDurationMs: 4_200,
+      }),
+    );
+  });
+
+  it('rejects a voice note with caption text or an overlong duration', async () => {
+    const threadId = await seedThread();
+    const db = testEnv.authenticatedContext(ALICE).firestore();
+    await assertFails(
+      setDoc(doc(db, 'threads', threadId, 'messages', 'voice-text'), {
+        text: 'hello',
+        authorId: ALICE,
+        authorName: 'Alice',
+        createdAt: serverTimestamp(),
+        messageKind: 'voice',
+        audioPath: 'https://example.com/note.m4a',
+        audioDurationMs: 1_000,
+      }),
+    );
+    await assertFails(
+      setDoc(doc(db, 'threads', threadId, 'messages', 'voice-long'), {
+        text: '',
+        authorId: ALICE,
+        authorName: 'Alice',
+        createdAt: serverTimestamp(),
+        messageKind: 'voice',
+        audioPath: 'https://example.com/note.m4a',
+        audioDurationMs: 60_001,
+      }),
+    );
+  });
+
+  it('accepts a sticker glyph and rejects oversized sticker text', async () => {
+    const threadId = await seedThread();
+    const db = testEnv.authenticatedContext(ALICE).firestore();
+    await assertSucceeds(
+      setDoc(doc(db, 'threads', threadId, 'messages', 'sticker'), {
+        text: '🔥',
+        authorId: ALICE,
+        authorName: 'Alice',
+        createdAt: serverTimestamp(),
+        messageKind: 'sticker',
+      }),
+    );
+    await assertFails(
+      setDoc(doc(db, 'threads', threadId, 'messages', 'sticker-long'), {
+        text: 'x'.repeat(9),
+        authorId: ALICE,
+        authorName: 'Alice',
+        createdAt: serverTimestamp(),
+        messageKind: 'sticker',
+      }),
+    );
+  });
+
+  it('accepts a text reply with denormalised reply fields', async () => {
+    const threadId = await seedThread();
+    const db = testEnv.authenticatedContext(BOB).firestore();
+    await assertSucceeds(
+      setDoc(doc(db, 'threads', threadId, 'messages', 'reply'), {
+        text: 'Same here',
+        authorId: BOB,
+        authorName: 'Bob',
+        createdAt: serverTimestamp(),
+        messageKind: 'text',
+        replyToId: 'parent-msg',
+        replyToText: 'Front left, sounds great',
+        replyToAuthorName: 'Alice',
+      }),
+    );
+  });
+
+  it('rejects a partial reply payload', async () => {
+    const threadId = await seedThread();
+    const db = testEnv.authenticatedContext(ALICE).firestore();
+    await assertFails(
+      setDoc(doc(db, 'threads', threadId, 'messages', 'half-reply'), {
+        text: 'Incomplete reply',
+        authorId: ALICE,
+        authorName: 'Alice',
+        createdAt: serverTimestamp(),
+        messageKind: 'text',
+        replyToId: 'parent-msg',
+      }),
+    );
+  });
+
+  it('lets any signed-in user toggle reactions and rejects text edits', async () => {
     const threadId = await seedThread();
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await setDoc(doc(context.firestore(), 'threads', threadId, 'messages', 'm1'), {
@@ -282,9 +380,20 @@ describe('messages', () => {
         createdAt: new Date(),
       });
     });
-    const db = testEnv.authenticatedContext(ALICE).firestore();
+    const db = testEnv.authenticatedContext(BOB).firestore();
+    await assertSucceeds(
+      updateDoc(doc(db, 'threads', threadId, 'messages', 'm1'), {
+        reactions: { '👍': [BOB] },
+      }),
+    );
     await assertFails(
       updateDoc(doc(db, 'threads', threadId, 'messages', 'm1'), { text: 'edited' }),
+    );
+    await assertFails(
+      updateDoc(doc(db, 'threads', threadId, 'messages', 'm1'), {
+        reactions: { '👍': [BOB] },
+        text: 'sneaky',
+      }),
     );
     await assertFails(deleteDoc(doc(db, 'threads', threadId, 'messages', 'm1')));
   });

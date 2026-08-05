@@ -39,6 +39,21 @@ opens with bubbles to tap. Safe to re-run; document IDs are stable.
 ## Optional later
 
 - Firebase Storage / Blaze — only if you want Storage as a fallback; **not required** for R2 photos  
-- Custom domain instead of `*.r2.dev` / `*.workers.dev`  
 - Deploy Worker updates: `cd workers/media && npm run deploy`
-- `git push` when you want GitHub to catch up (several commits ahead of origin)
+- `git push` when you want GitHub to catch up
+
+### Custom domain for media (when you have a domain)
+
+Today Live uses:
+
+- Upload API: `https://maptalk-media.hhypkfpshg.workers.dev`
+- Public files: `https://pub-7c910bfa4a884bb6bd039db548455d5e.r2.dev`
+
+To brand them (e.g. `media.maptalk.app` + `cdn.maptalk.app`):
+
+1. In Cloudflare → Workers → `maptalk-media` → Triggers → **Add Custom Domain** (or a route on your zone).
+2. In R2 → `maptalk-media` → Settings → **Custom Domains** → attach a hostname; Cloudflare issues the cert.
+3. Set Worker `PUBLIC_BASE_URL` to the R2 custom domain (`wrangler secret` / vars), redeploy.
+4. Point both apps’ `MAPTALK_MEDIA_UPLOAD_URL` at the Worker custom domain (`…/v1/images`).
+
+Until then, the `*.workers.dev` / `*.r2.dev` URLs are fine for development and closed testing.

@@ -5,7 +5,12 @@
  * POST /v1/audio?threadId=&messageId=   Content-Type: audio/mp4 | audio/m4a | audio/aac
  *
  * Authorization: Bearer <Firebase ID token>
- * Soft rate limit: 30 uploads / uid / rolling 10 minutes (per isolate).
+ *
+ * Abuse caps (per isolate, soft):
+ *   - 20 uploads / uid / rolling 10 minutes (images + audio combined)
+ *   - 8 audio uploads / uid / rolling 10 minutes
+ *   - JPEG magic bytes + ISO BMFF `ftyp` sniff for audio
+ *   - Size caps: 2 MB image, 1 MB audio
  */
 
 export interface Env {
@@ -18,10 +23,16 @@ const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
 const MAX_AUDIO_BYTES = 1 * 1024 * 1024;
 const KEY_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const RATE_WINDOW_MS = 10 * 60 * 1000;
-const RATE_MAX = 30;
+const RATE_MAX_TOTAL = 20;
+const RATE_MAX_AUDIO = 8;
+/** Bound in-memory rate maps so a flood of uids cannot grow forever. */
+const RATE_UID_CAP = 4_000;
 
-/** uid → upload timestamps inside this isolate */
-const recentUploads = new Map<string, number[]>();
+type UploadKind = "image" | "audio";
+
+/** uid → timestamps inside this isolate */
+const recentTotal = new Map<string, number[]>();
+const recentAudio = new Map<string, number[]>();
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -32,11 +43,20 @@ export default {
     }
 
     if (request.method === "GET" && url.pathname === "/health") {
-      return json({ ok: true });
+      return json({
+        ok: true,
+        limits: {
+          maxImageBytes: MAX_IMAGE_BYTES,
+          maxAudioBytes: MAX_AUDIO_BYTES,
+          uploadsPer10Min: RATE_MAX_TOTAL,
+          audioPer10Min: RATE_MAX_AUDIO,
+        },
+      });
     }
 
     if (request.method === "POST" && url.pathname === "/v1/images") {
       return upload(request, env, url, {
+        kind: "image",
         kinds: ["image/jpeg"],
         maxBytes: MAX_IMAGE_BYTES,
         extension: "jpg",
@@ -46,6 +66,7 @@ export default {
 
     if (request.method === "POST" && url.pathname === "/v1/audio") {
       return upload(request, env, url, {
+        kind: "audio",
         kinds: ["audio/mp4", "audio/m4a", "audio/aac", "audio/x-m4a"],
         maxBytes: MAX_AUDIO_BYTES,
         extension: "m4a",
@@ -58,6 +79,7 @@ export default {
 } satisfies ExportedHandler<Env>;
 
 type UploadSpec = {
+  kind: UploadKind;
   kinds: string[];
   maxBytes: number;
   extension: string;
@@ -82,8 +104,13 @@ async function upload(
     return json({ error: "invalid_token" }, 401);
   }
 
-  if (!allowUpload(uid)) {
-    return json({ error: "rate_limited" }, 429);
+  const rate = allowUpload(uid, spec.kind);
+  if (!rate.ok) {
+    return json(
+      { error: "rate_limited", scope: rate.scope },
+      429,
+      { "Retry-After": "60" },
+    );
   }
 
   const threadId = url.searchParams.get("threadId") ?? "";
@@ -97,9 +124,21 @@ async function upload(
     return json({ error: "unsupported_type" }, 415);
   }
 
+  const declared = Number(request.headers.get("Content-Length") ?? "0");
+  if (declared > spec.maxBytes) {
+    return json({ error: "bad_size" }, 413);
+  }
+
   const bytes = new Uint8Array(await request.arrayBuffer());
   if (bytes.byteLength === 0 || bytes.byteLength > spec.maxBytes) {
     return json({ error: "bad_size" }, 413);
+  }
+
+  if (spec.kind === "image" && !looksLikeJpeg(bytes)) {
+    return json({ error: "bad_magic" }, 415);
+  }
+  if (spec.kind === "audio" && !looksLikeMp4Audio(bytes)) {
+    return json({ error: "bad_magic" }, 415);
   }
 
   const key = `threads/${threadId}/${messageId}.${spec.extension}`;
@@ -108,22 +147,68 @@ async function upload(
       contentType: spec.contentType,
       cacheControl: "public, max-age=31536000, immutable",
     },
+    customMetadata: {
+      uid,
+      kind: spec.kind,
+    },
   });
 
   const publicUrl = `${env.PUBLIC_BASE_URL.replace(/\/$/, "")}/${key}`;
   return json({ url: publicUrl, path: key });
 }
 
-function allowUpload(uid: string): boolean {
+function allowUpload(uid: string, kind: UploadKind): { ok: true } | { ok: false; scope: string } {
   const now = Date.now();
-  const prior = (recentUploads.get(uid) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
-  if (prior.length >= RATE_MAX) {
-    recentUploads.set(uid, prior);
-    return false;
+  pruneMap(recentTotal, now);
+  pruneMap(recentAudio, now);
+
+  const total = (recentTotal.get(uid) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
+  if (total.length >= RATE_MAX_TOTAL) {
+    recentTotal.set(uid, total);
+    return { ok: false, scope: "total" };
   }
-  prior.push(now);
-  recentUploads.set(uid, prior);
-  return true;
+
+  if (kind === "audio") {
+    const audio = (recentAudio.get(uid) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
+    if (audio.length >= RATE_MAX_AUDIO) {
+      recentAudio.set(uid, audio);
+      return { ok: false, scope: "audio" };
+    }
+    audio.push(now);
+    recentAudio.set(uid, audio);
+  }
+
+  total.push(now);
+  recentTotal.set(uid, total);
+  return { ok: true };
+}
+
+function pruneMap(map: Map<string, number[]>, now: number) {
+  for (const [uid, stamps] of map) {
+    const kept = stamps.filter((t) => now - t < RATE_WINDOW_MS);
+    if (kept.length === 0) map.delete(uid);
+    else map.set(uid, kept);
+  }
+  if (map.size <= RATE_UID_CAP) return;
+  // Drop oldest-by-last-upload entries until under the cap.
+  const ranked = [...map.entries()].sort(
+    (a, b) => (a[1][a[1].length - 1] ?? 0) - (b[1][b[1].length - 1] ?? 0),
+  );
+  for (let i = 0; i < ranked.length - RATE_UID_CAP; i++) {
+    map.delete(ranked[i][0]);
+  }
+}
+
+/** JPEG SOI marker. */
+function looksLikeJpeg(bytes: Uint8Array): boolean {
+  return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+}
+
+/** ISO BMFF: size + 'ftyp' within the first box (m4a / mp4 / aac in mp4). */
+function looksLikeMp4Audio(bytes: Uint8Array): boolean {
+  if (bytes.length < 12) return false;
+  const box = String.fromCharCode(bytes[4], bytes[5], bytes[6], bytes[7]);
+  return box === "ftyp";
 }
 
 function corsHeaders(): HeadersInit {
@@ -135,12 +220,13 @@ function corsHeaders(): HeadersInit {
   };
 }
 
-function json(body: unknown, status = 200): Response {
+function json(body: unknown, status = 200, extraHeaders: HeadersInit = {}): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: {
       "Content-Type": "application/json",
       ...corsHeaders(),
+      ...extraHeaders,
     },
   });
 }
