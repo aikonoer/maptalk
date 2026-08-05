@@ -70,10 +70,11 @@ Target for both platforms before upload:
 
 ## Current slice (done)
 
-Video PUT streaming (file→Worker→R2) with post-put sniff; cellular confirm earlier.
+Video PUT streaming; upload concurrency gate (2); Worker `/health` daily status metrics.
 
 ## Still open
 
 - True client→R2 presigned PUT (needs R2 S3 API tokens)
-- Concurrent upload caps, metrics, App Store / Play release, device matrix
+- Device matrix + App Store / Play release
+- p95 upload size/duration histograms
 
