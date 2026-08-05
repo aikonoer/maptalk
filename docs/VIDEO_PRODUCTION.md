@@ -30,8 +30,9 @@ Target for both platforms before upload:
 - [x] Clearer Worker error mapping (413 / 415 / 429 → human copy)
 - [x] Retry with backoff on transient failures
 - [x] Cancel in-flight prepare/upload when leaving the thread
-- [ ] Prefer streaming / signed PUT over full-body buffers (Worker + device RAM)
-  - Partial: Worker reads with early abort (capped chunking); clients still buffer encode output
+- [x] Prefer streaming / signed PUT over full-body buffers (Worker + device RAM)
+  - Video: clients stream temp files via PUT; Worker pipes body to R2 then sniffs ≤2 MB
+  - Images/audio still POST buffered (small caps); true client→R2 presigned PUT still open
 
 ## 3. Abuse & integrity
 
@@ -66,10 +67,10 @@ Target for both platforms before upload:
 
 ## Current slice (done)
 
-Media URL allowlist; ExoPlayer + AVPlayer pause-others; disk caches; R2 delete hook (needs secret).
+Video PUT streaming (file→Worker→R2) with post-put sniff; cellular confirm earlier.
 
 ## Still open
 
-- True signed PUT / zero-copy R2 stream
+- True client→R2 presigned PUT (needs R2 S3 API tokens)
 - Concurrent upload caps, metrics, App Store / Play release, device matrix
 

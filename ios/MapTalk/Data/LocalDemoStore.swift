@@ -210,7 +210,10 @@ final class LocalDemoStore {
         } else if let video {
             kind = .video
             body = ""
-            videoPath = try? LocalMediaStore.save(video: video.data)
+            if let data = try? Data(contentsOf: video.fileURL) {
+                videoPath = try? LocalMediaStore.save(video: data)
+            }
+            video.deleteTempFile()
             videoDurationMs = video.durationMs
             videoWidth = video.width
             videoHeight = video.height

@@ -3,8 +3,10 @@
  *
  * POST /v1/images?threadId=&messageId=   Content-Type: image/jpeg
  * POST /v1/audio?threadId=&messageId=   Content-Type: audio/mp4 | audio/m4a | audio/aac
- * POST /v1/video?threadId=&messageId=   Content-Type: video/mp4
+ * POST|PUT /v1/video?threadId=&messageId=   Content-Type: video/mp4
+ *   Body streamed to R2 (no full-buffer in Worker); validated after put.
  *   Optional: X-MapTalk-Duration-Ms (cross-checked against mvhd when present)
+ *   Prefer PUT; POST kept for older clients.
  *
  * Authorization: Bearer <Firebase ID token>
  *
@@ -85,14 +87,11 @@ export default {
       });
     }
 
-    if (request.method === "POST" && url.pathname === "/v1/video") {
-      return upload(request, env, url, {
-        kind: "video",
-        kinds: ["video/mp4"],
-        maxBytes: MAX_VIDEO_BYTES,
-        extension: "mp4",
-        contentType: "video/mp4",
-      });
+    if (
+      (request.method === "POST" || request.method === "PUT") &&
+      url.pathname === "/v1/video"
+    ) {
+      return uploadVideoStreaming(request, env, url);
     }
 
     if (request.method === "DELETE" && url.pathname === "/v1/admin/object") {
@@ -210,6 +209,123 @@ async function upload(
       kind: spec.kind,
     },
   });
+
+  const base = env.PUBLIC_BASE_URL.replace(/\/$/, "");
+  const publicUrl = `${base}/${key}`;
+  return json({ url: publicUrl, path: key });
+}
+
+/**
+ * Stream the request body straight into R2, then sniff the stored object.
+ * Keeps Worker memory off the full 12 MB path (image/audio still use buffered upload).
+ */
+async function uploadVideoStreaming(
+  request: Request,
+  env: Env,
+  url: URL,
+): Promise<Response> {
+  const auth = request.headers.get("Authorization") ?? "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+  if (!token) return json({ error: "missing_token" }, 401);
+
+  let uid: string;
+  try {
+    uid = await verifyFirebaseIdToken(token, env.FIREBASE_PROJECT_ID);
+  } catch (cause) {
+    console.warn("token rejected", cause);
+    return json({ error: "invalid_token" }, 401);
+  }
+
+  const rate = await allowUpload(env, uid, "video");
+  if (!rate.ok) {
+    return json(
+      { error: "rate_limited", scope: rate.scope },
+      429,
+      { "Retry-After": "60" },
+    );
+  }
+
+  const threadId = url.searchParams.get("threadId") ?? "";
+  const messageId = url.searchParams.get("messageId") ?? "";
+  if (!KEY_RE.test(threadId) || !KEY_RE.test(messageId)) {
+    return json({ error: "bad_ids" }, 400);
+  }
+
+  const contentType = (request.headers.get("Content-Type") ?? "").split(";")[0].trim().toLowerCase();
+  if (contentType !== "video/mp4") {
+    return json({ error: "unsupported_type" }, 415);
+  }
+
+  const declared = Number(request.headers.get("Content-Length") ?? "0");
+  if (!Number.isFinite(declared) || declared <= 0) {
+    return json({ error: "bad_size" }, 413);
+  }
+  if (declared > MAX_VIDEO_BYTES) {
+    return json({ error: "bad_size" }, 413);
+  }
+
+  if (!request.body) {
+    return json({ error: "bad_size" }, 413);
+  }
+
+  const key = `threads/${threadId}/${messageId}.mp4`;
+  try {
+    await env.MEDIA.put(key, request.body, {
+      httpMetadata: {
+        contentType: "video/mp4",
+        cacheControl: "public, max-age=31536000, immutable",
+      },
+      customMetadata: {
+        uid,
+        kind: "video",
+      },
+    });
+  } catch (cause) {
+    console.warn("r2 put failed", cause);
+    return json({ error: "upload_failed" }, 502);
+  }
+
+  const obj = await env.MEDIA.get(key);
+  if (!obj) {
+    return json({ error: "upload_failed" }, 502);
+  }
+
+  if (obj.size <= 0 || obj.size > MAX_VIDEO_BYTES) {
+    await env.MEDIA.delete(key);
+    return json({ error: "bad_size" }, 413);
+  }
+
+  // Sniff at most 2 MB for ftyp + mvhd; duration boxes sit early in typical exports.
+  const sampleCap = Math.min(obj.size, 2 * 1024 * 1024);
+  const sample = obj.body
+    ? await readBodyCapped(obj.body, sampleCap)
+    : new Uint8Array(await obj.arrayBuffer());
+  if (sample === null || sample.byteLength === 0) {
+    await env.MEDIA.delete(key);
+    return json({ error: "bad_size" }, 413);
+  }
+
+  if (!looksLikeMp4Container(sample)) {
+    await env.MEDIA.delete(key);
+    return json({ error: "bad_magic" }, 415);
+  }
+
+  const durationMs = mp4DurationMs(sample);
+  if (durationMs == null || durationMs <= 0) {
+    await env.MEDIA.delete(key);
+    return json({ error: "bad_duration" }, 415);
+  }
+  if (durationMs > MAX_VIDEO_DURATION_MS) {
+    await env.MEDIA.delete(key);
+    return json({ error: "bad_duration", durationMs }, 413);
+  }
+  const claimed = Number(request.headers.get("X-MapTalk-Duration-Ms") ?? "");
+  if (Number.isFinite(claimed) && claimed > 0) {
+    if (Math.abs(claimed - durationMs) > 1_500) {
+      await env.MEDIA.delete(key);
+      return json({ error: "duration_mismatch", durationMs, claimed }, 400);
+    }
+  }
 
   const base = env.PUBLIC_BASE_URL.replace(/\/$/, "");
   const publicUrl = `${base}/${key}`;
@@ -422,7 +538,7 @@ function readU64(bytes: Uint8Array, offset: number): bigint {
 function corsHeaders(): HeadersInit {
   return {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "POST, OPTIONS, GET, DELETE",
+    "Access-Control-Allow-Methods": "POST, PUT, OPTIONS, GET, DELETE",
     "Access-Control-Allow-Headers": "Authorization, Content-Type, X-MapTalk-Duration-Ms, X-MapTalk-Admin",
     "Access-Control-Max-Age": "86400",
   };

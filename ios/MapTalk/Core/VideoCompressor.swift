@@ -45,7 +45,6 @@ enum VideoCompressor {
 
         let outURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("maptalk-video-\(UUID().uuidString).mp4")
-        defer { try? FileManager.default.removeItem(at: outURL) }
 
         // 1280×720 preset matches Android Presentation.createForHeight(720).
         guard let session = AVAssetExportSession(
@@ -61,17 +60,25 @@ enum VideoCompressor {
                 cont.resume(returning: session.status)
             }
         }
-        guard status == .completed else { return .failure(.compressFailed) }
-        guard let data = try? Data(contentsOf: outURL), !data.isEmpty else {
+        guard status == .completed else {
+            try? FileManager.default.removeItem(at: outURL)
             return .failure(.compressFailed)
         }
-        guard data.count <= maxBytes else { return .failure(.tooLarge) }
+        let byteCount = (try? FileManager.default.attributesOfItem(atPath: outURL.path)[.size] as? NSNumber)?.intValue ?? 0
+        guard byteCount > 0 else {
+            try? FileManager.default.removeItem(at: outURL)
+            return .failure(.compressFailed)
+        }
+        guard byteCount <= maxBytes else {
+            try? FileManager.default.removeItem(at: outURL)
+            return .failure(.tooLarge)
+        }
 
         // Prefer encoded track size when available; fall back to source dims scaled to 1280 long edge.
         let encoded = await encodedDimensions(url: outURL) ?? scaledToFit(width: width, height: height, maxEdge: 1_280)
         return .success(
             PreparedVideo(
-                data: data,
+                fileURL: outURL,
                 durationMs: durationMs,
                 width: encoded.width,
                 height: encoded.height

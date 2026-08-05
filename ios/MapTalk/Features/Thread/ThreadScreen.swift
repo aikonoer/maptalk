@@ -189,6 +189,7 @@ struct ThreadScreen: View {
                     get: { pendingUploadConfirm != nil },
                     set: {
                         if !$0 {
+                            pendingUploadConfirm?.video.deleteTempFile()
                             pendingUploadConfirm = nil
                             if videoSendPhase == .confirmUpload { videoSendPhase = .idle }
                         }
@@ -203,6 +204,7 @@ struct ThreadScreen: View {
                     }
                 }
                 Button("Cancel", role: .cancel) {
+                    pendingUploadConfirm?.video.deleteTempFile()
                     pendingUploadConfirm = nil
                     videoSendPhase = .idle
                 }
@@ -564,9 +566,9 @@ struct ThreadScreen: View {
                 return
             }
             retryPreparedVideo = prepared
-            let mb = max(1, (prepared.data.count + 512 * 1024) / (1024 * 1024))
+            let mb = max(1, (prepared.byteCount + 512 * 1024) / (1024 * 1024))
             let needsConfirm = NetworkExpense.isExpensiveOrConstrained
-                || prepared.data.count >= 5 * 1024 * 1024
+                || prepared.byteCount >= 5 * 1024 * 1024
             if needsConfirm {
                 pendingUploadConfirm = PendingVideoUpload(video: prepared, megabytes: mb)
                 videoSendPhase = .confirmUpload
@@ -585,10 +587,14 @@ struct ThreadScreen: View {
             }
         }
         if Task.isCancelled {
+            prepared.deleteTempFile()
+            retryPreparedVideo = nil
             videoSendPhase = .idle
         } else if model.errorMessage != nil {
             videoSendPhase = .failed
         } else {
+            prepared.deleteTempFile()
+            retryPreparedVideo = nil
             videoSendPhase = .idle
         }
     }
@@ -604,7 +610,10 @@ struct ThreadScreen: View {
     private func cancelVideoSend() {
         videoTask?.cancel()
         videoTask = nil
+        pendingUploadConfirm?.video.deleteTempFile()
         pendingUploadConfirm = nil
+        retryPreparedVideo?.deleteTempFile()
+        retryPreparedVideo = nil
         videoSendPhase = .idle
     }
 

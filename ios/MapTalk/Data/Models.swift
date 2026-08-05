@@ -198,23 +198,31 @@ struct PreparedAudio: Sendable {
 }
 
 struct PreparedVideo: Sendable {
-    let data: Data
+    let fileURL: URL
     let durationMs: Int
     let width: Int
     let height: Int
     let contentType: String
 
+    var byteCount: Int {
+        (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? NSNumber)?.intValue ?? 0
+    }
+
     init(
-        data: Data,
+        fileURL: URL,
         durationMs: Int,
         width: Int,
         height: Int,
         contentType: String = "video/mp4"
     ) {
-        self.data = data
+        self.fileURL = fileURL
         self.durationMs = durationMs
         self.width = width
         self.height = height
         self.contentType = contentType
+    }
+
+    func deleteTempFile() {
+        try? FileManager.default.removeItem(at: fileURL)
     }
 }

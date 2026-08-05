@@ -199,7 +199,8 @@ class LocalDemoStore(context: Context) {
             video != null -> {
                 kind = MessageKind.VIDEO
                 body = ""
-                videoPath = media.saveVideo(video.bytes)
+                videoPath = media.saveVideo(video.file.readBytes())
+                video.file.delete()
                 videoDurationMs = video.durationMs
                 videoWidth = video.width
                 videoHeight = video.height

@@ -52,28 +52,37 @@ object VideoCompressor {
                 return Result.Err("Video compression failed")
             }
             if (outFile.length() > MAX_BYTES) {
+                outFile.delete()
                 return Result.Err("Video is still too large after compression")
             }
-            val bytes = outFile.readBytes()
-            if (!looksLikeMp4(bytes)) {
+            val head = outFile.inputStream().use { stream ->
+                val buf = ByteArray(12)
+                val n = stream.read(buf)
+                if (n < 12) null else buf
+            }
+            if (head == null || !looksLikeMp4(head)) {
+                outFile.delete()
                 return Result.Err("Video compression failed")
             }
             val (width, height) = readSize(outFile)
-                ?: return Result.Err("Video compression failed")
+                ?: run {
+                    outFile.delete()
+                    return Result.Err("Video compression failed")
+                }
             Result.Ok(
                 PreparedVideo(
-                    bytes = bytes,
+                    file = outFile,
                     durationMs = durationMs,
                     width = width,
                     height = height,
                 ),
             )
         } catch (e: ExportException) {
+            outFile.delete()
             Result.Err("Video compression failed")
         } catch (_: Exception) {
-            Result.Err("Video compression failed")
-        } finally {
             outFile.delete()
+            Result.Err("Video compression failed")
         }
     }
 

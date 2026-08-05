@@ -113,14 +113,16 @@ data class PreparedAudio(
     val contentType: String = "audio/mp4",
 )
 
-/** A short video clip ready to upload. */
+/** A short video clip ready to upload (temp file; caller deletes after send). */
 data class PreparedVideo(
-    val bytes: ByteArray,
+    val file: java.io.File,
     val durationMs: Int,
     val width: Int,
     val height: Int,
     val contentType: String = "video/mp4",
-)
+) {
+    val byteLength: Long get() = file.length()
+}
 
 /** Who is writing, denormalised onto every thread and message. */
 data class Author(val uid: String, val displayName: String)

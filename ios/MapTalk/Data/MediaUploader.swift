@@ -55,11 +55,11 @@ final class R2MediaUploader: MediaUploading {
     }
 
     func upload(threadId: String, messageId: String, video: PreparedVideo) async throws -> String {
-        try await post(
+        try await putFile(
             endpoint: videoEndpoint,
             threadId: threadId,
             messageId: messageId,
-            body: video.data,
+            fileURL: video.fileURL,
             contentType: video.contentType,
             extraHeaders: ["X-MapTalk-Duration-Ms": "\(video.durationMs)"]
         )
@@ -83,6 +83,38 @@ final class R2MediaUploader: MediaUploading {
                     threadId: threadId,
                     messageId: messageId,
                     body: body,
+                    contentType: contentType,
+                    extraHeaders: extraHeaders
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                lastError = error
+                guard Self.isTransient(error), attempt < maxAttempts - 1 else { throw error }
+                try await Task.sleep(nanoseconds: UInt64(400_000_000) << attempt)
+            }
+        }
+        throw lastError ?? URLError(.unknown)
+    }
+
+    private func putFile(
+        endpoint: URL,
+        threadId: String,
+        messageId: String,
+        fileURL: URL,
+        contentType: String,
+        extraHeaders: [String: String] = [:],
+        maxAttempts: Int = 3
+    ) async throws -> String {
+        var lastError: Error?
+        for attempt in 0..<maxAttempts {
+            try Task.checkCancellation()
+            do {
+                return try await putFileOnce(
+                    endpoint: endpoint,
+                    threadId: threadId,
+                    messageId: messageId,
+                    fileURL: fileURL,
                     contentType: contentType,
                     extraHeaders: extraHeaders
                 )
@@ -124,6 +156,41 @@ final class R2MediaUploader: MediaUploading {
         request.httpBody = body
 
         let (data, response) = try await URLSession.shared.data(for: request)
+        return try Self.parseUploadURL(data: data, response: response)
+    }
+
+    private func putFileOnce(
+        endpoint: URL,
+        threadId: String,
+        messageId: String,
+        fileURL: URL,
+        contentType: String,
+        extraHeaders: [String: String]
+    ) async throws -> String {
+        guard let user = auth.currentUser else {
+            throw URLError(.userAuthenticationRequired)
+        }
+        let token = try await user.getIDToken()
+        var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "threadId", value: threadId),
+            URLQueryItem(name: "messageId", value: messageId),
+        ]
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "PUT"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        let length = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? NSNumber)?.intValue ?? 0
+        request.setValue("\(length)", forHTTPHeaderField: "Content-Length")
+        for (key, value) in extraHeaders {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+
+        let (data, response) = try await URLSession.shared.upload(for: request, fromFile: fileURL)
+        return try Self.parseUploadURL(data: data, response: response)
+    }
+
+    private static func parseUploadURL(data: Data, response: URLResponse) throws -> String {
         guard let http = response as? HTTPURLResponse else {
             throw URLError(.badServerResponse)
         }
@@ -192,7 +259,7 @@ final class FirebaseStorageUploader: MediaUploading {
             .child("\(messageId).mp4")
         let metadata = StorageMetadata()
         metadata.contentType = video.contentType
-        _ = try await ref.putDataAsync(video.data, metadata: metadata)
+        _ = try await ref.putFileAsync(from: video.fileURL, metadata: metadata)
         return try await ref.downloadURL().absoluteString
     }
 }

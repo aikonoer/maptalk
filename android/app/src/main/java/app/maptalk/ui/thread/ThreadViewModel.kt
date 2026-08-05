@@ -180,10 +180,11 @@ class ThreadViewModel(
                         _videoSendPhase.value = VideoSendPhase.Failed
                     }
                     is VideoCompressor.Result.Ok -> {
-                        val mb = ((result.video.bytes.size + 512 * 1024) / (1024 * 1024))
+                        val mb = ((result.video.byteLength + 512 * 1024) / (1024 * 1024))
+                            .toInt()
                             .coerceAtLeast(1)
                         val needsConfirm = isMeteredNetwork(appContext) ||
-                            result.video.bytes.size >= LARGE_VIDEO_WARN_BYTES
+                            result.video.byteLength >= LARGE_VIDEO_WARN_BYTES
                         if (needsConfirm) {
                             pendingConfirmVideo = result.video
                             pendingConfirmAuthor = author
@@ -210,12 +211,14 @@ class ThreadViewModel(
             try {
                 uploadPreparedVideo(video, author)
             } catch (_: CancellationException) {
+                video.file.delete()
                 _videoSendPhase.value = VideoSendPhase.Idle
             }
         }
     }
 
     fun declineVideoUpload() {
+        pendingConfirmVideo?.file?.delete()
         pendingConfirmVideo = null
         pendingConfirmAuthor = null
         _videoConfirmMb.value = null
@@ -243,11 +246,14 @@ class ThreadViewModel(
             },
         )
         _replyTarget.value = null
-        _videoSendPhase.value = if (outcome.isSuccess) {
-            VideoSendPhase.Idle
+        if (outcome.isSuccess) {
+            video.file.delete()
+            _videoSendPhase.value = VideoSendPhase.Idle
         } else {
             outcome.exceptionOrNull()?.let { _errors.emit(it) }
-            VideoSendPhase.Failed
+            // Keep file for retry from URI recompress path; drop encoded temp.
+            video.file.delete()
+            _videoSendPhase.value = VideoSendPhase.Failed
         }
     }
 
@@ -260,6 +266,7 @@ class ThreadViewModel(
     fun cancelVideoSend() {
         videoJob?.cancel()
         videoJob = null
+        pendingConfirmVideo?.file?.delete()
         pendingConfirmVideo = null
         pendingConfirmAuthor = null
         _videoConfirmMb.value = null
