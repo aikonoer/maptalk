@@ -33,6 +33,8 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -48,6 +50,7 @@ enum class VideoSendPhase {
     Idle,
     Compressing,
     Uploading,
+    Failed,
 }
 
 class ThreadViewModel(
@@ -70,8 +73,12 @@ class ThreadViewModel(
     val videoSendPhase: StateFlow<VideoSendPhase> = _videoSendPhase.asStateFlow()
 
     val isPreparingVideo: StateFlow<Boolean> = _videoSendPhase
-        .map { it != VideoSendPhase.Idle }
+        .map { it == VideoSendPhase.Compressing || it == VideoSendPhase.Uploading }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    private var videoJob: Job? = null
+    private var retryVideoUri: Uri? = null
+    private var retryVideoAuthor: Author? = null
 
     private val _replyTarget = MutableStateFlow<Message?>(null)
     private val _shouldDismiss = MutableStateFlow(false)
@@ -155,25 +162,67 @@ class ThreadViewModel(
     }
 
     fun prepareAndSendVideo(uri: Uri, author: Author) {
-        viewModelScope.launch {
+        cancelVideoSend()
+        retryVideoUri = uri
+        retryVideoAuthor = author
+        videoJob = viewModelScope.launch {
             _videoSendPhase.value = VideoSendPhase.Compressing
-            // Transformer must hop to Main internally; keep IO for file IO around it.
-            when (val result = VideoCompressor.prepare(appContext, uri)) {
-                is VideoCompressor.Result.Err -> {
-                    _errors.emit(IllegalStateException(result.message))
-                    _videoSendPhase.value = VideoSendPhase.Idle
+            try {
+                when (val result = VideoCompressor.prepare(appContext, uri)) {
+                    is VideoCompressor.Result.Err -> {
+                        _errors.emit(IllegalStateException(result.message))
+                        _videoSendPhase.value = VideoSendPhase.Failed
+                    }
+                    is VideoCompressor.Result.Ok -> {
+                        _videoSendPhase.value = VideoSendPhase.Uploading
+                        val outcome = threadRepository.postVideoAwaiting(
+                            threadId = threadId,
+                            author = author,
+                            video = result.video,
+                            reply = _replyTarget.value?.let {
+                                MessageReply(
+                                    id = it.id,
+                                    authorName = it.authorName,
+                                    text = when {
+                                        it.isSticker -> it.text
+                                        it.hasVoice -> "Voice note"
+                                        it.hasVideo -> "Video"
+                                        it.hasImage && it.text.isEmpty() -> "Photo"
+                                        else -> it.text
+                                    },
+                                )
+                            },
+                        )
+                        _replyTarget.value = null
+                        _videoSendPhase.value = if (outcome.isSuccess) {
+                            VideoSendPhase.Idle
+                        } else {
+                            outcome.exceptionOrNull()?.let { _errors.emit(it) }
+                            VideoSendPhase.Failed
+                        }
+                    }
                 }
-                is VideoCompressor.Result.Ok -> {
-                    _videoSendPhase.value = VideoSendPhase.Uploading
-                    send(
-                        text = "",
-                        author = author,
-                        video = result.video,
-                        onFinished = { _videoSendPhase.value = VideoSendPhase.Idle },
-                    )
-                }
+            } catch (_: CancellationException) {
+                _videoSendPhase.value = VideoSendPhase.Idle
             }
         }
+    }
+
+    fun retryVideoSend() {
+        val uri = retryVideoUri ?: return
+        val author = retryVideoAuthor ?: return
+        prepareAndSendVideo(uri, author)
+    }
+
+    fun cancelVideoSend() {
+        videoJob?.cancel()
+        videoJob = null
+        _videoSendPhase.value = VideoSendPhase.Idle
+    }
+
+    override fun onCleared() {
+        cancelVideoSend()
+        super.onCleared()
     }
 
     fun prepareImage(uri: Uri, onReady: (PreparedImage) -> Unit) {

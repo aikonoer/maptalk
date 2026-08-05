@@ -298,6 +298,8 @@ final class ThreadRepository {
         let message: String
         if raw.contains("413") || raw.contains("bad_size") {
             message = "Video is too large to upload"
+        } else if raw.contains("bad_duration") || raw.contains("duration_mismatch") {
+            message = "Keep videos under 30 seconds"
         } else if raw.contains("415") || raw.contains("bad_magic") || raw.contains("unsupported_type") {
             message = "That video format is not supported"
         } else if raw.contains("429") || raw.contains("rate_limited") {

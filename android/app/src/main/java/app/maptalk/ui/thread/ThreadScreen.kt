@@ -486,8 +486,11 @@ fun ThreadScreen(
                 videoStatus = when (videoSendPhase) {
                     VideoSendPhase.Compressing -> "Compressing video…"
                     VideoSendPhase.Uploading -> "Uploading video…"
+                    VideoSendPhase.Failed -> "Video failed to send"
                     VideoSendPhase.Idle -> null
                 },
+                onCancelVideo = viewModel::cancelVideoSend,
+                onRetryVideo = viewModel::retryVideoSend,
                 isRecording = isRecording,
                 recordElapsedMs = recordElapsedMs,
                 onClearPending = { pendingImage = null },
@@ -1150,6 +1153,8 @@ private fun Composer(
     isPreparingImage: Boolean,
     isPreparingVideo: Boolean,
     videoStatus: String?,
+    onCancelVideo: () -> Unit,
+    onRetryVideo: () -> Unit,
     isRecording: Boolean,
     recordElapsedMs: Int,
     onClearPending: () -> Unit,
@@ -1178,14 +1183,32 @@ private fun Composer(
 
     Column(modifier = modifier.fillMaxWidth()) {
         videoStatus?.let { status ->
-            Text(
-                text = status,
-                style = MaterialTheme.typography.labelMedium,
-                color = MapTalkColors.Subtle,
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 14.dp, vertical = 8.dp),
-            )
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = status,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MapTalkColors.Subtle,
+                    modifier = Modifier.weight(1f),
+                )
+                if (isPreparingVideo) {
+                    TextButton(onClick = onCancelVideo) {
+                        Text("Cancel", color = MapTalkColors.Subtle)
+                    }
+                } else {
+                    TextButton(onClick = onRetryVideo) {
+                        Text("Retry", color = MapTalkColors.Accent)
+                    }
+                    TextButton(onClick = onCancelVideo) {
+                        Text("Dismiss", color = MapTalkColors.Subtle)
+                    }
+                }
+            }
         }
 
         replyTarget?.let { reply ->

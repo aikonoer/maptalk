@@ -15,6 +15,8 @@ struct ThreadScreen: View {
     @State private var pendingImage: UIImage?
     @State private var isPreparingImage = false
     @State private var videoSendPhase: VideoSendPhase = .idle
+    @State private var videoTask: Task<Void, Never>?
+    @State private var retryPreparedVideo: PreparedVideo?
     @State private var showStickers = false
     @State private var longPressTarget: Message?
     @State private var longPressFrame: CGRect = .zero
@@ -39,7 +41,9 @@ struct ThreadScreen: View {
         )
     }
 
-    private var isPreparingVideo: Bool { videoSendPhase != .idle }
+    private var isPreparingVideo: Bool {
+        videoSendPhase == .compressing || videoSendPhase == .uploading
+    }
 
     private var trimmedDraft: String {
         draft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -81,6 +85,7 @@ struct ThreadScreen: View {
             .onDisappear {
                 model.stop()
                 recorder.cancel()
+                cancelVideoSend()
             }
             .onChange(of: model.shouldDismiss) { _, dismissNow in
                 if dismissNow { dismiss() }
@@ -91,7 +96,8 @@ struct ThreadScreen: View {
             }
             .onChange(of: videoPickerItem) { _, item in
                 guard let item else { return }
-                Task { await loadVideoItem(item) }
+                videoTask?.cancel()
+                videoTask = Task { await loadVideoItem(item) }
             }
             .overlay {
                 if let message = longPressTarget {
@@ -310,12 +316,26 @@ struct ThreadScreen: View {
             }
 
             if let status = videoSendPhase.statusCopy {
-                Text(status)
-                    .font(.meta)
-                    .foregroundStyle(Theme.subtle)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 14)
-                    .padding(.top, 8)
+                HStack(spacing: 10) {
+                    Text(status)
+                        .font(.meta)
+                        .foregroundStyle(Theme.subtle)
+                    Spacer(minLength: 0)
+                    if isPreparingVideo {
+                        Button("Cancel") { cancelVideoSend() }
+                            .font(.meta)
+                            .foregroundStyle(Theme.subtle)
+                    } else if videoSendPhase == .failed {
+                        Button("Retry") { retryVideoSend() }
+                            .font(.meta)
+                            .foregroundStyle(Theme.accent)
+                        Button("Dismiss") { cancelVideoSend() }
+                            .font(.meta)
+                            .foregroundStyle(Theme.subtle)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.top, 8)
             }
 
             if showStickers {
@@ -490,24 +510,73 @@ struct ThreadScreen: View {
         videoSendPhase = .compressing
         defer { videoPickerItem = nil }
         guard let movie = try? await item.loadTransferable(type: PickedMovie.self) else {
-            model.errorMessage = VideoCompressor.PrepareError.unreadable.localizedDescription
-            videoSendPhase = .idle
+            if !Task.isCancelled {
+                model.errorMessage = VideoCompressor.PrepareError.unreadable.localizedDescription
+                videoSendPhase = .failed
+            }
             return
         }
         defer { try? FileManager.default.removeItem(at: movie.url) }
+        if Task.isCancelled {
+            videoSendPhase = .idle
+            return
+        }
         switch await VideoCompressor.prepare(from: movie.url) {
         case .failure(let error):
+            guard !Task.isCancelled else {
+                videoSendPhase = .idle
+                return
+            }
             model.errorMessage = error.localizedDescription
-            videoSendPhase = .idle
+            videoSendPhase = .failed
         case .success(let prepared):
+            guard !Task.isCancelled else {
+                videoSendPhase = .idle
+                return
+            }
+            retryPreparedVideo = prepared
             videoSendPhase = .uploading
+            model.errorMessage = nil
             await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
                 model.send("", as: author, video: prepared) {
                     cont.resume()
                 }
             }
-            videoSendPhase = .idle
+            if Task.isCancelled {
+                videoSendPhase = .idle
+            } else if model.errorMessage != nil {
+                videoSendPhase = .failed
+            } else {
+                videoSendPhase = .idle
+            }
         }
+    }
+
+    private func retryVideoSend() {
+        guard let prepared = retryPreparedVideo else { return }
+        videoTask?.cancel()
+        videoTask = Task {
+            videoSendPhase = .uploading
+            model.errorMessage = nil
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                model.send("", as: author, video: prepared) {
+                    cont.resume()
+                }
+            }
+            if Task.isCancelled {
+                videoSendPhase = .idle
+            } else if model.errorMessage != nil {
+                videoSendPhase = .failed
+            } else {
+                videoSendPhase = .idle
+            }
+        }
+    }
+
+    private func cancelVideoSend() {
+        videoTask?.cancel()
+        videoTask = nil
+        videoSendPhase = .idle
     }
 
     private func scroll(_ proxy: ScrollViewProxy, animated: Bool) {
@@ -1167,12 +1236,14 @@ private enum VideoSendPhase {
     case idle
     case compressing
     case uploading
+    case failed
 
     var statusCopy: String? {
         switch self {
         case .idle: nil
         case .compressing: "Compressing video…"
         case .uploading: "Uploading video…"
+        case .failed: "Video failed to send"
         }
     }
 }

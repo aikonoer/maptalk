@@ -60,7 +60,8 @@ final class R2MediaUploader: MediaUploading {
             threadId: threadId,
             messageId: messageId,
             body: video.data,
-            contentType: video.contentType
+            contentType: video.contentType,
+            extraHeaders: ["X-MapTalk-Duration-Ms": "\(video.durationMs)"]
         )
     }
 
@@ -69,7 +70,40 @@ final class R2MediaUploader: MediaUploading {
         threadId: String,
         messageId: String,
         body: Data,
-        contentType: String
+        contentType: String,
+        extraHeaders: [String: String] = [:],
+        maxAttempts: Int = 3
+    ) async throws -> String {
+        var lastError: Error?
+        for attempt in 0..<maxAttempts {
+            try Task.checkCancellation()
+            do {
+                return try await postOnce(
+                    endpoint: endpoint,
+                    threadId: threadId,
+                    messageId: messageId,
+                    body: body,
+                    contentType: contentType,
+                    extraHeaders: extraHeaders
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                lastError = error
+                guard Self.isTransient(error), attempt < maxAttempts - 1 else { throw error }
+                try await Task.sleep(nanoseconds: UInt64(400_000_000) << attempt)
+            }
+        }
+        throw lastError ?? URLError(.unknown)
+    }
+
+    private func postOnce(
+        endpoint: URL,
+        threadId: String,
+        messageId: String,
+        body: Data,
+        contentType: String,
+        extraHeaders: [String: String]
     ) async throws -> String {
         guard let user = auth.currentUser else {
             throw URLError(.userAuthenticationRequired)
@@ -84,6 +118,9 @@ final class R2MediaUploader: MediaUploading {
         request.httpMethod = "POST"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        for (key, value) in extraHeaders {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
         request.httpBody = body
 
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -99,6 +136,19 @@ final class R2MediaUploader: MediaUploading {
             )
         }
         return try JSONDecoder().decode(UploadResponse.self, from: data).url
+    }
+
+    private static func isTransient(_ error: Error) -> Bool {
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut, .networkConnectionLost, .notConnectedToInternet, .cannotConnectToHost:
+                return true
+            default:
+                break
+            }
+        }
+        let ns = error as NSError
+        return (500...599).contains(ns.code)
     }
 
     private struct UploadResponse: Decodable {

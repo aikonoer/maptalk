@@ -12,5 +12,12 @@
       "binding": "MEDIA",
       "bucket_name": "maptalk-media"
     }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "RATE",
+      "id": "a0d32a97a99d4c7781b8158dca93d640",
+      "preview_id": "b5374331e91942878347b57edd5271b3"
+    }
   ]
 }

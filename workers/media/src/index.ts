@@ -4,18 +4,20 @@
  * POST /v1/images?threadId=&messageId=   Content-Type: image/jpeg
  * POST /v1/audio?threadId=&messageId=   Content-Type: audio/mp4 | audio/m4a | audio/aac
  * POST /v1/video?threadId=&messageId=   Content-Type: video/mp4
+ *   Optional: X-MapTalk-Duration-Ms (cross-checked against mvhd when present)
  *
  * Authorization: Bearer <Firebase ID token>
  *
- * Abuse caps (per isolate, soft):
+ * Abuse caps (KV-backed when RATE is bound, else soft in-memory):
  *   - 20 uploads / uid / rolling 10 minutes (all kinds)
  *   - 8 audio uploads / uid / rolling 10 minutes
  *   - 4 video uploads / uid / rolling 10 minutes
- *   - Magic-byte sniff + size caps
+ *   - Magic-byte sniff + size caps + video duration from mvhd
  */
 
 export interface Env {
   MEDIA: R2Bucket;
+  RATE?: KVNamespace;
   FIREBASE_PROJECT_ID: string;
   PUBLIC_BASE_URL: string;
 }
@@ -23,17 +25,17 @@ export interface Env {
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
 const MAX_AUDIO_BYTES = 1 * 1024 * 1024;
 const MAX_VIDEO_BYTES = 12 * 1024 * 1024;
+const MAX_VIDEO_DURATION_MS = 30_000;
 const KEY_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const RATE_WINDOW_MS = 10 * 60 * 1000;
 const RATE_MAX_TOTAL = 20;
 const RATE_MAX_AUDIO = 8;
 const RATE_MAX_VIDEO = 4;
-/** Bound in-memory rate maps so a flood of uids cannot grow forever. */
 const RATE_UID_CAP = 4_000;
 
 type UploadKind = "image" | "audio" | "video";
 
-/** uid → timestamps inside this isolate */
+/** Fallback when KV is unavailable (local / misconfigured). */
 const recentTotal = new Map<string, number[]>();
 const recentAudio = new Map<string, number[]>();
 const recentVideo = new Map<string, number[]>();
@@ -53,9 +55,11 @@ export default {
           maxImageBytes: MAX_IMAGE_BYTES,
           maxAudioBytes: MAX_AUDIO_BYTES,
           maxVideoBytes: MAX_VIDEO_BYTES,
+          maxVideoDurationMs: MAX_VIDEO_DURATION_MS,
           uploadsPer10Min: RATE_MAX_TOTAL,
           audioPer10Min: RATE_MAX_AUDIO,
           videoPer10Min: RATE_MAX_VIDEO,
+          durableRateLimits: Boolean(env.RATE),
         },
       });
     }
@@ -120,7 +124,7 @@ async function upload(
     return json({ error: "invalid_token" }, 401);
   }
 
-  const rate = allowUpload(uid, spec.kind);
+  const rate = await allowUpload(env, uid, spec.kind);
   if (!rate.ok) {
     return json(
       { error: "rate_limited", scope: rate.scope },
@@ -145,8 +149,16 @@ async function upload(
     return json({ error: "bad_size" }, 413);
   }
 
-  const bytes = new Uint8Array(await request.arrayBuffer());
-  if (bytes.byteLength === 0 || bytes.byteLength > spec.maxBytes) {
+  if (!request.body) {
+    return json({ error: "bad_size" }, 413);
+  }
+
+  // Stream with early abort so oversized bodies never fully buffer.
+  const bytes = await readBodyCapped(request.body, spec.maxBytes);
+  if (bytes === null) {
+    return json({ error: "bad_size" }, 413);
+  }
+  if (bytes.byteLength === 0) {
     return json({ error: "bad_size" }, 413);
   }
 
@@ -155,6 +167,22 @@ async function upload(
   }
   if ((spec.kind === "audio" || spec.kind === "video") && !looksLikeMp4Container(bytes)) {
     return json({ error: "bad_magic" }, 415);
+  }
+
+  if (spec.kind === "video") {
+    const durationMs = mp4DurationMs(bytes);
+    if (durationMs == null || durationMs <= 0) {
+      return json({ error: "bad_duration" }, 415);
+    }
+    if (durationMs > MAX_VIDEO_DURATION_MS) {
+      return json({ error: "bad_duration", durationMs }, 413);
+    }
+    const claimed = Number(request.headers.get("X-MapTalk-Duration-Ms") ?? "");
+    if (Number.isFinite(claimed) && claimed > 0) {
+      if (Math.abs(claimed - durationMs) > 1_500) {
+        return json({ error: "duration_mismatch", durationMs, claimed }, 400);
+      }
+    }
   }
 
   const key = `threads/${threadId}/${messageId}.${spec.extension}`;
@@ -169,11 +197,108 @@ async function upload(
     },
   });
 
-  const publicUrl = `${env.PUBLIC_BASE_URL.replace(/\/$/, "")}/${key}`;
+  const base = env.PUBLIC_BASE_URL.replace(/\/$/, "");
+  const publicUrl = `${base}/${key}`;
   return json({ url: publicUrl, path: key });
 }
 
-function allowUpload(uid: string, kind: UploadKind): { ok: true } | { ok: false; scope: string } {
+/** Read the body in chunks; return null if it exceeds maxBytes. */
+async function readBodyCapped(
+  body: ReadableStream<Uint8Array>,
+  maxBytes: number,
+): Promise<Uint8Array | null> {
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(value);
+    }
+  } catch {
+    await reader.cancel().catch(() => undefined);
+    return null;
+  }
+  return concat(chunks, total);
+}
+
+function concat(chunks: Uint8Array[], total: number): Uint8Array {
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
+async function allowUpload(
+  env: Env,
+  uid: string,
+  kind: UploadKind,
+): Promise<{ ok: true } | { ok: false; scope: string }> {
+  if (env.RATE) {
+    return allowUploadKv(env.RATE, uid, kind);
+  }
+  return allowUploadMemory(uid, kind);
+}
+
+async function allowUploadKv(
+  kv: KVNamespace,
+  uid: string,
+  kind: UploadKind,
+): Promise<{ ok: true } | { ok: false; scope: string }> {
+  const now = Date.now();
+  const totalKey = `rate:total:${uid}`;
+  const kindKey = kind === "audio" || kind === "video" ? `rate:${kind}:${uid}` : null;
+  const kindMax = kind === "audio" ? RATE_MAX_AUDIO : kind === "video" ? RATE_MAX_VIDEO : null;
+
+  const total = pruneStamps(parseStamps(await kv.get(totalKey)), now);
+  if (total.length >= RATE_MAX_TOTAL) {
+    await kv.put(totalKey, JSON.stringify(total), { expirationTtl: 700 });
+    return { ok: false, scope: "total" };
+  }
+
+  if (kindKey && kindMax != null) {
+    const scoped = pruneStamps(parseStamps(await kv.get(kindKey)), now);
+    if (scoped.length >= kindMax) {
+      await kv.put(kindKey, JSON.stringify(scoped), { expirationTtl: 700 });
+      return { ok: false, scope: kind };
+    }
+    scoped.push(now);
+    await kv.put(kindKey, JSON.stringify(scoped), { expirationTtl: 700 });
+  }
+
+  total.push(now);
+  await kv.put(totalKey, JSON.stringify(total), { expirationTtl: 700 });
+  return { ok: true };
+}
+
+function parseStamps(raw: string | null): number[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((n): n is number => typeof n === "number");
+  } catch {
+    return [];
+  }
+}
+
+function pruneStamps(stamps: number[], now: number): number[] {
+  return stamps.filter((t) => now - t < RATE_WINDOW_MS);
+}
+
+function allowUploadMemory(
+  uid: string,
+  kind: UploadKind,
+): { ok: true } | { ok: false; scope: string } {
   const now = Date.now();
   pruneMap(recentTotal, now);
   pruneMap(recentAudio, now);
@@ -225,23 +350,66 @@ function pruneMap(map: Map<string, number[]>, now: number) {
   }
 }
 
-/** JPEG SOI marker. */
 function looksLikeJpeg(bytes: Uint8Array): boolean {
   return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
 }
 
-/** ISO BMFF: size + 'ftyp' within the first box (m4a / mp4). */
 function looksLikeMp4Container(bytes: Uint8Array): boolean {
   if (bytes.length < 12) return false;
   const box = String.fromCharCode(bytes[4], bytes[5], bytes[6], bytes[7]);
   return box === "ftyp";
 }
 
+/** Parse movie duration from the first mvhd box (ISO BMFF). */
+function mp4DurationMs(bytes: Uint8Array): number | null {
+  const limit = Math.min(bytes.length - 8, 2 * 1024 * 1024);
+  for (let i = 0; i < limit; i++) {
+    if (
+      bytes[i] === 0x6d &&
+      bytes[i + 1] === 0x76 &&
+      bytes[i + 2] === 0x68 &&
+      bytes[i + 3] === 0x64
+    ) {
+      const version = bytes[i + 4];
+      if (version === 0 && i + 24 <= bytes.length) {
+        const timescale = readU32(bytes, i + 16);
+        const duration = readU32(bytes, i + 20);
+        if (timescale <= 0) return null;
+        return Math.round((duration / timescale) * 1000);
+      }
+      if (version === 1 && i + 36 <= bytes.length) {
+        const timescale = readU32(bytes, i + 24);
+        const duration = readU64(bytes, i + 28);
+        if (timescale <= 0) return null;
+        return Math.round((Number(duration) / timescale) * 1000);
+      }
+      return null;
+    }
+  }
+  return null;
+}
+
+function readU32(bytes: Uint8Array, offset: number): number {
+  return (
+    ((bytes[offset] << 24) |
+      (bytes[offset + 1] << 16) |
+      (bytes[offset + 2] << 8) |
+      bytes[offset + 3]) >>>
+    0
+  );
+}
+
+function readU64(bytes: Uint8Array, offset: number): bigint {
+  const hi = BigInt(readU32(bytes, offset));
+  const lo = BigInt(readU32(bytes, offset + 4));
+  return (hi << 32n) | lo;
+}
+
 function corsHeaders(): HeadersInit {
   return {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "POST, OPTIONS, GET",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, X-MapTalk-Duration-Ms",
     "Access-Control-Max-Age": "86400",
   };
 }
@@ -257,7 +425,6 @@ function json(body: unknown, status = 200, extraHeaders: HeadersInit = {}): Resp
   });
 }
 
-/** Verify a Firebase ID token; returns the subject (uid). */
 async function verifyFirebaseIdToken(token: string, projectId: string): Promise<string> {
   const parts = token.split(".");
   if (parts.length !== 3) throw new Error("malformed");

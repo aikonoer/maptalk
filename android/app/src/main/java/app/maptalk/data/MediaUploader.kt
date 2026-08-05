@@ -8,11 +8,16 @@ import com.google.firebase.storage.FirebaseStorage
 import com.google.firebase.storage.StorageMetadata
 import java.io.IOException
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URL
 import java.net.URLEncoder
+import java.net.UnknownHostException
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
@@ -54,7 +59,14 @@ sealed class MediaUploader {
             post(audioEndpoint, threadId, messageId, audio.bytes, audio.contentType)
 
         override suspend fun upload(threadId: String, messageId: String, video: PreparedVideo): String =
-            post(videoEndpoint, threadId, messageId, video.bytes, video.contentType)
+            post(
+                videoEndpoint,
+                threadId,
+                messageId,
+                video.bytes,
+                video.contentType,
+                extraHeaders = mapOf("X-MapTalk-Duration-Ms" to video.durationMs.toString()),
+            )
 
         private suspend fun post(
             endpoint: String,
@@ -62,7 +74,40 @@ sealed class MediaUploader {
             messageId: String,
             body: ByteArray,
             contentType: String,
+            extraHeaders: Map<String, String> = emptyMap(),
+            maxAttempts: Int = 3,
         ): String = withContext(Dispatchers.IO) {
+            var lastError: Exception? = null
+            repeat(maxAttempts) { attempt ->
+                ensureActive()
+                try {
+                    return@withContext postOnce(
+                        endpoint,
+                        threadId,
+                        messageId,
+                        body,
+                        contentType,
+                        extraHeaders,
+                    )
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    lastError = e
+                    if (!isTransientUploadError(e) || attempt == maxAttempts - 1) throw e
+                    delay(400L * (1L shl attempt))
+                }
+            }
+            throw lastError ?: IOException("Media upload failed")
+        }
+
+        private suspend fun postOnce(
+            endpoint: String,
+            threadId: String,
+            messageId: String,
+            body: ByteArray,
+            contentType: String,
+            extraHeaders: Map<String, String>,
+        ): String {
             val token = auth.currentUser?.getIdToken(false)?.await()?.token
                 ?: throw IllegalStateException("Sign in before sending media")
             val url = URL(
@@ -76,6 +121,7 @@ sealed class MediaUploader {
                 setRequestProperty("Authorization", "Bearer $token")
                 setRequestProperty("Content-Type", contentType)
                 setRequestProperty("Content-Length", body.size.toString())
+                extraHeaders.forEach { (k, v) -> setRequestProperty(k, v) }
             }
             try {
                 connection.outputStream.use { it.write(body) }
@@ -87,10 +133,18 @@ sealed class MediaUploader {
                 if (code !in 200..299) {
                     throw IOException("Media upload failed ($code): $responseBody")
                 }
-                JSONObject(responseBody).getString("url")
+                return JSONObject(responseBody).getString("url")
             } finally {
                 connection.disconnect()
             }
+        }
+
+        private fun isTransientUploadError(error: Exception): Boolean {
+            val msg = error.message.orEmpty()
+            return msg.contains("Media upload failed (5") ||
+                msg.contains("timeout", ignoreCase = true) ||
+                error is SocketTimeoutException ||
+                error is UnknownHostException
         }
 
         private fun enc(value: String): String =

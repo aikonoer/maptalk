@@ -28,15 +28,17 @@ Target for both platforms before upload:
 
 - [x] Upload progress (and “Sending video…” state) on both platforms
 - [x] Clearer Worker error mapping (413 / 415 / 429 → human copy)
-- [ ] Retry with backoff on transient failures
-- [ ] Cancel in-flight prepare/upload when leaving the thread
+- [x] Retry with backoff on transient failures
+- [x] Cancel in-flight prepare/upload when leaving the thread
 - [ ] Prefer streaming / signed PUT over full-body buffers (Worker + device RAM)
+  - Partial: Worker reads with early abort (capped chunking); clients still buffer encode output
 
 ## 3. Abuse & integrity
 
-- [ ] Server-side duration/size check from the file (not only client-written Firestore fields)
-- [ ] Durable rate limits (KV / Durable Object), not per-isolate maps
-- [ ] Constrain `videoPath` to our public media base + expected key shape
+- [x] Server-side duration/size check from the file (not only client-written Firestore fields)
+  - Worker parses `mvhd` duration; optional `X-MapTalk-Duration-Ms` cross-check
+- [x] Durable rate limits (KV / Durable Object), not per-isolate maps
+- [ ] Constrain `videoPath` to our public media base + expected key shape (Firestore rules)
 - [ ] Optional: async moderation / hash later
 
 ## 4. Playback UX

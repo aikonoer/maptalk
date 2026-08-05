@@ -352,6 +352,7 @@ class ThreadRepository private constructor(
         val raw = error.message.orEmpty()
         val message = when {
             "413" in raw || "bad_size" in raw -> "Video is too large to upload"
+            "bad_duration" in raw || "duration_mismatch" in raw -> "Keep videos under 30 seconds"
             "415" in raw || "bad_magic" in raw || "unsupported_type" in raw ->
                 "That video format is not supported"
             "429" in raw || "rate_limited" in raw -> "Slow down — try again in a minute"
@@ -359,6 +360,72 @@ class ThreadRepository private constructor(
             else -> error.message ?: "Video could not be sent"
         }
         return IllegalStateException(message, error)
+    }
+
+    /**
+     * Compress-ready video upload that the UI can await (and cancel via coroutine scope).
+     */
+    suspend fun postVideoAwaiting(
+        threadId: String,
+        author: Author,
+        video: PreparedVideo,
+        reply: MessageReply? = null,
+    ): Result<Unit> = when (val backend = backend) {
+        is Backend.Firestore -> {
+            val uploader = mediaUploader
+                ?: return Result.failure(IllegalStateException("Video upload is not configured"))
+            val threadRef = backend.db.collection(Fs.THREADS).document(threadId)
+            val messageRef = threadRef.collection(Fs.MESSAGES).document()
+            val replyFields = reply?.let {
+                mapOf(
+                    Fs.REPLY_TO_ID to it.id,
+                    Fs.REPLY_TO_TEXT to it.text.take(200),
+                    Fs.REPLY_TO_AUTHOR_NAME to it.authorName.take(64),
+                )
+            }.orEmpty()
+            runCatching {
+                val url = uploader.upload(threadId, messageRef.id, video)
+                backend.db.batch()
+                    .apply {
+                        set(
+                            messageRef,
+                            mapOf(
+                                Fs.TEXT to "",
+                                Fs.MESSAGE_KIND to MessageKind.VIDEO.id,
+                                Fs.VIDEO_PATH to url,
+                                Fs.VIDEO_DURATION_MS to video.durationMs,
+                                Fs.VIDEO_WIDTH to video.width,
+                                Fs.VIDEO_HEIGHT to video.height,
+                                Fs.AUTHOR_ID to author.uid,
+                                Fs.AUTHOR_NAME to author.displayName,
+                                Fs.CREATED_AT to FieldValue.serverTimestamp(),
+                            ) + replyFields,
+                        )
+                        update(
+                            threadRef,
+                            mapOf(
+                                Fs.LAST_MESSAGE_AT to FieldValue.serverTimestamp(),
+                                Fs.MESSAGE_COUNT to FieldValue.increment(1),
+                            ),
+                        )
+                    }
+                    .commit()
+                    .await()
+            }.fold(
+                onSuccess = { Result.success(Unit) },
+                onFailure = { Result.failure(mapMediaUploadError(it)) },
+            )
+        }
+        is Backend.Local -> {
+            backend.store.postMessage(
+                threadId = threadId,
+                text = "",
+                author = author,
+                video = video,
+                reply = reply,
+            )
+            Result.success(Unit)
+        }
     }
 
     /** Toggle one emoji reaction from this user. One emoji per user (switching replaces). */
