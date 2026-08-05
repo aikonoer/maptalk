@@ -8,7 +8,11 @@ struct SettingsScreen: View {
     init(environment: AppEnvironment, author: Author) {
         self.author = author
         _model = State(
-            initialValue: SettingsModel(safety: environment.safetyRepository, author: author)
+            initialValue: SettingsModel(
+                safety: environment.safetyRepository,
+                auth: environment.authRepository,
+                author: author
+            )
         )
     }
 
@@ -21,12 +25,44 @@ struct SettingsScreen: View {
                         Text(author.displayName)
                             .font(.cardTitle)
                             .foregroundStyle(Theme.text)
-                        Text("Signed in anonymously")
+                        Text(model.providerLabel)
                             .font(.meta)
                             .foregroundStyle(Theme.faint)
                     }
                 }
                 .listRowBackground(Theme.raised)
+
+                if model.isAnonymous {
+                    Button {
+                        Task { await model.linkWithApple() }
+                    } label: {
+                        HStack {
+                            Image(systemName: "apple.logo")
+                            Text(model.isLinking ? "Connecting…" : "Continue with Apple")
+                            Spacer()
+                        }
+                        .font(.body)
+                        .foregroundStyle(Theme.text)
+                    }
+                    .disabled(model.isLinking)
+                    .listRowBackground(Theme.raised)
+                }
+            } footer: {
+                if model.isAnonymous {
+                    Text("Save this account with Apple so your chats stick if you reinstall.")
+                        .foregroundStyle(Theme.faint)
+                }
+            }
+
+            if let message = model.linkMessage {
+                Section {
+                    Text(message)
+                        .font(.subheadline)
+                        .foregroundStyle(
+                            model.linkIsError ? Theme.danger : Theme.subtle
+                        )
+                        .listRowBackground(Theme.raised)
+                }
             }
 
             Section {
@@ -88,17 +124,28 @@ struct SettingsScreen: View {
 final class SettingsModel {
     private(set) var blocked: [BlockedPerson] = []
     private(set) var isLoading = true
+    private(set) var providerLabel: String
+    private(set) var isAnonymous: Bool
+    private(set) var isLinking = false
+    private(set) var linkMessage: String?
+    private(set) var linkIsError = false
 
     private let safety: SafetyRepository
+    private let auth: AuthRepository
     private let author: Author
+    private let apple = AppleSignInCoordinator()
     private var task: Task<Void, Never>?
 
-    init(safety: SafetyRepository, author: Author) {
+    init(safety: SafetyRepository, auth: AuthRepository, author: Author) {
         self.safety = safety
+        self.auth = auth
         self.author = author
+        providerLabel = auth.providerLabel
+        isAnonymous = auth.isAnonymous
     }
 
     func start() {
+        refreshIdentity()
         guard task == nil else { return }
         task = Task {
             for await people in safety.blockedPeople() {
@@ -115,5 +162,45 @@ final class SettingsModel {
 
     func unblock(_ person: BlockedPerson) {
         safety.unblock(uid: person.uid, as: author)
+    }
+
+    func linkWithApple() async {
+        guard !isLinking else { return }
+        isLinking = true
+        linkMessage = nil
+        do {
+            let result = try await apple.signIn()
+            try await auth.linkWithApple(idToken: result.idToken, rawNonce: result.rawNonce)
+            refreshIdentity()
+            linkIsError = false
+            linkMessage = "Account saved with Apple."
+        } catch let error as AuthRepository.LinkError where error == .cancelled {
+            linkMessage = nil
+        } catch {
+            linkIsError = true
+            linkMessage = error.localizedDescription
+        }
+        isLinking = false
+    }
+
+    private func refreshIdentity() {
+        providerLabel = auth.providerLabel
+        isAnonymous = auth.isAnonymous
+    }
+}
+
+extension AuthRepository.LinkError: Equatable {
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        switch (lhs, rhs) {
+        case (.notSignedIn, .notSignedIn),
+             (.alreadyLinked, .alreadyLinked),
+             (.credentialInUse, .credentialInUse),
+             (.cancelled, .cancelled):
+            true
+        case let (.failed(a), .failed(b)):
+            a == b
+        default:
+            false
+        }
     }
 }

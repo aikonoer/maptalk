@@ -118,6 +118,9 @@ dependencies {
     implementation(libs.geofire.common)
     implementation(libs.androidx.exifinterface)
     implementation(libs.coil.compose)
+    implementation(libs.androidx.credentials)
+    implementation(libs.androidx.credentials.play)
+    implementation(libs.googleid)
 
     testImplementation(libs.junit)
     testImplementation(libs.coroutines.test)

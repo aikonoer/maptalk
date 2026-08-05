@@ -38,9 +38,24 @@ opens with bubbles to tap. Safe to re-run; document IDs are stable.
 
 ## Optional later
 
-- Firebase Storage / Blaze — only if you want Storage as a fallback; **not required** for R2 photos  
+- Firebase Storage / Blaze — Blaze is on for push Functions; Storage still optional vs R2  
 - Deploy Worker updates: `cd workers/media && npm run deploy`
 - `git push` when you want GitHub to catch up
+
+### Real identity (Apple / Google link)
+
+Anonymous Auth stays the bootstrap. Users can **link** Apple (iOS) or Google (Android) from
+Settings so the same `uid` becomes permanent.
+
+1. Firebase Console → Authentication → Sign-in method → enable **Apple** and **Google**.
+2. Apple Developer → Identifiers → `app.maptalk` → enable **Sign in with Apple**.
+3. Android: add your debug (and release) **SHA-1 / SHA-256** on the Firebase Android app,
+   then redownload `android/app/google-services.json` so `oauth_client` is populated.
+   ```bash
+   keytool -list -v -alias androiddebugkey \
+     -keystore ~/.android/debug.keystore -storepass android -keypass android
+   ```
+4. iOS already ships the Sign in with Apple entitlement in `MapTalk.entitlements`.
 
 ### Custom domain for media (when you have a domain)
 

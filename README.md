@@ -28,9 +28,10 @@ push (Functions need Blaze).
 - Open a thread and post replies; everyone watching sees them immediately.
 - Push notifications for new replies (opt-in; needs Blaze + APNs key — see
   [`firebase/functions/README.md`](firebase/functions/README.md)).
+- Optional account upgrade: link Apple (iOS) or Google (Android) from Settings (same uid).
 
-Deliberately not in v1: real accounts, profiles, thread expiry,
-Cloud Functions–backed moderation queues, search.
+Deliberately not in v1: full account profiles, thread expiry,
+Cloud Functions–backed moderation queues, search, video messages.
 
 Reporting and blocking are in-app (viewer-private blocks; append-only reports).
 
