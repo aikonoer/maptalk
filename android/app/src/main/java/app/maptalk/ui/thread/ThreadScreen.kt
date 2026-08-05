@@ -55,6 +55,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -138,7 +139,7 @@ fun ThreadScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val isPreparingImage by viewModel.isPreparingImage.collectAsStateWithLifecycle()
     val isPreparingVideo by viewModel.isPreparingVideo.collectAsStateWithLifecycle()
-    val videoSendPhase by viewModel.videoSendPhase.collectAsStateWithLifecycle()
+    val videoSend by viewModel.videoSend.collectAsStateWithLifecycle()
     val videoConfirmMb by viewModel.videoConfirmMb.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
@@ -347,21 +348,21 @@ fun ThreadScreen(
         )
     }
 
-    if (videoSendPhase == VideoSendPhase.ConfirmUpload) {
-        val mb = videoConfirmMb ?: 1
+    if (videoSend.phase == VideoSendPhase.ConfirmUpload) {
+        val mb = videoConfirmMb ?: videoSend.megabytes ?: 1
         AlertDialog(
             onDismissRequest = { viewModel.declineVideoUpload() },
             containerColor = MapTalkColors.Surface,
-            title = { Text("Upload this video?", color = MapTalkColors.Text) },
+            title = { Text("Send this video?", color = MapTalkColors.Text) },
             text = {
                 Text(
-                    "About $mb MB. On cellular this may use mobile data.",
+                    "About $mb MB · up to 30 seconds. On cellular this uses mobile data.",
                     color = MapTalkColors.Subtle,
                 )
             },
             confirmButton = {
                 TextButton(onClick = { viewModel.confirmVideoUpload() }) {
-                    Text("Upload", color = MapTalkColors.Accent)
+                    Text("Send", color = MapTalkColors.Accent)
                 }
             },
             dismissButton = {
@@ -513,12 +514,7 @@ fun ThreadScreen(
                 showStickers = showStickers,
                 isPreparingImage = isPreparingImage,
                 isPreparingVideo = isPreparingVideo,
-                videoStatus = when (videoSendPhase) {
-                    VideoSendPhase.Compressing -> "Compressing video…"
-                    VideoSendPhase.Uploading -> "Uploading video…"
-                    VideoSendPhase.Failed -> "Video failed to send"
-                    VideoSendPhase.ConfirmUpload, VideoSendPhase.Idle -> null
-                },
+                videoSend = videoSend,
                 onCancelVideo = viewModel::cancelVideoSend,
                 onRetryVideo = viewModel::retryVideoSend,
                 isRecording = isRecording,
@@ -930,7 +926,7 @@ private fun VideoBubble(
             },
         contentAlignment = Alignment.Center,
     ) {
-        if (!isPlaying && poster != null) {
+        if (poster != null && (!isPlaying || isBuffering)) {
             Image(
                 bitmap = poster.asImageBitmap(),
                 contentDescription = null,
@@ -963,14 +959,24 @@ private fun VideoBubble(
             )
         }
         when {
-            isBuffering && isPlaying -> CircularProgressIndicator(
-                color = Color.White,
-                strokeWidth = 2.dp,
-                modifier = Modifier.size(28.dp),
-            )
+            isBuffering && isPlaying -> {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(
+                        color = Color.White,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(28.dp),
+                    )
+                    Text(
+                        text = "Loading…",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White.copy(alpha = 0.9f),
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                }
+            }
             !isPlaying -> Icon(
                 painter = painterResource(R.drawable.ic_play),
-                contentDescription = "Play video",
+                contentDescription = "Play video, ${formatDuration(durationMs)}",
                 tint = Color.White,
                 modifier = Modifier
                     .size(44.dp)
@@ -1207,7 +1213,7 @@ private fun Composer(
     showStickers: Boolean,
     isPreparingImage: Boolean,
     isPreparingVideo: Boolean,
-    videoStatus: String?,
+    videoSend: VideoSendUi,
     onCancelVideo: () -> Unit,
     onRetryVideo: () -> Unit,
     isRecording: Boolean,
@@ -1237,31 +1243,62 @@ private fun Composer(
     }
 
     Column(modifier = modifier.fillMaxWidth()) {
-        videoStatus?.let { status ->
-            Row(
+        videoSend.title?.let { title ->
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 14.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Text(
-                    text = status,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MapTalkColors.Subtle,
-                    modifier = Modifier.weight(1f),
-                )
-                if (isPreparingVideo) {
-                    TextButton(onClick = onCancelVideo) {
-                        Text("Cancel", color = MapTalkColors.Subtle)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    if (videoSend.isBusy) {
+                        CircularProgressIndicator(
+                            color = MapTalkColors.Accent,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.size(16.dp),
+                        )
                     }
-                } else {
-                    TextButton(onClick = onRetryVideo) {
-                        Text("Retry", color = MapTalkColors.Accent)
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = title,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = if (videoSend.phase == VideoSendPhase.Failed) {
+                                MapTalkColors.Danger
+                            } else {
+                                MapTalkColors.Text
+                            },
+                        )
+                        videoSend.subtitle?.let { sub ->
+                            Text(
+                                text = sub,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MapTalkColors.Subtle,
+                            )
+                        }
                     }
-                    TextButton(onClick = onCancelVideo) {
-                        Text("Dismiss", color = MapTalkColors.Subtle)
+                    if (videoSend.isBusy) {
+                        TextButton(onClick = onCancelVideo) {
+                            Text("Cancel", color = MapTalkColors.Subtle)
+                        }
+                    } else if (videoSend.phase == VideoSendPhase.Failed) {
+                        TextButton(onClick = onRetryVideo) {
+                            Text("Retry", color = MapTalkColors.Accent)
+                        }
+                        TextButton(onClick = onCancelVideo) {
+                            Text("Dismiss", color = MapTalkColors.Subtle)
+                        }
                     }
+                }
+                if (videoSend.isBusy) {
+                    LinearProgressIndicator(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp),
+                        color = MapTalkColors.Accent,
+                        trackColor = MapTalkColors.Raised,
+                    )
                 }
             }
         }

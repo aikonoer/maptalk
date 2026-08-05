@@ -15,6 +15,8 @@ struct ThreadScreen: View {
     @State private var pendingImage: UIImage?
     @State private var isPreparingImage = false
     @State private var videoSendPhase: VideoSendPhase = .idle
+    @State private var videoFailDetail: String?
+    @State private var videoUploadMegabytes: Int?
     @State private var videoTask: Task<Void, Never>?
     @State private var retryPreparedVideo: PreparedVideo?
     @State private var pendingUploadConfirm: PendingVideoUpload?
@@ -28,6 +30,13 @@ struct ThreadScreen: View {
     @State private var recorder = VoiceRecorder()
     @FocusState private var isComposing: Bool
     @Environment(\.dismiss) private var dismiss
+
+    private var threadErrorPresented: Binding<Bool> {
+        Binding(
+            get: { model.errorMessage != nil && videoSendPhase != .failed },
+            set: { if !$0 { model.errorMessage = nil } }
+        )
+    }
 
     init(environment: AppEnvironment, author: Author, threadId: String) {
         self.author = author
@@ -55,111 +64,16 @@ struct ThreadScreen: View {
     }
 
     var body: some View {
-        messages
-            .background(Theme.base)
-            .safeAreaInset(edge: .bottom) { composer }
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(Theme.surface, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .principal) { header }
-                ToolbarItem(placement: .topBarTrailing) {
-                    if let thread = model.thread, thread.authorId != author.uid {
-                        Menu {
-                            Button("Report chat", systemImage: "flag") {
-                                reportTarget = .thread(thread)
-                            }
-                            Button("Block \(thread.authorName)", systemImage: "hand.raised", role: .destructive) {
-                                blockConfirm = BlockConfirm(
-                                    uid: thread.authorId,
-                                    name: thread.authorName
-                                )
-                            }
-                        } label: {
-                            Image(systemName: "ellipsis")
-                                .foregroundStyle(Theme.subtle)
-                        }
-                        .accessibilityLabel("Chat options")
-                    }
-                }
-            }
-            .onAppear { model.start() }
-            .onDisappear {
-                model.stop()
-                recorder.cancel()
-                cancelVideoSend()
-            }
-            .onChange(of: model.shouldDismiss) { _, dismissNow in
-                if dismissNow { dismiss() }
-            }
-            .onChange(of: pickerItem) { _, item in
-                guard let item else { return }
-                Task { await loadPickerItem(item) }
-            }
-            .onChange(of: videoPickerItem) { _, item in
-                guard let item else { return }
-                videoTask?.cancel()
-                videoTask = Task { await loadVideoItem(item) }
-            }
-            .overlay {
-                if let message = longPressTarget {
-                    MessageLongPressOverlay(
-                        message: message,
-                        isMine: message.authorId == author.uid,
-                        myUid: author.uid,
-                        anchor: bubbleFrames[message.id] ?? longPressFrame,
-                        onReact: { emoji in
-                            model.toggleReaction(emoji, on: message, as: author)
-                        },
-                        onReply: {
-                            model.setReply(to: message)
-                        },
-                        onReport: {
-                            reportTarget = .message(message)
-                        },
-                        onBlock: {
-                            blockConfirm = BlockConfirm(
-                                uid: message.authorId,
-                                name: message.authorName
-                            )
-                        },
-                        onDismiss: dismissLongPress
-                    )
-                    .zIndex(20)
-                }
-            }
-            .coordinateSpace(name: "thread")
-            .onPreferenceChange(BubbleFrameKey.self) { bubbleFrames = $0 }
-            .sheet(item: $reportTarget) { target in
-                ReportReasonSheet { reason in
-                    switch target {
-                    case let .message(message):
-                        model.report(
-                            type: .message,
-                            targetId: message.id,
-                            targetAuthorId: message.authorId,
-                            reason: reason,
-                            as: author
-                        )
-                    case let .thread(thread):
-                        model.report(
-                            type: .thread,
-                            targetId: thread.id,
-                            targetAuthorId: thread.authorId,
-                            reason: reason,
-                            as: author
-                        )
-                    }
-                    reportTarget = nil
-                    reportThanks = true
-                }
-                .presentationDetents([.height(280)])
-                .presentationDragIndicator(.visible)
-                .presentationBackground(Theme.surface)
-            }
+        threadChrome
             .alert("Thanks — we’ll take a look", isPresented: $reportThanks) {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text("Your report was sent. You can also block the person if you don’t want to see them.")
+            }
+            .alert("Something went wrong", isPresented: threadErrorPresented) {
+                Button("OK", role: .cancel) { model.errorMessage = nil }
+            } message: {
+                Text(model.errorMessage ?? "")
             }
             .confirmationDialog(
                 blockConfirm.map { "Block \($0.name)?" } ?? "Block?",
@@ -184,35 +98,149 @@ struct ThreadScreen: View {
                 Text("Their chats and messages will disappear for you. Unblock anytime from Settings.")
             }
             .confirmationDialog(
-                "Upload this video?",
+                "Send this video?",
                 isPresented: Binding(
                     get: { pendingUploadConfirm != nil },
-                    set: {
-                        if !$0 {
-                            pendingUploadConfirm?.video.deleteTempFile()
-                            pendingUploadConfirm = nil
-                            if videoSendPhase == .confirmUpload { videoSendPhase = .idle }
-                        }
+                    set: { present in
+                        if !present { declinePendingVideoUpload() }
                     }
                 ),
                 titleVisibility: .visible
             ) {
-                Button("Upload") {
-                    if let pending = pendingUploadConfirm {
-                        pendingUploadConfirm = nil
-                        videoTask = Task { await uploadPreparedVideo(pending.video) }
-                    }
-                }
-                Button("Cancel", role: .cancel) {
-                    pendingUploadConfirm?.video.deleteTempFile()
-                    pendingUploadConfirm = nil
-                    videoSendPhase = .idle
-                }
+                Button("Send") { confirmPendingVideoUpload() }
+                Button("Cancel", role: .cancel) { declinePendingVideoUpload() }
             } message: {
                 if let pending = pendingUploadConfirm {
-                    Text("About \(pending.megabytes) MB. On cellular this may use mobile data.")
+                    Text("About \(pending.megabytes) MB · up to 30 seconds. On cellular this uses mobile data.")
                 }
             }
+    }
+
+    private var threadChrome: some View {
+        messages
+            .background(Theme.base)
+            .safeAreaInset(edge: .bottom) { composer }
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Theme.surface, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .principal) { header }
+                ToolbarItem(placement: .topBarTrailing) { threadOptionsMenu }
+            }
+            .onAppear { model.start() }
+            .onDisappear {
+                model.stop()
+                recorder.cancel()
+                cancelVideoSend()
+            }
+            .onChange(of: model.shouldDismiss) { _, dismissNow in
+                if dismissNow { dismiss() }
+            }
+            .onChange(of: pickerItem) { _, item in
+                guard let item else { return }
+                Task { await loadPickerItem(item) }
+            }
+            .onChange(of: videoPickerItem) { _, item in
+                guard let item else { return }
+                videoTask?.cancel()
+                videoTask = Task { await loadVideoItem(item) }
+            }
+            .overlay { longPressOverlay }
+            .coordinateSpace(name: "thread")
+            .onPreferenceChange(BubbleFrameKey.self) { bubbleFrames = $0 }
+            .sheet(item: $reportTarget) { target in
+                reportSheet(for: target)
+            }
+    }
+
+    @ViewBuilder
+    private var threadOptionsMenu: some View {
+        if let thread = model.thread, thread.authorId != author.uid {
+            Menu {
+                Button("Report chat", systemImage: "flag") {
+                    reportTarget = .thread(thread)
+                }
+                Button("Block \(thread.authorName)", systemImage: "hand.raised", role: .destructive) {
+                    blockConfirm = BlockConfirm(
+                        uid: thread.authorId,
+                        name: thread.authorName
+                    )
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .foregroundStyle(Theme.subtle)
+            }
+            .accessibilityLabel("Chat options")
+        }
+    }
+
+    @ViewBuilder
+    private var longPressOverlay: some View {
+        if let message = longPressTarget {
+            MessageLongPressOverlay(
+                message: message,
+                isMine: message.authorId == author.uid,
+                myUid: author.uid,
+                anchor: bubbleFrames[message.id] ?? longPressFrame,
+                onReact: { emoji in
+                    model.toggleReaction(emoji, on: message, as: author)
+                },
+                onReply: {
+                    model.setReply(to: message)
+                },
+                onReport: {
+                    reportTarget = .message(message)
+                },
+                onBlock: {
+                    blockConfirm = BlockConfirm(
+                        uid: message.authorId,
+                        name: message.authorName
+                    )
+                },
+                onDismiss: dismissLongPress
+            )
+            .zIndex(20)
+        }
+    }
+
+    private func reportSheet(for target: ReportSheetTarget) -> some View {
+        ReportReasonSheet { reason in
+            switch target {
+            case let .message(message):
+                model.report(
+                    type: .message,
+                    targetId: message.id,
+                    targetAuthorId: message.authorId,
+                    reason: reason,
+                    as: author
+                )
+            case let .thread(thread):
+                model.report(
+                    type: .thread,
+                    targetId: thread.id,
+                    targetAuthorId: thread.authorId,
+                    reason: reason,
+                    as: author
+                )
+            }
+            reportTarget = nil
+            reportThanks = true
+        }
+        .presentationDetents([.height(280)])
+        .presentationDragIndicator(.visible)
+        .presentationBackground(Theme.surface)
+    }
+
+    private func confirmPendingVideoUpload() {
+        guard let pending = pendingUploadConfirm else { return }
+        videoUploadMegabytes = pending.megabytes
+        pendingUploadConfirm = nil
+        videoTask = Task { await uploadPreparedVideo(pending.video) }
+    }
+
+    private func declinePendingVideoUpload() {
+        pendingUploadConfirm?.video.deleteTempFile()
+        pendingUploadConfirm = nil
+        if videoSendPhase == .confirmUpload { videoSendPhase = .idle }
     }
 
     private var header: some View {
@@ -346,27 +374,14 @@ struct ThreadScreen: View {
                 .padding(.top, 10)
             }
 
-            if let status = videoSendPhase.statusCopy {
-                HStack(spacing: 10) {
-                    Text(status)
-                        .font(.meta)
-                        .foregroundStyle(Theme.subtle)
-                    Spacer(minLength: 0)
-                    if isPreparingVideo {
-                        Button("Cancel") { cancelVideoSend() }
-                            .font(.meta)
-                            .foregroundStyle(Theme.subtle)
-                    } else if videoSendPhase == .failed {
-                        Button("Retry") { retryVideoSend() }
-                            .font(.meta)
-                            .foregroundStyle(Theme.accent)
-                        Button("Dismiss") { cancelVideoSend() }
-                            .font(.meta)
-                            .foregroundStyle(Theme.subtle)
-                    }
-                }
-                .padding(.horizontal, 14)
-                .padding(.top, 8)
+            if let status = videoSendPhase.statusCopy(detail: videoFailDetail, megabytes: videoUploadMegabytes) {
+                VideoSendStatusBanner(
+                    status: status,
+                    phase: videoSendPhase,
+                    isBusy: isPreparingVideo,
+                    onCancel: cancelVideoSend,
+                    onRetry: retryVideoSend
+                )
             }
 
             if showStickers {
@@ -538,11 +553,13 @@ struct ThreadScreen: View {
     }
 
     private func loadVideoItem(_ item: PhotosPickerItem) async {
+        videoFailDetail = nil
+        videoUploadMegabytes = nil
         videoSendPhase = .compressing
         defer { videoPickerItem = nil }
         guard let movie = try? await item.loadTransferable(type: PickedMovie.self) else {
             if !Task.isCancelled {
-                model.errorMessage = VideoCompressor.PrepareError.unreadable.localizedDescription
+                videoFailDetail = VideoCompressor.PrepareError.unreadable.localizedDescription
                 videoSendPhase = .failed
             }
             return
@@ -558,7 +575,7 @@ struct ThreadScreen: View {
                 videoSendPhase = .idle
                 return
             }
-            model.errorMessage = error.localizedDescription
+            videoFailDetail = error.localizedDescription
             videoSendPhase = .failed
         case .success(let prepared):
             guard !Task.isCancelled else {
@@ -567,6 +584,7 @@ struct ThreadScreen: View {
             }
             retryPreparedVideo = prepared
             let mb = max(1, (prepared.byteCount + 512 * 1024) / (1024 * 1024))
+            videoUploadMegabytes = mb
             let needsConfirm = NetworkExpense.isExpensiveOrConstrained
                 || prepared.byteCount >= 5 * 1024 * 1024
             if needsConfirm {
@@ -581,6 +599,7 @@ struct ThreadScreen: View {
     private func uploadPreparedVideo(_ prepared: PreparedVideo) async {
         videoSendPhase = .uploading
         model.errorMessage = nil
+        videoFailDetail = nil
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             model.send("", as: author, video: prepared) {
                 cont.resume()
@@ -590,11 +609,14 @@ struct ThreadScreen: View {
             prepared.deleteTempFile()
             retryPreparedVideo = nil
             videoSendPhase = .idle
-        } else if model.errorMessage != nil {
+        } else if let error = model.errorMessage {
+            videoFailDetail = error
+            model.errorMessage = nil
             videoSendPhase = .failed
         } else {
             prepared.deleteTempFile()
             retryPreparedVideo = nil
+            videoUploadMegabytes = nil
             videoSendPhase = .idle
         }
     }
@@ -614,6 +636,8 @@ struct ThreadScreen: View {
         pendingUploadConfirm = nil
         retryPreparedVideo?.deleteTempFile()
         retryPreparedVideo = nil
+        videoFailDetail = nil
+        videoUploadMegabytes = nil
         videoSendPhase = .idle
     }
 
@@ -1277,13 +1301,77 @@ private enum VideoSendPhase {
     case uploading
     case failed
 
-    var statusCopy: String? {
+    struct StatusCopy {
+        let title: String
+        let subtitle: String?
+    }
+
+    func statusCopy(detail: String?, megabytes: Int?) -> StatusCopy? {
         switch self {
-        case .idle, .confirmUpload: nil
-        case .compressing: "Compressing video…"
-        case .uploading: "Uploading video…"
-        case .failed: "Video failed to send"
+        case .idle, .confirmUpload:
+            return nil
+        case .compressing:
+            return StatusCopy(title: "Preparing video…", subtitle: "Compressing to under 30 seconds")
+        case .uploading:
+            let sub = megabytes.map { "About \($0) MB" }
+            return StatusCopy(title: "Sending video…", subtitle: sub)
+        case .failed:
+            return StatusCopy(
+                title: detail ?? "Video could not be sent",
+                subtitle: "Retry or pick another clip"
+            )
         }
+    }
+}
+
+private struct VideoSendStatusBanner: View {
+    let status: VideoSendPhase.StatusCopy
+    let phase: VideoSendPhase
+    let isBusy: Bool
+    let onCancel: () -> Void
+    let onRetry: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                if isBusy {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(Theme.accent)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(status.title)
+                        .font(.meta)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(phase == .failed ? Theme.danger : Theme.text)
+                    if let subtitle = status.subtitle {
+                        Text(subtitle)
+                            .font(.meta)
+                            .foregroundStyle(Theme.subtle)
+                    }
+                }
+                Spacer(minLength: 0)
+                if isBusy {
+                    Button("Cancel", action: onCancel)
+                        .font(.meta)
+                        .foregroundStyle(Theme.subtle)
+                } else if phase == .failed {
+                    Button("Retry", action: onRetry)
+                        .font(.meta)
+                        .foregroundStyle(Theme.accent)
+                    Button("Dismiss", action: onCancel)
+                        .font(.meta)
+                        .foregroundStyle(Theme.subtle)
+                }
+            }
+            if isBusy {
+                ProgressView()
+                    .progressViewStyle(.linear)
+                    .tint(Theme.accent)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 8)
     }
 }
 
@@ -1333,10 +1421,15 @@ private struct VideoBubble: View {
             }
 
             if showBusy {
-                ProgressView()
-                    .controlSize(.regular)
-                    .tint(.white)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                VStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.regular)
+                        .tint(.white)
+                    Text(isPreparing ? "Loading…" : "Buffering…")
+                        .font(.meta)
+                        .foregroundStyle(.white.opacity(0.9))
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if !isThisPlaying {
                 Image(systemName: "play.circle.fill")
                     .font(.system(size: 44))
@@ -1364,7 +1457,7 @@ private struct VideoBubble: View {
                 playback.pause()
             }
         }
-        .accessibilityLabel("Video")
+        .accessibilityLabel("Video, \(Self.format(durationMs))")
         .accessibilityAddTraits(.isButton)
     }
 

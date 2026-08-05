@@ -54,6 +54,33 @@ enum class VideoSendPhase {
     Failed,
 }
 
+data class VideoSendUi(
+    val phase: VideoSendPhase = VideoSendPhase.Idle,
+    /** Human reason when [phase] is Failed. */
+    val detail: String? = null,
+    /** Rough size shown while confirming / uploading. */
+    val megabytes: Int? = null,
+) {
+    val isBusy: Boolean
+        get() = phase == VideoSendPhase.Compressing || phase == VideoSendPhase.Uploading
+
+    val title: String?
+        get() = when (phase) {
+            VideoSendPhase.Compressing -> "Preparing video…"
+            VideoSendPhase.Uploading -> "Sending video…"
+            VideoSendPhase.Failed -> detail ?: "Video could not be sent"
+            VideoSendPhase.ConfirmUpload, VideoSendPhase.Idle -> null
+        }
+
+    val subtitle: String?
+        get() = when (phase) {
+            VideoSendPhase.Compressing -> "Compressing to under 30 seconds"
+            VideoSendPhase.Uploading -> megabytes?.let { "About $it MB" }
+            VideoSendPhase.Failed -> "Retry or pick another clip"
+            else -> null
+        }
+}
+
 class ThreadViewModel(
     private val threadId: String,
     private val threadRepository: ThreadRepository,
@@ -70,21 +97,21 @@ class ThreadViewModel(
     private val _isPreparingImage = MutableStateFlow(false)
     val isPreparingImage: StateFlow<Boolean> = _isPreparingImage.asStateFlow()
 
-    private val _videoSendPhase = MutableStateFlow(VideoSendPhase.Idle)
-    val videoSendPhase: StateFlow<VideoSendPhase> = _videoSendPhase.asStateFlow()
+    private val _videoSend = MutableStateFlow(VideoSendUi())
+    val videoSend: StateFlow<VideoSendUi> = _videoSend.asStateFlow()
 
-    val isPreparingVideo: StateFlow<Boolean> = _videoSendPhase
-        .map { it == VideoSendPhase.Compressing || it == VideoSendPhase.Uploading }
+    val isPreparingVideo: StateFlow<Boolean> = _videoSend
+        .map { it.isBusy }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    private val _videoConfirmMb = MutableStateFlow<Int?>(null)
+    val videoConfirmMb: StateFlow<Int?> = _videoConfirmMb.asStateFlow()
 
     private var videoJob: Job? = null
     private var retryVideoUri: Uri? = null
     private var retryVideoAuthor: Author? = null
     private var pendingConfirmVideo: PreparedVideo? = null
     private var pendingConfirmAuthor: Author? = null
-
-    private val _videoConfirmMb = MutableStateFlow<Int?>(null)
-    val videoConfirmMb: StateFlow<Int?> = _videoConfirmMb.asStateFlow()
 
     private val _replyTarget = MutableStateFlow<Message?>(null)
     private val _shouldDismiss = MutableStateFlow(false)
@@ -172,12 +199,14 @@ class ThreadViewModel(
         retryVideoUri = uri
         retryVideoAuthor = author
         videoJob = viewModelScope.launch {
-            _videoSendPhase.value = VideoSendPhase.Compressing
+            _videoSend.value = VideoSendUi(phase = VideoSendPhase.Compressing)
             try {
                 when (val result = VideoCompressor.prepare(appContext, uri)) {
                     is VideoCompressor.Result.Err -> {
-                        _errors.emit(IllegalStateException(result.message))
-                        _videoSendPhase.value = VideoSendPhase.Failed
+                        _videoSend.value = VideoSendUi(
+                            phase = VideoSendPhase.Failed,
+                            detail = result.message,
+                        )
                     }
                     is VideoCompressor.Result.Ok -> {
                         val mb = ((result.video.byteLength + 512 * 1024) / (1024 * 1024))
@@ -189,14 +218,17 @@ class ThreadViewModel(
                             pendingConfirmVideo = result.video
                             pendingConfirmAuthor = author
                             _videoConfirmMb.value = mb
-                            _videoSendPhase.value = VideoSendPhase.ConfirmUpload
+                            _videoSend.value = VideoSendUi(
+                                phase = VideoSendPhase.ConfirmUpload,
+                                megabytes = mb,
+                            )
                         } else {
-                            uploadPreparedVideo(result.video, author)
+                            uploadPreparedVideo(result.video, author, mb)
                         }
                     }
                 }
             } catch (_: CancellationException) {
-                _videoSendPhase.value = VideoSendPhase.Idle
+                _videoSend.value = VideoSendUi()
             }
         }
     }
@@ -204,15 +236,16 @@ class ThreadViewModel(
     fun confirmVideoUpload() {
         val video = pendingConfirmVideo ?: return
         val author = pendingConfirmAuthor ?: return
+        val mb = _videoConfirmMb.value
         pendingConfirmVideo = null
         pendingConfirmAuthor = null
         _videoConfirmMb.value = null
         videoJob = viewModelScope.launch {
             try {
-                uploadPreparedVideo(video, author)
+                uploadPreparedVideo(video, author, mb)
             } catch (_: CancellationException) {
                 video.file.delete()
-                _videoSendPhase.value = VideoSendPhase.Idle
+                _videoSend.value = VideoSendUi()
             }
         }
     }
@@ -222,11 +255,17 @@ class ThreadViewModel(
         pendingConfirmVideo = null
         pendingConfirmAuthor = null
         _videoConfirmMb.value = null
-        _videoSendPhase.value = VideoSendPhase.Idle
+        _videoSend.value = VideoSendUi()
     }
 
-    private suspend fun uploadPreparedVideo(video: PreparedVideo, author: Author) {
-        _videoSendPhase.value = VideoSendPhase.Uploading
+    private suspend fun uploadPreparedVideo(
+        video: PreparedVideo,
+        author: Author,
+        megabytes: Int?,
+    ) {
+        val mb = megabytes
+            ?: ((video.byteLength + 512 * 1024) / (1024 * 1024)).toInt().coerceAtLeast(1)
+        _videoSend.value = VideoSendUi(phase = VideoSendPhase.Uploading, megabytes = mb)
         val outcome = threadRepository.postVideoAwaiting(
             threadId = threadId,
             author = author,
@@ -248,12 +287,11 @@ class ThreadViewModel(
         _replyTarget.value = null
         if (outcome.isSuccess) {
             video.file.delete()
-            _videoSendPhase.value = VideoSendPhase.Idle
+            _videoSend.value = VideoSendUi()
         } else {
-            outcome.exceptionOrNull()?.let { _errors.emit(it) }
-            // Keep file for retry from URI recompress path; drop encoded temp.
+            val detail = outcome.exceptionOrNull()?.message ?: "Video could not be sent"
             video.file.delete()
-            _videoSendPhase.value = VideoSendPhase.Failed
+            _videoSend.value = VideoSendUi(phase = VideoSendPhase.Failed, detail = detail)
         }
     }
 
@@ -270,7 +308,7 @@ class ThreadViewModel(
         pendingConfirmVideo = null
         pendingConfirmAuthor = null
         _videoConfirmMb.value = null
-        _videoSendPhase.value = VideoSendPhase.Idle
+        _videoSend.value = VideoSendUi()
     }
 
     override fun onCleared() {
