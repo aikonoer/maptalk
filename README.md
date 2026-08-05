@@ -31,7 +31,7 @@ push (Functions need Blaze).
 - Optional account upgrade: link Apple (iOS) or Google (Android) from Settings (same uid).
 
 Deliberately not in v1: full account profiles, thread expiry,
-Cloud Functions–backed moderation queues, search, video messages.
+Cloud Functions–backed moderation queues, search.
 
 Reporting and blocking are in-app (viewer-private blocks; append-only reports).
 

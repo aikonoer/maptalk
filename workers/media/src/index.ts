@@ -3,14 +3,15 @@
  *
  * POST /v1/images?threadId=&messageId=   Content-Type: image/jpeg
  * POST /v1/audio?threadId=&messageId=   Content-Type: audio/mp4 | audio/m4a | audio/aac
+ * POST /v1/video?threadId=&messageId=   Content-Type: video/mp4
  *
  * Authorization: Bearer <Firebase ID token>
  *
  * Abuse caps (per isolate, soft):
- *   - 20 uploads / uid / rolling 10 minutes (images + audio combined)
+ *   - 20 uploads / uid / rolling 10 minutes (all kinds)
  *   - 8 audio uploads / uid / rolling 10 minutes
- *   - JPEG magic bytes + ISO BMFF `ftyp` sniff for audio
- *   - Size caps: 2 MB image, 1 MB audio
+ *   - 4 video uploads / uid / rolling 10 minutes
+ *   - Magic-byte sniff + size caps
  */
 
 export interface Env {
@@ -21,18 +22,21 @@ export interface Env {
 
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
 const MAX_AUDIO_BYTES = 1 * 1024 * 1024;
+const MAX_VIDEO_BYTES = 12 * 1024 * 1024;
 const KEY_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const RATE_WINDOW_MS = 10 * 60 * 1000;
 const RATE_MAX_TOTAL = 20;
 const RATE_MAX_AUDIO = 8;
+const RATE_MAX_VIDEO = 4;
 /** Bound in-memory rate maps so a flood of uids cannot grow forever. */
 const RATE_UID_CAP = 4_000;
 
-type UploadKind = "image" | "audio";
+type UploadKind = "image" | "audio" | "video";
 
 /** uid → timestamps inside this isolate */
 const recentTotal = new Map<string, number[]>();
 const recentAudio = new Map<string, number[]>();
+const recentVideo = new Map<string, number[]>();
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -48,8 +52,10 @@ export default {
         limits: {
           maxImageBytes: MAX_IMAGE_BYTES,
           maxAudioBytes: MAX_AUDIO_BYTES,
+          maxVideoBytes: MAX_VIDEO_BYTES,
           uploadsPer10Min: RATE_MAX_TOTAL,
           audioPer10Min: RATE_MAX_AUDIO,
+          videoPer10Min: RATE_MAX_VIDEO,
         },
       });
     }
@@ -71,6 +77,16 @@ export default {
         maxBytes: MAX_AUDIO_BYTES,
         extension: "m4a",
         contentType: "audio/mp4",
+      });
+    }
+
+    if (request.method === "POST" && url.pathname === "/v1/video") {
+      return upload(request, env, url, {
+        kind: "video",
+        kinds: ["video/mp4"],
+        maxBytes: MAX_VIDEO_BYTES,
+        extension: "mp4",
+        contentType: "video/mp4",
       });
     }
 
@@ -137,7 +153,7 @@ async function upload(
   if (spec.kind === "image" && !looksLikeJpeg(bytes)) {
     return json({ error: "bad_magic" }, 415);
   }
-  if (spec.kind === "audio" && !looksLikeMp4Audio(bytes)) {
+  if ((spec.kind === "audio" || spec.kind === "video") && !looksLikeMp4Container(bytes)) {
     return json({ error: "bad_magic" }, 415);
   }
 
@@ -161,6 +177,7 @@ function allowUpload(uid: string, kind: UploadKind): { ok: true } | { ok: false;
   const now = Date.now();
   pruneMap(recentTotal, now);
   pruneMap(recentAudio, now);
+  pruneMap(recentVideo, now);
 
   const total = (recentTotal.get(uid) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
   if (total.length >= RATE_MAX_TOTAL) {
@@ -178,6 +195,16 @@ function allowUpload(uid: string, kind: UploadKind): { ok: true } | { ok: false;
     recentAudio.set(uid, audio);
   }
 
+  if (kind === "video") {
+    const video = (recentVideo.get(uid) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
+    if (video.length >= RATE_MAX_VIDEO) {
+      recentVideo.set(uid, video);
+      return { ok: false, scope: "video" };
+    }
+    video.push(now);
+    recentVideo.set(uid, video);
+  }
+
   total.push(now);
   recentTotal.set(uid, total);
   return { ok: true };
@@ -190,7 +217,6 @@ function pruneMap(map: Map<string, number[]>, now: number) {
     else map.set(uid, kept);
   }
   if (map.size <= RATE_UID_CAP) return;
-  // Drop oldest-by-last-upload entries until under the cap.
   const ranked = [...map.entries()].sort(
     (a, b) => (a[1][a[1].length - 1] ?? 0) - (b[1][b[1].length - 1] ?? 0),
   );
@@ -204,8 +230,8 @@ function looksLikeJpeg(bytes: Uint8Array): boolean {
   return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
 }
 
-/** ISO BMFF: size + 'ftyp' within the first box (m4a / mp4 / aac in mp4). */
-function looksLikeMp4Audio(bytes: Uint8Array): boolean {
+/** ISO BMFF: size + 'ftyp' within the first box (m4a / mp4). */
+function looksLikeMp4Container(bytes: Uint8Array): boolean {
   if (bytes.length < 12) return false;
   const box = String.fromCharCode(bytes[4], bytes[5], bytes[6], bytes[7]);
   return box === "ftyp";

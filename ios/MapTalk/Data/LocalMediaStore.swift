@@ -28,6 +28,13 @@ enum LocalMediaStore {
         return name
     }
 
+    static func save(video: Data, ext: String = "mp4") throws -> String {
+        let name = "\(UUID().uuidString).\(ext)"
+        let file = root.appendingPathComponent(name)
+        try video.write(to: file, options: .atomic)
+        return name
+    }
+
     static func url(forRelativePath path: String) -> URL {
         root.appendingPathComponent(path)
     }

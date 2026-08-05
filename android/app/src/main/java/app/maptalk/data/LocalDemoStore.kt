@@ -9,6 +9,7 @@ import app.maptalk.data.model.MessageKind
 import app.maptalk.data.model.MessageReply
 import app.maptalk.data.model.PreparedAudio
 import app.maptalk.data.model.PreparedImage
+import app.maptalk.data.model.PreparedVideo
 import app.maptalk.data.model.ReportReason
 import app.maptalk.data.model.ReportTargetType
 import app.maptalk.data.model.ThreadKind
@@ -165,6 +166,7 @@ class LocalDemoStore(context: Context) {
         author: Author,
         image: PreparedImage? = null,
         audio: PreparedAudio? = null,
+        video: PreparedVideo? = null,
         sticker: String? = null,
         reply: MessageReply? = null,
     ) {
@@ -178,6 +180,10 @@ class LocalDemoStore(context: Context) {
         var imageHeight: Int? = null
         var audioPath: String? = null
         var audioDurationMs: Int? = null
+        var videoPath: String? = null
+        var videoDurationMs: Int? = null
+        var videoWidth: Int? = null
+        var videoHeight: Int? = null
 
         when {
             sticker != null -> {
@@ -189,6 +195,14 @@ class LocalDemoStore(context: Context) {
                 imagePath = media.save(image.jpegBytes)
                 imageWidth = image.width
                 imageHeight = image.height
+            }
+            video != null -> {
+                kind = MessageKind.VIDEO
+                body = ""
+                videoPath = media.saveVideo(video.bytes)
+                videoDurationMs = video.durationMs
+                videoWidth = video.width
+                videoHeight = video.height
             }
             audio != null -> {
                 kind = MessageKind.VOICE
@@ -215,6 +229,10 @@ class LocalDemoStore(context: Context) {
             imageHeight = imageHeight,
             audioPath = audioPath,
             audioDurationMs = audioDurationMs,
+            videoPath = videoPath,
+            videoDurationMs = videoDurationMs,
+            videoWidth = videoWidth,
+            videoHeight = videoHeight,
             reply = reply,
         )
         messages.getOrPut(threadId) { mutableListOf() }.add(message)

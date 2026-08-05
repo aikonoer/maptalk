@@ -24,6 +24,8 @@ function previewBody(message: MessageDoc): string {
       return `${name} sent a photo`;
     case "voice":
       return `${name} sent a voice note`;
+    case "video":
+      return `${name} sent a video`;
     case "sticker":
       return `${name} sent a sticker`;
     default: {

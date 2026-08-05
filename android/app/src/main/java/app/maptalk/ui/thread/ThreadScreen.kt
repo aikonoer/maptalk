@@ -5,7 +5,9 @@ import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.media.MediaPlayer
 import android.media.MediaRecorder
+import android.net.Uri
 import android.os.Build
+import android.widget.VideoView
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -86,6 +88,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.launch
@@ -130,6 +133,7 @@ fun ThreadScreen(
         viewModel(factory = ThreadViewModel.factory(container, threadId))
     val state by viewModel.state.collectAsStateWithLifecycle()
     val isPreparingImage by viewModel.isPreparingImage.collectAsStateWithLifecycle()
+    val isPreparingVideo by viewModel.isPreparingVideo.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
     var pendingImage by remember { mutableStateOf<PreparedImage?>(null) }
@@ -149,6 +153,16 @@ fun ThreadScreen(
     ) { uri ->
         if (uri != null) {
             viewModel.prepareImage(uri) { pendingImage = it }
+        }
+    }
+
+    val videoPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia(),
+    ) { uri ->
+        if (uri != null) {
+            viewModel.prepareVideo(uri) { prepared ->
+                viewModel.send(text = "", author = author, video = prepared)
+            }
         }
     }
 
@@ -469,6 +483,7 @@ fun ThreadScreen(
                 replyTarget = state.replyTarget,
                 showStickers = showStickers,
                 isPreparingImage = isPreparingImage,
+                isPreparingVideo = isPreparingVideo,
                 isRecording = isRecording,
                 recordElapsedMs = recordElapsedMs,
                 onClearPending = { pendingImage = null },
@@ -481,6 +496,11 @@ fun ThreadScreen(
                 onPickPhoto = {
                     photoPicker.launch(
                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                    )
+                },
+                onPickVideo = {
+                    videoPicker.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly),
                     )
                 },
                 onStartRecord = {
@@ -577,7 +597,9 @@ private fun MessageRow(
     onLongPress: () -> Unit,
     onToggleReaction: (String) -> Unit,
 ) {
-    val imageOnly = message.hasImage && message.text.isEmpty() && message.reply == null
+    val mediaOnly = (message.hasImage || message.hasVideo) &&
+        message.text.isEmpty() &&
+        message.reply == null
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -635,8 +657,8 @@ private fun MessageRow(
                 ) {
                     Column(
                         modifier = Modifier.padding(
-                            horizontal = if (imageOnly) 4.dp else 14.dp,
-                            vertical = if (imageOnly) 4.dp else 9.dp,
+                            horizontal = if (mediaOnly) 4.dp else 14.dp,
+                            vertical = if (mediaOnly) 4.dp else 9.dp,
                         ),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
@@ -696,6 +718,18 @@ private fun MessageRow(
                             }
                         }
 
+                        if (message.hasVideo) {
+                            message.videoPath?.let { path ->
+                                VideoBubble(
+                                    path = path,
+                                    file = resolveMedia(path),
+                                    durationMs = message.videoDurationMs ?: 0,
+                                    width = message.videoWidth,
+                                    height = message.videoHeight,
+                                )
+                            }
+                        }
+
                         if (message.hasVoice) {
                             message.audioPath?.let { path ->
                                 VoiceBubble(
@@ -707,7 +741,7 @@ private fun MessageRow(
                             }
                         }
 
-                        if (message.text.isNotEmpty() && !message.hasVoice) {
+                        if (message.text.isNotEmpty() && !message.hasVoice && !message.hasVideo) {
                             Text(
                                 text = message.text,
                                 style = MaterialTheme.typography.bodyLarge,
@@ -786,6 +820,99 @@ private fun ReactionStrip(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun VideoBubble(
+    path: String,
+    file: File?,
+    durationMs: Int,
+    width: Int?,
+    height: Int?,
+) {
+    val displayWidth = 220.dp
+    val displayHeight = remember(width, height) {
+        if (width != null && height != null && width > 0) {
+            minOf(280f, 220f * height / width).dp
+        } else {
+            160.dp
+        }
+    }
+    var isPlaying by remember(path) { mutableStateOf(false) }
+    var videoView by remember { mutableStateOf<VideoView?>(null) }
+
+    DisposableEffect(path) {
+        onDispose {
+            videoView?.stopPlayback()
+            videoView = null
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .width(displayWidth)
+            .height(displayHeight)
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color.Black.copy(alpha = 0.35f))
+            .clickable {
+                val vv = videoView ?: return@clickable
+                if (isPlaying) {
+                    vv.pause()
+                    isPlaying = false
+                } else {
+                    if (vv.currentPosition >= vv.duration.coerceAtLeast(1) - 200) {
+                        vv.seekTo(0)
+                    }
+                    vv.start()
+                    isPlaying = true
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        AndroidView(
+            factory = { ctx ->
+                VideoView(ctx).also { vv ->
+                    videoView = vv
+                    val source = when {
+                        path.startsWith("http://") || path.startsWith("https://") -> Uri.parse(path)
+                        file != null && file.exists() -> Uri.fromFile(file)
+                        else -> null
+                    }
+                    if (source != null) {
+                        vv.setVideoURI(source)
+                        vv.setOnCompletionListener { isPlaying = false }
+                        vv.setOnPreparedListener { mp ->
+                            mp.isLooping = false
+                            // Show first frame without starting.
+                            vv.seekTo(1)
+                        }
+                    }
+                }
+            },
+            modifier = Modifier.fillMaxSize(),
+        )
+        if (!isPlaying) {
+            Icon(
+                painter = painterResource(R.drawable.ic_play),
+                contentDescription = "Play video",
+                tint = Color.White,
+                modifier = Modifier
+                    .size(44.dp)
+                    .background(Color.Black.copy(alpha = 0.35f), CircleShape)
+                    .padding(12.dp),
+            )
+        }
+        Text(
+            text = formatDuration(durationMs),
+            style = MaterialTheme.typography.labelSmall,
+            color = Color.White,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(8.dp)
+                .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+        )
     }
 }
 
@@ -982,6 +1109,7 @@ private fun Composer(
     replyTarget: Message?,
     showStickers: Boolean,
     isPreparingImage: Boolean,
+    isPreparingVideo: Boolean,
     isRecording: Boolean,
     recordElapsedMs: Int,
     onClearPending: () -> Unit,
@@ -989,6 +1117,7 @@ private fun Composer(
     onToggleStickers: () -> Unit,
     onPickSticker: (String) -> Unit,
     onPickPhoto: () -> Unit,
+    onPickVideo: () -> Unit,
     onStartRecord: () -> Unit,
     onCancelRecord: () -> Unit,
     onSendRecord: () -> Unit,
@@ -1032,6 +1161,7 @@ private fun Composer(
                         text = when {
                             reply.isSticker -> reply.text
                             reply.hasVoice -> "Voice note"
+                            reply.hasVideo -> "Video"
                             reply.hasImage && reply.text.isEmpty() -> "Photo"
                             else -> reply.text
                         },
@@ -1138,7 +1268,7 @@ private fun Composer(
 
                 IconButton(
                     onClick = onPickPhoto,
-                    enabled = !isPreparingImage,
+                    enabled = !isPreparingImage && !isPreparingVideo,
                     modifier = Modifier.size(40.dp),
                 ) {
                     if (isPreparingImage) {
@@ -1151,6 +1281,26 @@ private fun Composer(
                         Icon(
                             painter = painterResource(R.drawable.ic_photo),
                             contentDescription = "Add a photo",
+                            tint = MapTalkColors.Subtle,
+                        )
+                    }
+                }
+
+                IconButton(
+                    onClick = onPickVideo,
+                    enabled = !isPreparingImage && !isPreparingVideo,
+                    modifier = Modifier.size(40.dp),
+                ) {
+                    if (isPreparingVideo) {
+                        CircularProgressIndicator(
+                            strokeWidth = 2.dp,
+                            color = MapTalkColors.Subtle,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    } else {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_video),
+                            contentDescription = "Add a video",
                             tint = MapTalkColors.Subtle,
                         )
                     }
@@ -1269,7 +1419,9 @@ private fun MessageLongPressDialog(
     val emojiScales = remember {
         ReactionEmoji.ALL.map { Animatable(0.4f) }
     }
-    val imageOnly = message.hasImage && message.text.isEmpty() && message.reply == null
+    val mediaOnly = (message.hasImage || message.hasVideo) &&
+        message.text.isEmpty() &&
+        message.reply == null
 
     fun playExit(then: () -> Unit) {
         scope.launch {
@@ -1418,8 +1570,8 @@ private fun MessageLongPressDialog(
                         )
                         else -> Column(
                             modifier = Modifier.padding(
-                                horizontal = if (imageOnly) 4.dp else 12.dp,
-                                vertical = if (imageOnly) 4.dp else 9.dp,
+                                horizontal = if (mediaOnly) 4.dp else 12.dp,
+                                vertical = if (mediaOnly) 4.dp else 9.dp,
                             ),
                         ) {
                             if (message.hasImage) {
@@ -1436,10 +1588,13 @@ private fun MessageLongPressDialog(
                                     )
                                 }
                             }
+                            if (message.hasVideo) {
+                                Text("Video", style = MaterialTheme.typography.bodyMedium)
+                            }
                             if (message.hasVoice) {
                                 Text("Voice note", style = MaterialTheme.typography.bodyMedium)
                             }
-                            if (message.text.isNotEmpty() && !message.hasVoice) {
+                            if (message.text.isNotEmpty() && !message.hasVoice && !message.hasVideo) {
                                 Text(
                                     text = message.text,
                                     style = MaterialTheme.typography.bodyLarge,

@@ -1,5 +1,6 @@
 package app.maptalk.ui.thread
 
+import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -11,12 +12,14 @@ import app.maptalk.data.ImageCompressor
 import app.maptalk.data.PushRepository
 import app.maptalk.data.SafetyRepository
 import app.maptalk.data.ThreadRepository
+import app.maptalk.data.VideoCompressor
 import app.maptalk.data.model.Author
 import app.maptalk.data.model.ChatThread
 import app.maptalk.data.model.Message
 import app.maptalk.data.model.MessageReply
 import app.maptalk.data.model.PreparedAudio
 import app.maptalk.data.model.PreparedImage
+import app.maptalk.data.model.PreparedVideo
 import app.maptalk.data.model.ReportReason
 import app.maptalk.data.model.ReportTargetType
 import java.io.File
@@ -48,6 +51,7 @@ class ThreadViewModel(
     private val pushRepository: PushRepository,
     private val readBytes: suspend (Uri) -> ByteArray?,
     private val resolveMedia: (String) -> File?,
+    private val appContext: Context,
 ) : ViewModel() {
 
     private val _errors = MutableSharedFlow<Throwable>(extraBufferCapacity = 1)
@@ -55,6 +59,9 @@ class ThreadViewModel(
 
     private val _isPreparingImage = MutableStateFlow(false)
     val isPreparingImage: StateFlow<Boolean> = _isPreparingImage.asStateFlow()
+
+    private val _isPreparingVideo = MutableStateFlow(false)
+    val isPreparingVideo: StateFlow<Boolean> = _isPreparingVideo.asStateFlow()
 
     private val _replyTarget = MutableStateFlow<Message?>(null)
     private val _shouldDismiss = MutableStateFlow(false)
@@ -101,9 +108,10 @@ class ThreadViewModel(
         author: Author,
         image: PreparedImage? = null,
         audio: PreparedAudio? = null,
+        video: PreparedVideo? = null,
         sticker: String? = null,
     ) {
-        if (text.isBlank() && image == null && audio == null && sticker == null) return
+        if (text.isBlank() && image == null && audio == null && video == null && sticker == null) return
         val target = _replyTarget.value
         val reply = target?.let {
             MessageReply(
@@ -112,6 +120,7 @@ class ThreadViewModel(
                 text = when {
                     it.isSticker -> it.text
                     it.hasVoice -> "Voice note"
+                    it.hasVideo -> "Video"
                     it.hasImage && it.text.isEmpty() -> "Photo"
                     else -> it.text
                 },
@@ -123,6 +132,7 @@ class ThreadViewModel(
             author = author,
             image = image,
             audio = audio,
+            video = video,
             sticker = sticker,
             reply = reply,
         )
@@ -171,6 +181,23 @@ class ThreadViewModel(
         }
     }
 
+    fun prepareVideo(uri: Uri, onReady: (PreparedVideo) -> Unit) {
+        viewModelScope.launch {
+            _isPreparingVideo.value = true
+            val prepared = withContext(Dispatchers.IO) {
+                VideoCompressor.prepare(appContext, uri)
+            }
+            _isPreparingVideo.value = false
+            if (prepared == null) {
+                _errors.emit(
+                    IllegalStateException("Use an MP4 under 30 seconds and 12 MB"),
+                )
+            } else {
+                onReady(prepared)
+            }
+        }
+    }
+
     companion object {
         const val MAX_MESSAGE_LENGTH = 1000
 
@@ -187,6 +214,7 @@ class ThreadViewModel(
                             app.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                         },
                         resolveMedia = { path -> container.resolveLocalMedia(path) },
+                        appContext = app,
                     )
                 }
             }

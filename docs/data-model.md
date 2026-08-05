@@ -26,13 +26,17 @@ A public conversation pinned to a single point on the map.
 
 | Field               | Type      | Notes                                                          |
 | ------------------- | --------- | -------------------------------------------------------------- |
-| `text`              | string    | Caption or body. Empty for voice; sticker glyph for stickers.  |
-| `messageKind`       | string    | `text`, `image`, `voice`, or `sticker`. Defaults to `text`.    |
+| `text`              | string    | Caption or body. Empty for voice/video; sticker glyph for stickers. |
+| `messageKind`       | string    | `text`, `image`, `voice`, `video`, or `sticker`. Defaults to `text`. |
 | `imagePath`         | string?   | Relative local path or remote URL for image messages.          |
 | `imageWidth`        | number?   | Pixel width of the compressed image.                           |
 | `imageHeight`       | number?   | Pixel height of the compressed image.                          |
 | `audioPath`         | string?   | Relative local path or remote URL for voice notes.             |
 | `audioDurationMs`   | number?   | Duration in ms (1–60000).                                      |
+| `videoPath`         | string?   | Relative local path or remote URL for video clips.             |
+| `videoDurationMs`   | number?   | Duration in ms (1–30000).                                      |
+| `videoWidth`        | number?   | Pixel width of the video.                                      |
+| `videoHeight`       | number?   | Pixel height of the video.                                     |
 | `replyToId`         | string?   | Id of the message being replied to.                            |
 | `replyToText`       | string?   | Snapshot of reply body (≤200 chars).                           |
 | `replyToAuthorName` | string?   | Snapshot of reply author name (≤64 chars).                     |
@@ -42,16 +46,18 @@ A public conversation pinned to a single point on the map.
 | `createdAt`         | timestamp | Server timestamp, equals `request.time`.                       |
 
 Images are compressed on the device (max edge 1280 px, JPEG ~0.72) before storage.
-Voice notes are AAC/M4A, max ~60s / 1 MB. Stickers are curated emoji glyphs (no pack download).
+Voice notes are AAC/M4A, max ~60s / 1 MB. Video clips are MP4, max ~30s, with width/height
+required. Stickers are curated emoji glyphs (no pack download).
 
 | Mode | Where bytes live | What path fields hold |
 | ---- | ---------------- | --------------------- |
 | Local demo | App files directory | Relative filename |
 | Emulator | Firebase Storage emulator | Emulator download URL |
-| Live | Cloudflare R2 via `workers/media` | `https://pub-….r2.dev/threads/…/….jpg` or `.m4a` |
+| Live | Cloudflare R2 via `workers/media` | `https://pub-….r2.dev/threads/…/….jpg`, `.m4a`, or `.mp4` |
 
 R2 is the production store (zero egress). The Worker verifies the Firebase ID token before
-accepting JPEG or audio. Object layout: `threads/{threadId}/{messageId}.{jpg\|m4a}`.
+accepting JPEG, audio, or video. Object layout:
+`threads/{threadId}/{messageId}.{jpg\|m4a\|mp4}`.
 
 Firebase Storage rules in `firebase/storage.rules` remain for the emulator path.
 

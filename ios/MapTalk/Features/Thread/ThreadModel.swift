@@ -85,15 +85,16 @@ final class ThreadModel {
         as author: Author,
         image: PreparedImage? = nil,
         audio: PreparedAudio? = nil,
+        video: PreparedVideo? = nil,
         sticker: String? = nil
     ) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard image != nil || audio != nil || sticker != nil || !trimmed.isEmpty else { return }
+        guard image != nil || audio != nil || video != nil || sticker != nil || !trimmed.isEmpty else { return }
         let reply = replyTarget.map {
             MessageReply(
                 id: $0.id,
                 authorName: $0.authorName,
-                text: $0.isSticker ? $0.text : ($0.hasVoice ? "Voice note" : $0.text)
+                text: replyPreviewText(for: $0)
             )
         }
         repository.postMessage(
@@ -102,10 +103,19 @@ final class ThreadModel {
             author: author,
             image: image,
             audio: audio,
+            video: video,
             sticker: sticker,
             reply: reply
         )
         replyTarget = nil
+    }
+
+    private func replyPreviewText(for message: Message) -> String {
+        if message.isSticker { return message.text }
+        if message.hasVoice { return "Voice note" }
+        if message.hasVideo { return "Video" }
+        if message.hasImage && message.text.isEmpty { return "Photo" }
+        return message.text
     }
 
     func setReply(to message: Message) {

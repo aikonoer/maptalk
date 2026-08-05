@@ -317,6 +317,53 @@ describe('messages', () => {
     );
   });
 
+  it('accepts a video message with empty text, duration, and dimensions', async () => {
+    const threadId = await seedThread();
+    const db = testEnv.authenticatedContext(ALICE).firestore();
+    await assertSucceeds(
+      setDoc(doc(db, 'threads', threadId, 'messages', 'video'), {
+        text: '',
+        authorId: ALICE,
+        authorName: 'Alice',
+        createdAt: serverTimestamp(),
+        messageKind: 'video',
+        videoPath: 'https://example.com/clip.mp4',
+        videoDurationMs: 12_000,
+        videoWidth: 720,
+        videoHeight: 1280,
+      }),
+    );
+  });
+
+  it('rejects a video with overlong duration or missing dimensions', async () => {
+    const threadId = await seedThread();
+    const db = testEnv.authenticatedContext(ALICE).firestore();
+    await assertFails(
+      setDoc(doc(db, 'threads', threadId, 'messages', 'video-long'), {
+        text: '',
+        authorId: ALICE,
+        authorName: 'Alice',
+        createdAt: serverTimestamp(),
+        messageKind: 'video',
+        videoPath: 'https://example.com/clip.mp4',
+        videoDurationMs: 30_001,
+        videoWidth: 720,
+        videoHeight: 1280,
+      }),
+    );
+    await assertFails(
+      setDoc(doc(db, 'threads', threadId, 'messages', 'video-nodims'), {
+        text: '',
+        authorId: ALICE,
+        authorName: 'Alice',
+        createdAt: serverTimestamp(),
+        messageKind: 'video',
+        videoPath: 'https://example.com/clip.mp4',
+        videoDurationMs: 5_000,
+      }),
+    );
+  });
+
   it('accepts a sticker glyph and rejects oversized sticker text', async () => {
     const threadId = await seedThread();
     const db = testEnv.authenticatedContext(ALICE).firestore();

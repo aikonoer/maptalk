@@ -104,6 +104,41 @@ service cloud.firestore {
         && (!('replyToId' in request.resource.data) || optionalReplyKeys());
     }
 
+    function isVideoMessage() {
+      return request.resource.data.keys().hasAll([
+             'text', 'authorId', 'authorName', 'createdAt',
+             'messageKind', 'videoPath', 'videoDurationMs',
+             'videoWidth', 'videoHeight'
+           ])
+        && (
+          request.resource.data.keys().hasOnly([
+             'text', 'authorId', 'authorName', 'createdAt',
+             'messageKind', 'videoPath', 'videoDurationMs',
+             'videoWidth', 'videoHeight'
+           ])
+          || request.resource.data.keys().hasOnly([
+             'text', 'authorId', 'authorName', 'createdAt',
+             'messageKind', 'videoPath', 'videoDurationMs',
+             'videoWidth', 'videoHeight',
+             'replyToId', 'replyToText', 'replyToAuthorName'
+           ])
+        )
+        && request.resource.data.messageKind == 'video'
+        && request.resource.data.text is string
+        && request.resource.data.text.size() == 0
+        && request.resource.data.videoPath is string
+        && request.resource.data.videoPath.size() > 0
+        && request.resource.data.videoPath.size() <= 2048
+        && request.resource.data.videoDurationMs is number
+        && request.resource.data.videoDurationMs > 0
+        && request.resource.data.videoDurationMs <= 30000
+        && request.resource.data.videoWidth is number
+        && request.resource.data.videoHeight is number
+        && request.resource.data.videoWidth > 0
+        && request.resource.data.videoHeight > 0
+        && (!('replyToId' in request.resource.data) || optionalReplyKeys());
+    }
+
     function isStickerMessage() {
       return request.resource.data.keys().hasAll([
              'text', 'authorId', 'authorName', 'createdAt', 'messageKind'
@@ -243,7 +278,7 @@ service cloud.firestore {
 
         allow create: if signedIn()
           && baseAuthorOk()
-          && (isTextMessage() || isImageMessage() || isVoiceMessage() || isStickerMessage());
+          && (isTextMessage() || isImageMessage() || isVoiceMessage() || isVideoMessage() || isStickerMessage());
 
         allow update: if signedIn() && isReactionUpdate();
         allow delete: if false;

@@ -7,6 +7,7 @@ import app.maptalk.data.model.MessageKind
 import app.maptalk.data.model.MessageReply
 import app.maptalk.data.model.PreparedAudio
 import app.maptalk.data.model.PreparedImage
+import app.maptalk.data.model.PreparedVideo
 import app.maptalk.data.model.ThreadKind
 import app.maptalk.geo.GeoPoint
 import app.maptalk.geo.Viewport
@@ -180,13 +181,14 @@ class ThreadRepository private constructor(
         author: Author,
         image: PreparedImage? = null,
         audio: PreparedAudio? = null,
+        video: PreparedVideo? = null,
         sticker: String? = null,
         reply: MessageReply? = null,
     ) {
         when (val backend = backend) {
             is Backend.Firestore -> {
                 val trimmed = text.trim()
-                if (image == null && audio == null && sticker == null && trimmed.isEmpty()) return
+                if (image == null && audio == null && video == null && sticker == null && trimmed.isEmpty()) return
                 val threadRef = backend.db.collection(Fs.THREADS).document(threadId)
                 val messageRef = threadRef.collection(Fs.MESSAGES).document()
                 val replyFields = reply?.let {
@@ -231,6 +233,34 @@ class ThreadRepository private constructor(
                                         Fs.IMAGE_PATH to url,
                                         Fs.IMAGE_WIDTH to image.width,
                                         Fs.IMAGE_HEIGHT to image.height,
+                                        Fs.AUTHOR_ID to author.uid,
+                                        Fs.AUTHOR_NAME to author.displayName,
+                                        Fs.CREATED_AT to FieldValue.serverTimestamp(),
+                                    ) + replyFields,
+                                )
+                            }.onFailure { _errors.emit(it) }
+                        }
+                    }
+                    video != null -> {
+                        val uploader = mediaUploader
+                        if (uploader == null) {
+                            _errors.tryEmit(IllegalStateException("Video upload is not configured"))
+                            return
+                        }
+                        scope.launch {
+                            runCatching {
+                                val url = uploader.upload(threadId, messageRef.id, video)
+                                commitFirestoreMessage(
+                                    db = backend.db,
+                                    threadRef = threadRef,
+                                    messageRef = messageRef,
+                                    fields = mapOf(
+                                        Fs.TEXT to "",
+                                        Fs.MESSAGE_KIND to MessageKind.VIDEO.id,
+                                        Fs.VIDEO_PATH to url,
+                                        Fs.VIDEO_DURATION_MS to video.durationMs,
+                                        Fs.VIDEO_WIDTH to video.width,
+                                        Fs.VIDEO_HEIGHT to video.height,
                                         Fs.AUTHOR_ID to author.uid,
                                         Fs.AUTHOR_NAME to author.displayName,
                                         Fs.CREATED_AT to FieldValue.serverTimestamp(),
@@ -287,6 +317,7 @@ class ThreadRepository private constructor(
                 author = author,
                 image = image,
                 audio = audio,
+                video = video,
                 sticker = sticker,
                 reply = reply,
             )

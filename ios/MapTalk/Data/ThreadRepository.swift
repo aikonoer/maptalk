@@ -196,13 +196,14 @@ final class ThreadRepository {
         author: Author,
         image: PreparedImage? = nil,
         audio: PreparedAudio? = nil,
+        video: PreparedVideo? = nil,
         sticker: String? = nil,
         reply: MessageReply? = nil
     ) {
         switch backend {
         case let .firestore(firestore, uploader):
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard image != nil || audio != nil || sticker != nil || !trimmed.isEmpty else { return }
+            guard image != nil || audio != nil || video != nil || sticker != nil || !trimmed.isEmpty else { return }
             let threadRef = firestore.collection(Fs.threads).document(threadId)
             let messageRef = threadRef.collection(Fs.messages).document()
 
@@ -232,6 +233,18 @@ final class ThreadRepository {
                         fields[Fs.imagePath] = url
                         fields[Fs.imageWidth] = image.width
                         fields[Fs.imageHeight] = image.height
+                    } else if let video {
+                        let url = try await uploader.upload(
+                            threadId: threadId,
+                            messageId: messageRef.documentID,
+                            video: video
+                        )
+                        fields[Fs.kindMessage] = MessageKind.video.rawValue
+                        fields[Fs.text] = ""
+                        fields[Fs.videoPath] = url
+                        fields[Fs.videoDurationMs] = video.durationMs
+                        fields[Fs.videoWidth] = video.width
+                        fields[Fs.videoHeight] = video.height
                     } else if let audio {
                         let url = try await uploader.upload(
                             threadId: threadId,
@@ -267,6 +280,7 @@ final class ThreadRepository {
                 author: author,
                 image: image,
                 audio: audio,
+                video: video,
                 sticker: sticker,
                 reply: reply
             )

@@ -27,6 +27,10 @@ enum Fs {
     static let imageHeight = "imageHeight"
     static let audioPath = "audioPath"
     static let audioDurationMs = "audioDurationMs"
+    static let videoPath = "videoPath"
+    static let videoDurationMs = "videoDurationMs"
+    static let videoWidth = "videoWidth"
+    static let videoHeight = "videoHeight"
     static let replyToId = "replyToId"
     static let replyToText = "replyToText"
     static let replyToAuthorName = "replyToAuthorName"
@@ -78,6 +82,7 @@ extension DocumentSnapshot {
         case .text where text.isEmpty: return nil
         case .image where self[Fs.imagePath] as? String == nil: return nil
         case .voice where self[Fs.audioPath] as? String == nil: return nil
+        case .video where self[Fs.videoPath] as? String == nil: return nil
         case .sticker where text.isEmpty: return nil
         default: break
         }
@@ -112,6 +117,10 @@ extension DocumentSnapshot {
             imageHeight: (self[Fs.imageHeight] as? NSNumber)?.intValue,
             audioPath: self[Fs.audioPath] as? String,
             audioDurationMs: (self[Fs.audioDurationMs] as? NSNumber)?.intValue,
+            videoPath: self[Fs.videoPath] as? String,
+            videoDurationMs: (self[Fs.videoDurationMs] as? NSNumber)?.intValue,
+            videoWidth: (self[Fs.videoWidth] as? NSNumber)?.intValue,
+            videoHeight: (self[Fs.videoHeight] as? NSNumber)?.intValue,
             reply: reply,
             reactions: reactions
         )

@@ -178,6 +178,7 @@ final class LocalDemoStore {
         author: Author,
         image: PreparedImage? = nil,
         audio: PreparedAudio? = nil,
+        video: PreparedVideo? = nil,
         sticker: String? = nil,
         reply: MessageReply? = nil
     ) {
@@ -191,6 +192,10 @@ final class LocalDemoStore {
         var imageHeight: Int?
         var audioPath: String?
         var audioDurationMs: Int?
+        var videoPath: String?
+        var videoDurationMs: Int?
+        var videoWidth: Int?
+        var videoHeight: Int?
         var body = trimmed
 
         if let sticker {
@@ -202,6 +207,14 @@ final class LocalDemoStore {
             imageWidth = image.width
             imageHeight = image.height
             if imagePath == nil { return }
+        } else if let video {
+            kind = .video
+            body = ""
+            videoPath = try? LocalMediaStore.save(video: video.data)
+            videoDurationMs = video.durationMs
+            videoWidth = video.width
+            videoHeight = video.height
+            if videoPath == nil { return }
         } else if let audio {
             kind = .voice
             body = ""
@@ -225,6 +238,10 @@ final class LocalDemoStore {
             imageHeight: imageHeight,
             audioPath: audioPath,
             audioDurationMs: audioDurationMs,
+            videoPath: videoPath,
+            videoDurationMs: videoDurationMs,
+            videoWidth: videoWidth,
+            videoHeight: videoHeight,
             reply: reply
         )
         messages[threadId, default: []].append(message)
@@ -278,6 +295,10 @@ final class LocalDemoStore {
             imageHeight: old.imageHeight,
             audioPath: old.audioPath,
             audioDurationMs: old.audioDurationMs,
+            videoPath: old.videoPath,
+            videoDurationMs: old.videoDurationMs,
+            videoWidth: old.videoWidth,
+            videoHeight: old.videoHeight,
             reply: old.reply,
             reactions: reactions
         )

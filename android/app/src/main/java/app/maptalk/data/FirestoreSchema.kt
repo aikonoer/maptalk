@@ -37,6 +37,10 @@ object Fs {
     const val IMAGE_HEIGHT = "imageHeight"
     const val AUDIO_PATH = "audioPath"
     const val AUDIO_DURATION_MS = "audioDurationMs"
+    const val VIDEO_PATH = "videoPath"
+    const val VIDEO_DURATION_MS = "videoDurationMs"
+    const val VIDEO_WIDTH = "videoWidth"
+    const val VIDEO_HEIGHT = "videoHeight"
     const val REPLY_TO_ID = "replyToId"
     const val REPLY_TO_TEXT = "replyToText"
     const val REPLY_TO_AUTHOR_NAME = "replyToAuthorName"
@@ -93,10 +97,12 @@ fun DocumentSnapshot.toMessage(): Message? {
     val text = getString(Fs.TEXT).orEmpty()
     val imagePath = getString(Fs.IMAGE_PATH)
     val audioPath = getString(Fs.AUDIO_PATH)
+    val videoPath = getString(Fs.VIDEO_PATH)
     when (kind) {
         MessageKind.TEXT -> if (text.isEmpty()) return null
         MessageKind.IMAGE -> if (imagePath == null) return null
         MessageKind.VOICE -> if (audioPath == null) return null
+        MessageKind.VIDEO -> if (videoPath == null) return null
         MessageKind.STICKER -> if (text.isEmpty()) return null
     }
 
@@ -131,6 +137,10 @@ fun DocumentSnapshot.toMessage(): Message? {
         imageHeight = getLong(Fs.IMAGE_HEIGHT)?.toInt(),
         audioPath = audioPath,
         audioDurationMs = getLong(Fs.AUDIO_DURATION_MS)?.toInt(),
+        videoPath = videoPath,
+        videoDurationMs = getLong(Fs.VIDEO_DURATION_MS)?.toInt(),
+        videoWidth = getLong(Fs.VIDEO_WIDTH)?.toInt(),
+        videoHeight = getLong(Fs.VIDEO_HEIGHT)?.toInt(),
         reply = reply,
         reactions = reactions,
     )

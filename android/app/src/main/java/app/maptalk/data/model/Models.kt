@@ -37,6 +37,7 @@ enum class MessageKind(val id: String) {
     TEXT("text"),
     IMAGE("image"),
     VOICE("voice"),
+    VIDEO("video"),
     STICKER("sticker"),
     ;
 
@@ -66,7 +67,7 @@ data class MessageReply(
 )
 
 /**
- * One reply inside a thread. Text / image / voice / sticker kinds share this shape;
+ * One reply inside a thread. Text / image / voice / video / sticker kinds share this shape;
  * unused media fields stay null.
  */
 data class Message(
@@ -81,12 +82,17 @@ data class Message(
     val imageHeight: Int? = null,
     val audioPath: String? = null,
     val audioDurationMs: Int? = null,
+    val videoPath: String? = null,
+    val videoDurationMs: Int? = null,
+    val videoWidth: Int? = null,
+    val videoHeight: Int? = null,
     val reply: MessageReply? = null,
     /** emoji → uids who reacted with it */
     val reactions: Map<String, List<String>> = emptyMap(),
 ) {
     val hasImage: Boolean get() = kind == MessageKind.IMAGE && imagePath != null
     val hasVoice: Boolean get() = kind == MessageKind.VOICE && audioPath != null
+    val hasVideo: Boolean get() = kind == MessageKind.VIDEO && videoPath != null
     val isSticker: Boolean get() = kind == MessageKind.STICKER
 
     fun reacted(by: String, emoji: String): Boolean =
@@ -105,6 +111,15 @@ data class PreparedAudio(
     val bytes: ByteArray,
     val durationMs: Int,
     val contentType: String = "audio/mp4",
+)
+
+/** A short video clip ready to upload. */
+data class PreparedVideo(
+    val bytes: ByteArray,
+    val durationMs: Int,
+    val width: Int,
+    val height: Int,
+    val contentType: String = "video/mp4",
 )
 
 /** Who is writing, denormalised onto every thread and message. */

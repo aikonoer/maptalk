@@ -11,11 +11,10 @@ Project settings → Cloud Messaging → Apple app `app.maptalk`.
 Until then: Live builds request notification permission and register FCM tokens, but
 iOS delivery won’t work without the key.
 
-## After real identity — Video messages (next)
+## Video messages
 
-Queued after Apple/Google account linking ships. Current media kinds are text, image,
-voice, sticker. Video needs a new message kind, compression/upload (R2 Worker), players
-on both platforms, and Firestore/rules updates.
+Shipped: pick ≤30s MP4, upload via R2 `POST /v1/video`, play in-thread on iOS and Android.
+Caps: duration 1–30s, body ≤12 MB, rate 4 videos / uid / 10 min on the Worker.
 
 ## Account extras (not in identity slice)
 

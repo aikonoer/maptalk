@@ -1,4 +1,5 @@
 import AVFoundation
+import AVKit
 import PhotosUI
 import SwiftUI
 import UIKit
@@ -10,8 +11,10 @@ struct ThreadScreen: View {
     @State private var model: ThreadModel
     @State private var draft = ""
     @State private var pickerItem: PhotosPickerItem?
+    @State private var videoPickerItem: PhotosPickerItem?
     @State private var pendingImage: UIImage?
     @State private var isPreparingImage = false
+    @State private var isPreparingVideo = false
     @State private var showStickers = false
     @State private var longPressTarget: Message?
     @State private var longPressFrame: CGRect = .zero
@@ -83,6 +86,10 @@ struct ThreadScreen: View {
             .onChange(of: pickerItem) { _, item in
                 guard let item else { return }
                 Task { await loadPickerItem(item) }
+            }
+            .onChange(of: videoPickerItem) { _, item in
+                guard let item else { return }
+                Task { await loadVideoItem(item) }
             }
             .overlay {
                 if let message = longPressTarget {
@@ -363,7 +370,22 @@ struct ThreadScreen: View {
                             .frame(width: 36, height: 40)
                     }
                     .accessibilityLabel("Add a photo")
-                    .disabled(isPreparingImage)
+                    .disabled(isPreparingImage || isPreparingVideo)
+
+                    PhotosPicker(selection: $videoPickerItem, matching: .videos, photoLibrary: .shared()) {
+                        Group {
+                            if isPreparingVideo {
+                                ProgressView().tint(Theme.subtle)
+                            } else {
+                                Image(systemName: "video")
+                                    .font(.system(size: 18, weight: .semibold))
+                                    .foregroundStyle(Theme.subtle)
+                            }
+                        }
+                        .frame(width: 36, height: 40)
+                    }
+                    .accessibilityLabel("Add a video")
+                    .disabled(isPreparingImage || isPreparingVideo)
 
                     TextField(
                         "",
@@ -429,6 +451,7 @@ struct ThreadScreen: View {
     private func replyPreview(_ message: Message) -> String {
         if message.isSticker { return message.text }
         if message.hasVoice { return "Voice note" }
+        if message.hasVideo { return "Video" }
         if message.hasImage { return message.text.isEmpty ? "Photo" : message.text }
         return message.text
     }
@@ -450,6 +473,24 @@ struct ThreadScreen: View {
               let image = UIImage(data: data)
         else { return }
         pendingImage = image
+    }
+
+    private func loadVideoItem(_ item: PhotosPickerItem) async {
+        isPreparingVideo = true
+        defer {
+            isPreparingVideo = false
+            videoPickerItem = nil
+        }
+        guard let movie = try? await item.loadTransferable(type: PickedMovie.self) else {
+            model.errorMessage = "That video could not be loaded"
+            return
+        }
+        defer { try? FileManager.default.removeItem(at: movie.url) }
+        guard let prepared = await VideoCompressor.prepare(from: movie.url) else {
+            model.errorMessage = "Use a video under 30 seconds"
+            return
+        }
+        model.send("", as: author, video: prepared)
     }
 
     private func scroll(_ proxy: ScrollViewProxy, animated: Bool) {
@@ -656,7 +697,7 @@ private struct MessageLongPressOverlay: View {
                 .font(.system(size: 56))
                 .padding(4)
         } else {
-            let imageOnly = message.hasImage && message.text.isEmpty && message.reply == nil
+            let mediaOnly = (message.hasImage || message.hasVideo) && message.text.isEmpty && message.reply == nil
             VStack(alignment: .leading, spacing: 6) {
                 if let reply = message.reply {
                     HStack(spacing: 8) {
@@ -689,6 +730,15 @@ private struct MessageLongPressOverlay: View {
                     )
                 }
 
+                if message.hasVideo, let path = message.videoPath {
+                    VideoBubble(
+                        path: path,
+                        durationMs: message.videoDurationMs ?? 0,
+                        width: message.videoWidth,
+                        height: message.videoHeight
+                    )
+                }
+
                 if message.hasVoice, let path = message.audioPath {
                     VoiceBubble(
                         path: path,
@@ -697,15 +747,15 @@ private struct MessageLongPressOverlay: View {
                     )
                 }
 
-                if !message.text.isEmpty, !message.hasVoice {
+                if !message.text.isEmpty, !message.hasVoice, !message.hasVideo {
                     Text(message.text)
                         .font(.body)
                         .foregroundStyle(isMine ? .white : Theme.text)
                         .lineLimit(8)
                 }
             }
-            .padding(.horizontal, imageOnly ? 4 : 12)
-            .padding(.vertical, imageOnly ? 4 : 9)
+            .padding(.horizontal, mediaOnly ? 4 : 12)
+            .padding(.vertical, mediaOnly ? 4 : 9)
             .background(
                 isMine ? Theme.accent : Theme.raised,
                 in: RoundedRectangle(cornerRadius: Theme.Radius.bubble, style: .continuous)
@@ -898,6 +948,15 @@ private struct MessageRow: View {
                     MessageImage(path: path, width: message.imageWidth, height: message.imageHeight)
                 }
 
+                if message.hasVideo, let path = message.videoPath {
+                    VideoBubble(
+                        path: path,
+                        durationMs: message.videoDurationMs ?? 0,
+                        width: message.videoWidth,
+                        height: message.videoHeight
+                    )
+                }
+
                 if message.hasVoice, let path = message.audioPath {
                     VoiceBubble(
                         path: path,
@@ -906,14 +965,14 @@ private struct MessageRow: View {
                     )
                 }
 
-                if !message.text.isEmpty, !message.hasVoice {
+                if !message.text.isEmpty, !message.hasVoice, !message.hasVideo {
                     Text(message.text)
                         .font(.body)
                         .foregroundStyle(isMine ? .white : Theme.text)
                 }
             }
-            .padding(.horizontal, message.hasImage && message.text.isEmpty && message.reply == nil ? 4 : 12)
-            .padding(.vertical, message.hasImage && message.text.isEmpty && message.reply == nil ? 4 : 9)
+            .padding(.horizontal, (message.hasImage || message.hasVideo) && message.text.isEmpty && message.reply == nil ? 4 : 12)
+            .padding(.vertical, (message.hasImage || message.hasVideo) && message.text.isEmpty && message.reply == nil ? 4 : 9)
             .background(
                 isMine ? Theme.accent : Theme.raised,
                 in: Theme.bubble(
@@ -1084,6 +1143,92 @@ private struct FullscreenImageViewer: View {
             }
         }
         .statusBarHidden(true)
+    }
+}
+
+private struct VideoBubble: View {
+    let path: String
+    let durationMs: Int
+    let width: Int?
+    let height: Int?
+
+    @State private var player: AVPlayer?
+    @State private var isPlaying = false
+
+    private var mediaURL: URL? {
+        if path.hasPrefix("http://") || path.hasPrefix("https://") {
+            return URL(string: path)
+        }
+        return LocalMediaStore.url(forRelativePath: path)
+    }
+
+    var body: some View {
+        ZStack(alignment: .bottomTrailing) {
+            Color.black.opacity(0.35)
+
+            if let player, isPlaying {
+                VideoPlayer(player: player)
+            } else {
+                Image(systemName: "play.circle.fill")
+                    .font(.system(size: 44))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
+            }
+
+            Text(Self.format(durationMs))
+                .font(.meta)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(.black.opacity(0.55), in: Capsule())
+                .padding(8)
+        }
+        .frame(width: displayWidth, height: displayHeight)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .onTapGesture { toggle() }
+        .onDisappear { stop() }
+        .accessibilityLabel("Video")
+        .accessibilityAddTraits(.isButton)
+    }
+
+    private var displayWidth: CGFloat { 220 }
+    private var displayHeight: CGFloat {
+        guard let width, let height, width > 0 else { return 160 }
+        return min(280, displayWidth * CGFloat(height) / CGFloat(width))
+    }
+
+    private func toggle() {
+        if isPlaying {
+            stop()
+            return
+        }
+        guard let url = mediaURL else { return }
+        let item = AVPlayerItem(url: url)
+        let av = AVPlayer(playerItem: item)
+        player = av
+        isPlaying = true
+        NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { _ in
+            Task { @MainActor in
+                isPlaying = false
+            }
+        }
+        av.play()
+    }
+
+    private func stop() {
+        player?.pause()
+        player = nil
+        isPlaying = false
+    }
+
+    private static func format(_ ms: Int) -> String {
+        let total = max(1, ms / 1_000)
+        return String(format: "%d:%02d", total / 60, total % 60)
     }
 }
 

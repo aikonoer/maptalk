@@ -2,6 +2,7 @@ package app.maptalk.data
 
 import app.maptalk.data.model.PreparedAudio
 import app.maptalk.data.model.PreparedImage
+import app.maptalk.data.model.PreparedVideo
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.storage.FirebaseStorage
 import com.google.firebase.storage.StorageMetadata
@@ -26,6 +27,7 @@ import org.json.JSONObject
 sealed class MediaUploader {
     abstract suspend fun upload(threadId: String, messageId: String, image: PreparedImage): String
     abstract suspend fun upload(threadId: String, messageId: String, audio: PreparedAudio): String
+    abstract suspend fun upload(threadId: String, messageId: String, video: PreparedVideo): String
 
     class R2(
         private val auth: FirebaseAuth,
@@ -38,11 +40,21 @@ sealed class MediaUploader {
                 "https://maptalk-media.hhypkfpshg.workers.dev/v1/audio"
             }
 
+        private val videoEndpoint: String =
+            if (imageEndpoint.endsWith("/v1/images")) {
+                imageEndpoint.removeSuffix("/v1/images") + "/v1/video"
+            } else {
+                "https://maptalk-media.hhypkfpshg.workers.dev/v1/video"
+            }
+
         override suspend fun upload(threadId: String, messageId: String, image: PreparedImage): String =
             post(imageEndpoint, threadId, messageId, image.jpegBytes, "image/jpeg")
 
         override suspend fun upload(threadId: String, messageId: String, audio: PreparedAudio): String =
             post(audioEndpoint, threadId, messageId, audio.bytes, audio.contentType)
+
+        override suspend fun upload(threadId: String, messageId: String, video: PreparedVideo): String =
+            post(videoEndpoint, threadId, messageId, video.bytes, video.contentType)
 
         private suspend fun post(
             endpoint: String,
@@ -109,6 +121,18 @@ sealed class MediaUploader {
                 .setContentType(audio.contentType)
                 .build()
             putBytes(ref, audio.bytes, metadata)
+            return downloadUrl(ref)
+        }
+
+        override suspend fun upload(threadId: String, messageId: String, video: PreparedVideo): String {
+            val ref = storage.reference
+                .child("threads")
+                .child(threadId)
+                .child("$messageId.mp4")
+            val metadata = StorageMetadata.Builder()
+                .setContentType(video.contentType)
+                .build()
+            putBytes(ref, video.bytes, metadata)
             return downloadUrl(ref)
         }
 

@@ -49,6 +49,7 @@ enum MessageKind: String, Sendable {
     case text
     case image
     case voice
+    case video
     case sticker
 }
 
@@ -90,12 +91,17 @@ struct Message: Identifiable, Equatable, Sendable {
     let imageHeight: Int?
     let audioPath: String?
     let audioDurationMs: Int?
+    let videoPath: String?
+    let videoDurationMs: Int?
+    let videoWidth: Int?
+    let videoHeight: Int?
     let reply: MessageReply?
     /// emoji → uids who reacted with it
     let reactions: [String: [String]]
 
     var hasImage: Bool { kind == .image && imagePath != nil }
     var hasVoice: Bool { kind == .voice && audioPath != nil }
+    var hasVideo: Bool { kind == .video && videoPath != nil }
     var isSticker: Bool { kind == .sticker }
 
     init(
@@ -110,6 +116,10 @@ struct Message: Identifiable, Equatable, Sendable {
         imageHeight: Int? = nil,
         audioPath: String? = nil,
         audioDurationMs: Int? = nil,
+        videoPath: String? = nil,
+        videoDurationMs: Int? = nil,
+        videoWidth: Int? = nil,
+        videoHeight: Int? = nil,
         reply: MessageReply? = nil,
         reactions: [String: [String]] = [:]
     ) {
@@ -124,6 +134,10 @@ struct Message: Identifiable, Equatable, Sendable {
         self.imageHeight = imageHeight
         self.audioPath = audioPath
         self.audioDurationMs = audioDurationMs
+        self.videoPath = videoPath
+        self.videoDurationMs = videoDurationMs
+        self.videoWidth = videoWidth
+        self.videoHeight = videoHeight
         self.reply = reply
         self.reactions = reactions
     }
@@ -181,4 +195,26 @@ struct PreparedAudio: Sendable {
     let data: Data
     let durationMs: Int
     let contentType: String
+}
+
+struct PreparedVideo: Sendable {
+    let data: Data
+    let durationMs: Int
+    let width: Int
+    let height: Int
+    let contentType: String
+
+    init(
+        data: Data,
+        durationMs: Int,
+        width: Int,
+        height: Int,
+        contentType: String = "video/mp4"
+    ) {
+        self.data = data
+        self.durationMs = durationMs
+        self.width = width
+        self.height = height
+        self.contentType = contentType
+    }
 }
