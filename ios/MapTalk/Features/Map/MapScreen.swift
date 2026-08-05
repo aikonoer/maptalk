@@ -28,10 +28,11 @@ struct MapScreen: View {
     /// whenever you ask, but a late fix never yanks the camera away while you are panning.
     @State private var wantsToCenterOnUser = !Self.startsInDemo
 
-    /// Local demo and emulator runs open on Cebu (where the seed lives) instead of the world.
+    /// Local / emulator / live Debug all open on Cebu (seeded neighbourhood). Release live
+    /// centres on the user once location arrives.
     private static var startsInDemo: Bool {
         let mode = ProcessInfo.processInfo.environment["MAPTALK_MODE"]
-        if mode == "local" || mode == "emulator" { return true }
+        if mode == "local" || mode == "emulator" || mode == "live" { return true }
         #if DEBUG && !targetEnvironment(simulator)
         return true
         #else
