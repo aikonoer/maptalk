@@ -64,11 +64,12 @@ Target for both platforms before upload:
 
 ## Current slice (done)
 
-1. Checklist (this file)
-2. Android Media3 re-encode (H.264 + AAC, height ≤720) + iOS `AVAssetExportPreset1280x720`
-3. Compress / upload status copy + clearer Worker error mapping
-4. First-frame posters on video bubbles
+Retry/cancel + upload backoff; Worker mvhd duration + KV rate limits + capped body read.
 
 ## Still open
 
-Sections 2–6 remaining items (streaming upload, durable rate limits, ExoPlayer, R2 lifecycle, store ship).
+- True signed PUT / zero-copy R2 stream (clients still buffer encoded bytes)
+- Firestore `videoPath` host allowlist
+- ExoPlayer / stronger playback, disk cache, cellular warning
+- R2 delete-on-message-delete, store ship, metrics
+
