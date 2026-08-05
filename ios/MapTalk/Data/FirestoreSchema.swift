@@ -25,13 +25,14 @@ enum Fs {
     static let imagePath = "imagePath"
     static let imageWidth = "imageWidth"
     static let imageHeight = "imageHeight"
+    static let audioPath = "audioPath"
+    static let audioDurationMs = "audioDurationMs"
+    static let replyToId = "replyToId"
+    static let replyToText = "replyToText"
+    static let replyToAuthorName = "replyToAuthorName"
+    static let reactions = "reactions"
 }
 
-/// Documents are mapped by hand rather than through Codable, so a schema change is a compile
-/// error instead of a silent nil, and both apps read the data the same way.
-///
-/// A locally created document has no server timestamp yet, so timestamps are read with
-/// `.estimate`. That gives a just-sent message a usable sort key instead of nil.
 extension DocumentSnapshot {
 
     func chatThread() -> ChatThread? {
@@ -55,11 +56,34 @@ extension DocumentSnapshot {
     }
 
     func message() -> Message? {
-        // Image-only messages may have an empty caption; text messages still need a body.
         let text = self[Fs.text] as? String ?? ""
         let kind = MessageKind(rawValue: self[Fs.kindMessage] as? String ?? "") ?? .text
-        if kind == .text, text.isEmpty { return nil }
-        if kind == .image, self[Fs.imagePath] as? String == nil { return nil }
+        switch kind {
+        case .text where text.isEmpty: return nil
+        case .image where self[Fs.imagePath] as? String == nil: return nil
+        case .voice where self[Fs.audioPath] as? String == nil: return nil
+        case .sticker where text.isEmpty: return nil
+        default: break
+        }
+
+        var reply: MessageReply?
+        if let replyId = self[Fs.replyToId] as? String,
+           let replyName = self[Fs.replyToAuthorName] as? String,
+           let replyText = self[Fs.replyToText] as? String {
+            reply = MessageReply(id: replyId, authorName: replyName, text: replyText)
+        }
+
+        var reactions: [String: [String]] = [:]
+        if let raw = self[Fs.reactions] as? [String: Any] {
+            for (emoji, value) in raw {
+                if let uids = value as? [String] {
+                    reactions[emoji] = uids
+                } else if let uids = value as? [Any] {
+                    reactions[emoji] = uids.compactMap { $0 as? String }
+                }
+            }
+        }
+
         return Message(
             id: documentID,
             kind: kind,
@@ -69,7 +93,11 @@ extension DocumentSnapshot {
             createdAt: estimatedDate(Fs.createdAt),
             imagePath: self[Fs.imagePath] as? String,
             imageWidth: (self[Fs.imageWidth] as? NSNumber)?.intValue,
-            imageHeight: (self[Fs.imageHeight] as? NSNumber)?.intValue
+            imageHeight: (self[Fs.imageHeight] as? NSNumber)?.intValue,
+            audioPath: self[Fs.audioPath] as? String,
+            audioDurationMs: (self[Fs.audioDurationMs] as? NSNumber)?.intValue,
+            reply: reply,
+            reactions: reactions
         )
     }
 

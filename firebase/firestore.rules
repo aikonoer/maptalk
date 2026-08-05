@@ -11,11 +11,31 @@ service cloud.firestore {
       return name is string && name.size() >= 1 && name.size() <= 24;
     }
 
+    function optionalReplyKeys() {
+      return request.resource.data.keys().hasAll(['replyToId', 'replyToText', 'replyToAuthorName'])
+        && request.resource.data.replyToId is string
+        && request.resource.data.replyToId.size() > 0
+        && request.resource.data.replyToId.size() <= 128
+        && request.resource.data.replyToText is string
+        && request.resource.data.replyToText.size() <= 200
+        && request.resource.data.replyToAuthorName is string
+        && request.resource.data.replyToAuthorName.size() >= 1
+        && request.resource.data.replyToAuthorName.size() <= 64;
+    }
+
+    function baseAuthorOk() {
+      return request.resource.data.authorId == request.auth.uid
+        && validName(request.resource.data.authorName)
+        && request.resource.data.createdAt == request.time;
+    }
+
     function isTextMessage() {
       return request.resource.data.keys().hasAll(['text', 'authorId', 'authorName', 'createdAt'])
         && (
           request.resource.data.keys().hasOnly(['text', 'authorId', 'authorName', 'createdAt'])
           || request.resource.data.keys().hasOnly(['text', 'authorId', 'authorName', 'createdAt', 'messageKind'])
+          || request.resource.data.keys().hasOnly(['text', 'authorId', 'authorName', 'createdAt', 'messageKind', 'replyToId', 'replyToText', 'replyToAuthorName'])
+          || request.resource.data.keys().hasOnly(['text', 'authorId', 'authorName', 'createdAt', 'replyToId', 'replyToText', 'replyToAuthorName'])
         )
         && request.resource.data.text is string
         && request.resource.data.text.size() >= 1
@@ -23,7 +43,8 @@ service cloud.firestore {
         && (
           !('messageKind' in request.resource.data)
           || request.resource.data.messageKind == 'text'
-        );
+        )
+        && (!('replyToId' in request.resource.data) || optionalReplyKeys());
     }
 
     function isImageMessage() {
@@ -31,10 +52,17 @@ service cloud.firestore {
              'text', 'authorId', 'authorName', 'createdAt',
              'messageKind', 'imagePath', 'imageWidth', 'imageHeight'
            ])
-        && request.resource.data.keys().hasOnly([
+        && (
+          request.resource.data.keys().hasOnly([
              'text', 'authorId', 'authorName', 'createdAt',
              'messageKind', 'imagePath', 'imageWidth', 'imageHeight'
            ])
+          || request.resource.data.keys().hasOnly([
+             'text', 'authorId', 'authorName', 'createdAt',
+             'messageKind', 'imagePath', 'imageWidth', 'imageHeight',
+             'replyToId', 'replyToText', 'replyToAuthorName'
+           ])
+        )
         && request.resource.data.messageKind == 'image'
         && request.resource.data.text is string
         && request.resource.data.text.size() <= 1000
@@ -44,7 +72,63 @@ service cloud.firestore {
         && request.resource.data.imageWidth is number
         && request.resource.data.imageHeight is number
         && request.resource.data.imageWidth > 0
-        && request.resource.data.imageHeight > 0;
+        && request.resource.data.imageHeight > 0
+        && (!('replyToId' in request.resource.data) || optionalReplyKeys());
+    }
+
+    function isVoiceMessage() {
+      return request.resource.data.keys().hasAll([
+             'text', 'authorId', 'authorName', 'createdAt',
+             'messageKind', 'audioPath', 'audioDurationMs'
+           ])
+        && (
+          request.resource.data.keys().hasOnly([
+             'text', 'authorId', 'authorName', 'createdAt',
+             'messageKind', 'audioPath', 'audioDurationMs'
+           ])
+          || request.resource.data.keys().hasOnly([
+             'text', 'authorId', 'authorName', 'createdAt',
+             'messageKind', 'audioPath', 'audioDurationMs',
+             'replyToId', 'replyToText', 'replyToAuthorName'
+           ])
+        )
+        && request.resource.data.messageKind == 'voice'
+        && request.resource.data.text is string
+        && request.resource.data.text.size() == 0
+        && request.resource.data.audioPath is string
+        && request.resource.data.audioPath.size() > 0
+        && request.resource.data.audioPath.size() <= 2048
+        && request.resource.data.audioDurationMs is number
+        && request.resource.data.audioDurationMs > 0
+        && request.resource.data.audioDurationMs <= 60000
+        && (!('replyToId' in request.resource.data) || optionalReplyKeys());
+    }
+
+    function isStickerMessage() {
+      return request.resource.data.keys().hasAll([
+             'text', 'authorId', 'authorName', 'createdAt', 'messageKind'
+           ])
+        && (
+          request.resource.data.keys().hasOnly([
+             'text', 'authorId', 'authorName', 'createdAt', 'messageKind'
+           ])
+          || request.resource.data.keys().hasOnly([
+             'text', 'authorId', 'authorName', 'createdAt', 'messageKind',
+             'replyToId', 'replyToText', 'replyToAuthorName'
+           ])
+        )
+        && request.resource.data.messageKind == 'sticker'
+        && request.resource.data.text is string
+        && request.resource.data.text.size() >= 1
+        && request.resource.data.text.size() <= 8
+        && (!('replyToId' in request.resource.data) || optionalReplyKeys());
+    }
+
+    // Reaction toggles only — emoji → list of uids. Clients keep one emoji per user.
+    function isReactionUpdate() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions'])
+        && request.resource.data.reactions is map
+        && request.resource.data.reactions.size() <= 12;
     }
 
     match /users/{userId} {
@@ -85,8 +169,6 @@ service cloud.firestore {
         && request.resource.data.lastMessageAt == request.time
         && request.resource.data.messageCount == 0;
 
-      // Clients may only bump the two activity fields, one message at a time.
-      // Everything else about a thread is immutable once created.
       allow update: if signedIn()
         && request.resource.data.diff(resource.data).affectedKeys()
              .hasOnly(['lastMessageAt', 'messageCount'])
@@ -99,12 +181,11 @@ service cloud.firestore {
         allow read: if signedIn();
 
         allow create: if signedIn()
-          && request.resource.data.authorId == request.auth.uid
-          && validName(request.resource.data.authorName)
-          && request.resource.data.createdAt == request.time
-          && (isTextMessage() || isImageMessage());
+          && baseAuthorOk()
+          && (isTextMessage() || isImageMessage() || isVoiceMessage() || isStickerMessage());
 
-        allow update, delete: if false;
+        allow update: if signedIn() && isReactionUpdate();
+        allow delete: if false;
       }
     }
   }

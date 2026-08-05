@@ -64,7 +64,7 @@ class AppContainer(context: Context) {
                     "emulator" -> MediaUploader.Firebase(firebase.storage)
                     else -> MediaUploader.R2(
                         auth = firebase.auth,
-                        endpoint = BuildConfig.MAPTALK_MEDIA_UPLOAD_URL,
+                        imageEndpoint = BuildConfig.MAPTALK_MEDIA_UPLOAD_URL,
                     )
                 },
             )

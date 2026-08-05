@@ -4,6 +4,8 @@ import app.maptalk.data.model.Author
 import app.maptalk.data.model.ChatThread
 import app.maptalk.data.model.Message
 import app.maptalk.data.model.MessageKind
+import app.maptalk.data.model.MessageReply
+import app.maptalk.data.model.PreparedAudio
 import app.maptalk.data.model.PreparedImage
 import app.maptalk.data.model.ThreadKind
 import app.maptalk.geo.GeoPoint
@@ -25,6 +27,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 
 /**
  * Reads and writes threads. Every read is a snapshot listener, so the map and the open
@@ -176,55 +179,166 @@ class ThreadRepository private constructor(
         text: String,
         author: Author,
         image: PreparedImage? = null,
+        audio: PreparedAudio? = null,
+        sticker: String? = null,
+        reply: MessageReply? = null,
     ) {
         when (val backend = backend) {
             is Backend.Firestore -> {
                 val trimmed = text.trim()
-                if (image == null && trimmed.isEmpty()) return
+                if (image == null && audio == null && sticker == null && trimmed.isEmpty()) return
                 val threadRef = backend.db.collection(Fs.THREADS).document(threadId)
                 val messageRef = threadRef.collection(Fs.MESSAGES).document()
-                if (image == null) {
-                    commitFirestoreMessage(
-                        db = backend.db,
-                        threadRef = threadRef,
-                        messageRef = messageRef,
-                        fields = mapOf(
-                            Fs.TEXT to trimmed,
-                            Fs.MESSAGE_KIND to MessageKind.TEXT.id,
-                            Fs.AUTHOR_ID to author.uid,
-                            Fs.AUTHOR_NAME to author.displayName,
-                            Fs.CREATED_AT to FieldValue.serverTimestamp(),
-                        ),
+                val replyFields = reply?.let {
+                    mapOf(
+                        Fs.REPLY_TO_ID to it.id,
+                        Fs.REPLY_TO_TEXT to it.text.take(200),
+                        Fs.REPLY_TO_AUTHOR_NAME to it.authorName.take(64),
                     )
-                    return
-                }
-                val uploader = mediaUploader
-                if (uploader == null) {
-                    _errors.tryEmit(IllegalStateException("Photo upload is not configured"))
-                    return
-                }
-                scope.launch {
-                    runCatching {
-                        val url = uploader.upload(threadId, messageRef.id, image)
+                }.orEmpty()
+
+                when {
+                    sticker != null -> {
+                        commitFirestoreMessage(
+                            db = backend.db,
+                            threadRef = threadRef,
+                            messageRef = messageRef,
+                            fields = mapOf(
+                                Fs.TEXT to sticker,
+                                Fs.MESSAGE_KIND to MessageKind.STICKER.id,
+                                Fs.AUTHOR_ID to author.uid,
+                                Fs.AUTHOR_NAME to author.displayName,
+                                Fs.CREATED_AT to FieldValue.serverTimestamp(),
+                            ) + replyFields,
+                        )
+                    }
+                    image != null -> {
+                        val uploader = mediaUploader
+                        if (uploader == null) {
+                            _errors.tryEmit(IllegalStateException("Photo upload is not configured"))
+                            return
+                        }
+                        scope.launch {
+                            runCatching {
+                                val url = uploader.upload(threadId, messageRef.id, image)
+                                commitFirestoreMessage(
+                                    db = backend.db,
+                                    threadRef = threadRef,
+                                    messageRef = messageRef,
+                                    fields = mapOf(
+                                        Fs.TEXT to trimmed,
+                                        Fs.MESSAGE_KIND to MessageKind.IMAGE.id,
+                                        Fs.IMAGE_PATH to url,
+                                        Fs.IMAGE_WIDTH to image.width,
+                                        Fs.IMAGE_HEIGHT to image.height,
+                                        Fs.AUTHOR_ID to author.uid,
+                                        Fs.AUTHOR_NAME to author.displayName,
+                                        Fs.CREATED_AT to FieldValue.serverTimestamp(),
+                                    ) + replyFields,
+                                )
+                            }.onFailure { _errors.emit(it) }
+                        }
+                    }
+                    audio != null -> {
+                        val uploader = mediaUploader
+                        if (uploader == null) {
+                            _errors.tryEmit(IllegalStateException("Audio upload is not configured"))
+                            return
+                        }
+                        scope.launch {
+                            runCatching {
+                                val url = uploader.upload(threadId, messageRef.id, audio)
+                                commitFirestoreMessage(
+                                    db = backend.db,
+                                    threadRef = threadRef,
+                                    messageRef = messageRef,
+                                    fields = mapOf(
+                                        Fs.TEXT to "",
+                                        Fs.MESSAGE_KIND to MessageKind.VOICE.id,
+                                        Fs.AUDIO_PATH to url,
+                                        Fs.AUDIO_DURATION_MS to audio.durationMs,
+                                        Fs.AUTHOR_ID to author.uid,
+                                        Fs.AUTHOR_NAME to author.displayName,
+                                        Fs.CREATED_AT to FieldValue.serverTimestamp(),
+                                    ) + replyFields,
+                                )
+                            }.onFailure { _errors.emit(it) }
+                        }
+                    }
+                    else -> {
                         commitFirestoreMessage(
                             db = backend.db,
                             threadRef = threadRef,
                             messageRef = messageRef,
                             fields = mapOf(
                                 Fs.TEXT to trimmed,
-                                Fs.MESSAGE_KIND to MessageKind.IMAGE.id,
-                                Fs.IMAGE_PATH to url,
-                                Fs.IMAGE_WIDTH to image.width,
-                                Fs.IMAGE_HEIGHT to image.height,
+                                Fs.MESSAGE_KIND to MessageKind.TEXT.id,
                                 Fs.AUTHOR_ID to author.uid,
                                 Fs.AUTHOR_NAME to author.displayName,
                                 Fs.CREATED_AT to FieldValue.serverTimestamp(),
-                            ),
+                            ) + replyFields,
                         )
+                    }
+                }
+            }
+            is Backend.Local -> backend.store.postMessage(
+                threadId = threadId,
+                text = text,
+                author = author,
+                image = image,
+                audio = audio,
+                sticker = sticker,
+                reply = reply,
+            )
+        }
+    }
+
+    /** Toggle one emoji reaction from this user. One emoji per user (switching replaces). */
+    fun toggleReaction(threadId: String, messageId: String, emoji: String, author: Author) {
+        when (val backend = backend) {
+            is Backend.Firestore -> {
+                val ref = backend.db.collection(Fs.THREADS).document(threadId)
+                    .collection(Fs.MESSAGES).document(messageId)
+                scope.launch {
+                    runCatching {
+                        backend.db.runTransaction { transaction ->
+                            val snap = transaction.get(ref)
+                            @Suppress("UNCHECKED_CAST")
+                            val raw = snap.get(Fs.REACTIONS) as? Map<String, Any?> ?: emptyMap()
+                            val reactions = raw.mapValues { (_, value) ->
+                                when (value) {
+                                    is List<*> -> value.filterIsInstance<String>().toMutableList()
+                                    else -> mutableListOf()
+                                }
+                            }.toMutableMap()
+
+                            for (key in reactions.keys.toList()) {
+                                val filtered = reactions[key]?.filter { it != author.uid }.orEmpty().toMutableList()
+                                if (filtered.isEmpty()) {
+                                    reactions.remove(key)
+                                } else {
+                                    reactions[key] = filtered
+                                }
+                            }
+
+                            val list = reactions[emoji]?.toMutableList() ?: mutableListOf()
+                            if (list.contains(author.uid)) {
+                                list.remove(author.uid)
+                            } else {
+                                list.add(author.uid)
+                            }
+                            if (list.isEmpty()) {
+                                reactions.remove(emoji)
+                            } else {
+                                reactions[emoji] = list
+                            }
+                            transaction.update(ref, Fs.REACTIONS, reactions)
+                            null
+                        }.await()
                     }.onFailure { _errors.emit(it) }
                 }
             }
-            is Backend.Local -> backend.store.postMessage(threadId, text, author, image)
+            is Backend.Local -> backend.store.toggleReaction(threadId, messageId, emoji, author)
         }
     }
 

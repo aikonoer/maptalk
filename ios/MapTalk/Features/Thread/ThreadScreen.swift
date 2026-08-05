@@ -1,3 +1,4 @@
+import AVFoundation
 import PhotosUI
 import SwiftUI
 import UIKit
@@ -10,6 +11,9 @@ struct ThreadScreen: View {
     @State private var pickerItem: PhotosPickerItem?
     @State private var pendingImage: UIImage?
     @State private var isPreparingImage = false
+    @State private var showStickers = false
+    @State private var reactionTarget: Message?
+    @State private var recorder = VoiceRecorder()
     @FocusState private var isComposing: Bool
 
     init(environment: AppEnvironment, author: Author, threadId: String) {
@@ -37,10 +41,26 @@ struct ThreadScreen: View {
                 ToolbarItem(placement: .principal) { header }
             }
             .onAppear { model.start() }
-            .onDisappear { model.stop() }
+            .onDisappear {
+                model.stop()
+                recorder.cancel()
+            }
             .onChange(of: pickerItem) { _, item in
                 guard let item else { return }
                 Task { await loadPickerItem(item) }
+            }
+            .sheet(item: $reactionTarget) { message in
+                ReactionPicker(
+                    message: message,
+                    myUid: author.uid,
+                    onPick: { emoji in
+                        model.toggleReaction(emoji, on: message, as: author)
+                        reactionTarget = nil
+                    }
+                )
+                .presentationDetents([.height(120)])
+                .presentationDragIndicator(.visible)
+                .presentationBackground(Theme.surface)
             }
     }
 
@@ -79,7 +99,7 @@ struct ThreadScreen: View {
                 Text("Nobody has said anything yet")
                     .font(.cardTitle)
                     .foregroundStyle(Theme.subtle)
-                Text("Go first \u{2014} everyone looking at this spot will see it.")
+                Text("Go first \u{2014} photos, stickers, voice, the lot.")
                     .font(.subheadline)
                     .foregroundStyle(Theme.faint)
                     .multilineTextAlignment(.center)
@@ -94,8 +114,14 @@ struct ThreadScreen: View {
                             MessageRow(
                                 message: message,
                                 isMine: message.authorId == author.uid,
+                                myUid: author.uid,
                                 startsRun: startsRun(at: index),
-                                endsRun: endsRun(at: index)
+                                endsRun: endsRun(at: index),
+                                onReply: { model.setReply(to: message) },
+                                onReact: { reactionTarget = message },
+                                onToggleReaction: { emoji in
+                                    model.toggleReaction(emoji, on: message, as: author)
+                                }
                             )
                             .id(message.id)
                         }
@@ -115,6 +141,33 @@ struct ThreadScreen: View {
             Rectangle()
                 .fill(Theme.hairline)
                 .frame(height: 1)
+
+            if let reply = model.replyTarget {
+                HStack(spacing: 10) {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Theme.accent)
+                        .frame(width: 3, height: 36)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Reply to \(reply.authorName)")
+                            .font(.meta)
+                            .foregroundStyle(Theme.accent)
+                        Text(replyPreview(reply))
+                            .font(.subheadline)
+                            .foregroundStyle(Theme.subtle)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                    Button {
+                        model.clearReply()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(Theme.subtle)
+                    }
+                    .accessibilityLabel("Cancel reply")
+                }
+                .padding(.horizontal, 14)
+                .padding(.top, 10)
+            }
 
             if let pendingImage {
                 HStack(alignment: .top, spacing: 10) {
@@ -138,69 +191,137 @@ struct ThreadScreen: View {
                 .padding(.top, 10)
             }
 
-            HStack(alignment: .bottom, spacing: 10) {
-                PhotosPicker(selection: $pickerItem, matching: .images, photoLibrary: .shared()) {
-                    Image(systemName: "photo")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(Theme.subtle)
-                        .frame(width: 40, height: 40)
-                }
-                .accessibilityLabel("Add a photo")
-                .disabled(isPreparingImage)
-
-                TextField(
-                    "",
-                    text: $draft,
-                    prompt: Text(pendingImage == nil ? "Say something" : "Add a caption")
-                        .foregroundStyle(Theme.faint),
-                    axis: .vertical
-                )
-                .font(.body)
-                .foregroundStyle(Theme.text)
-                .focused($isComposing)
-                .lineLimit(1...5)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(Theme.raised, in: Capsule())
-                .overlay {
-                    Capsule().strokeBorder(isComposing ? Theme.accent : Theme.hairline, lineWidth: 1)
-                }
-                .animation(.easeOut(duration: 0.15), value: isComposing)
-                .onChange(of: draft) { _, newValue in
-                    if newValue.count > ThreadModel.maxMessageLength {
-                        draft = String(newValue.prefix(ThreadModel.maxMessageLength))
-                    }
-                }
-
-                Button(action: send) {
-                    Group {
-                        if isPreparingImage {
-                            ProgressView().tint(.white)
-                        } else {
-                            Image(systemName: "arrow.up")
-                                .font(.system(size: 16, weight: .bold))
+            if showStickers {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
+                        ForEach(StickerPack.all, id: \.self) { glyph in
+                            Button {
+                                model.send("", as: author, sticker: glyph)
+                                showStickers = false
+                            } label: {
+                                Text(glyph)
+                                    .font(.system(size: 34))
+                                    .frame(width: 48, height: 48)
+                            }
+                            .buttonStyle(.pressable)
                         }
                     }
-                    .foregroundStyle(canSend ? .white : Theme.faint)
-                    .frame(width: 40, height: 40)
-                    .background(canSend ? Theme.accent : Theme.raised, in: Circle())
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
                 }
-                .buttonStyle(.pressable)
-                .disabled(!canSend || isPreparingImage)
-                .animation(.spring(duration: 0.25), value: canSend)
-                .accessibilityLabel("Send")
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
 
-            if draft.count > ThreadModel.maxMessageLength - 60 {
-                Text("\(draft.count)/\(ThreadModel.maxMessageLength)")
-                    .font(.meta)
-                    .foregroundStyle(Theme.faint)
-                    .padding(.bottom, 8)
+            if recorder.isRecording {
+                HStack(spacing: 12) {
+                    Circle()
+                        .fill(Theme.danger)
+                        .frame(width: 10, height: 10)
+                    Text(recorder.elapsedLabel)
+                        .font(.cardTitle)
+                        .foregroundStyle(Theme.text)
+                        .monospacedDigit()
+                    Spacer()
+                    Button("Cancel") {
+                        recorder.cancel()
+                    }
+                    .foregroundStyle(Theme.subtle)
+                    Button("Send") {
+                        if let audio = recorder.stop() {
+                            model.send("", as: author, audio: audio)
+                        }
+                    }
+                    .fontWeight(.semibold)
+                    .foregroundStyle(Theme.accent)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            } else {
+                HStack(alignment: .bottom, spacing: 8) {
+                    Button {
+                        showStickers.toggle()
+                    } label: {
+                        Image(systemName: showStickers ? "face.smiling.fill" : "face.smiling")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(Theme.subtle)
+                            .frame(width: 36, height: 40)
+                    }
+                    .accessibilityLabel("Stickers")
+
+                    PhotosPicker(selection: $pickerItem, matching: .images, photoLibrary: .shared()) {
+                        Image(systemName: "photo")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(Theme.subtle)
+                            .frame(width: 36, height: 40)
+                    }
+                    .accessibilityLabel("Add a photo")
+                    .disabled(isPreparingImage)
+
+                    TextField(
+                        "",
+                        text: $draft,
+                        prompt: Text(pendingImage == nil ? "Say something" : "Add a caption")
+                            .foregroundStyle(Theme.faint),
+                        axis: .vertical
+                    )
+                    .font(.body)
+                    .foregroundStyle(Theme.text)
+                    .focused($isComposing)
+                    .lineLimit(1...5)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(Theme.raised, in: Capsule())
+                    .overlay {
+                        Capsule().strokeBorder(isComposing ? Theme.accent : Theme.hairline, lineWidth: 1)
+                    }
+                    .onChange(of: draft) { _, newValue in
+                        if newValue.count > ThreadModel.maxMessageLength {
+                            draft = String(newValue.prefix(ThreadModel.maxMessageLength))
+                        }
+                    }
+
+                    if canSend || isPreparingImage {
+                        Button(action: send) {
+                            Group {
+                                if isPreparingImage {
+                                    ProgressView().tint(.white)
+                                } else {
+                                    Image(systemName: "arrow.up")
+                                        .font(.system(size: 16, weight: .bold))
+                                }
+                            }
+                            .foregroundStyle(.white)
+                            .frame(width: 40, height: 40)
+                            .background(Theme.accent, in: Circle())
+                        }
+                        .buttonStyle(.pressable)
+                        .disabled(!canSend || isPreparingImage)
+                        .accessibilityLabel("Send")
+                    } else {
+                        Button {
+                            Task { await recorder.start() }
+                        } label: {
+                            Image(systemName: "mic.fill")
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundStyle(Theme.subtle)
+                                .frame(width: 40, height: 40)
+                                .background(Theme.raised, in: Circle())
+                        }
+                        .buttonStyle(.pressable)
+                        .accessibilityLabel("Record a voice note")
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 10)
             }
         }
         .background(Theme.surface)
+    }
+
+    private func replyPreview(_ message: Message) -> String {
+        if message.isSticker { return message.text }
+        if message.hasVoice { return "Voice note" }
+        if message.hasImage { return message.text.isEmpty ? "Photo" : message.text }
+        return message.text
     }
 
     private func send() {
@@ -210,6 +331,7 @@ struct ThreadScreen: View {
         draft = ""
         pendingImage = nil
         pickerItem = nil
+        showStickers = false
     }
 
     private func loadPickerItem(_ item: PhotosPickerItem) async {
@@ -249,12 +371,17 @@ private extension Message {
     }
 }
 
-private struct MessageRow: View {
+// MARK: - Rows
 
+private struct MessageRow: View {
     let message: Message
     let isMine: Bool
+    let myUid: String
     let startsRun: Bool
     let endsRun: Bool
+    let onReply: () -> Void
+    let onReact: () -> Void
+    let onToggleReaction: (String) -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -266,7 +393,7 @@ private struct MessageRow: View {
                 Color.clear.frame(width: 30, height: 1)
             }
 
-            VStack(alignment: isMine ? .trailing : .leading, spacing: 3) {
+            VStack(alignment: isMine ? .trailing : .leading, spacing: 4) {
                 if !isMine, startsRun {
                     Text(message.authorName)
                         .font(.meta)
@@ -274,25 +401,19 @@ private struct MessageRow: View {
                         .padding(.leading, 2)
                 }
 
-                VStack(alignment: .leading, spacing: 6) {
-                    if message.hasImage, let path = message.imagePath {
-                        MessageImage(path: path, width: message.imageWidth, height: message.imageHeight)
+                bubble
+                    .contextMenu {
+                        Button("Reply", systemImage: "arrowshape.turn.up.left") { onReply() }
+                        Button("React", systemImage: "face.smiling") { onReact() }
                     }
-                    if !message.text.isEmpty {
-                        Text(message.text)
-                            .font(.body)
-                            .foregroundStyle(isMine ? .white : Theme.text)
-                    }
-                }
-                .padding(.horizontal, message.hasImage && message.text.isEmpty ? 4 : 14)
-                .padding(.vertical, message.hasImage && message.text.isEmpty ? 4 : 9)
-                .background(
-                    isMine ? Theme.accent : Theme.raised,
-                    in: Theme.bubble(
-                        radius: Theme.Radius.bubble,
-                        tail: endsRun ? (isMine ? .bottomTrailing : .bottomLeading) : nil
+
+                if !message.reactions.isEmpty {
+                    ReactionStrip(
+                        reactions: message.reactions,
+                        myUid: myUid,
+                        onToggle: onToggleReaction
                     )
-                )
+                }
 
                 if endsRun {
                     Text(relativeTime(message.createdAt))
@@ -305,6 +426,127 @@ private struct MessageRow: View {
             if !isMine { Spacer(minLength: 48) }
         }
         .padding(.top, startsRun ? 12 : 2)
+    }
+
+    @ViewBuilder
+    private var bubble: some View {
+        if message.isSticker {
+            Text(message.text)
+                .font(.system(size: 56))
+                .padding(4)
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                if let reply = message.reply {
+                    HStack(spacing: 8) {
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(isMine ? Color.white.opacity(0.7) : Theme.accent)
+                            .frame(width: 3)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(reply.authorName)
+                                .font(.meta)
+                                .foregroundStyle(isMine ? Color.white.opacity(0.85) : Theme.accent)
+                            Text(reply.text)
+                                .font(.subheadline)
+                                .foregroundStyle(isMine ? Color.white.opacity(0.75) : Theme.subtle)
+                                .lineLimit(2)
+                        }
+                    }
+                    .padding(8)
+                    .background(
+                        (isMine ? Color.white.opacity(0.12) : Theme.base.opacity(0.55)),
+                        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    )
+                }
+
+                if message.hasImage, let path = message.imagePath {
+                    MessageImage(path: path, width: message.imageWidth, height: message.imageHeight)
+                }
+
+                if message.hasVoice, let path = message.audioPath {
+                    VoiceBubble(
+                        path: path,
+                        durationMs: message.audioDurationMs ?? 0,
+                        isMine: isMine
+                    )
+                }
+
+                if !message.text.isEmpty, !message.hasVoice {
+                    Text(message.text)
+                        .font(.body)
+                        .foregroundStyle(isMine ? .white : Theme.text)
+                }
+            }
+            .padding(.horizontal, message.hasImage && message.text.isEmpty && message.reply == nil ? 4 : 12)
+            .padding(.vertical, message.hasImage && message.text.isEmpty && message.reply == nil ? 4 : 9)
+            .background(
+                isMine ? Theme.accent : Theme.raised,
+                in: Theme.bubble(
+                    radius: Theme.Radius.bubble,
+                    tail: endsRun ? (isMine ? .bottomTrailing : .bottomLeading) : nil
+                )
+            )
+        }
+    }
+}
+
+private struct ReactionStrip: View {
+    let reactions: [String: [String]]
+    let myUid: String
+    let onToggle: (String) -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(reactions.keys.sorted(), id: \.self) { emoji in
+                let uids = reactions[emoji] ?? []
+                Button {
+                    onToggle(emoji)
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(emoji).font(.system(size: 13))
+                        Text("\(uids.count)")
+                            .font(.meta)
+                            .foregroundStyle(uids.contains(myUid) ? Theme.accent : Theme.subtle)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        Theme.raised,
+                        in: Capsule()
+                    )
+                    .overlay {
+                        Capsule().strokeBorder(
+                            uids.contains(myUid) ? Theme.accent.opacity(0.7) : Theme.hairline,
+                            lineWidth: 1
+                        )
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+}
+
+private struct ReactionPicker: View {
+    let message: Message
+    let myUid: String
+    let onPick: (String) -> Void
+
+    var body: some View {
+        HStack(spacing: 14) {
+            ForEach(ReactionEmoji.allCases, id: \.rawValue) { reaction in
+                Button {
+                    onPick(reaction.rawValue)
+                } label: {
+                    Text(reaction.rawValue)
+                        .font(.system(size: 32))
+                        .opacity(message.reacted(by: myUid, emoji: reaction.rawValue) ? 1 : 0.85)
+                        .scaleEffect(message.reacted(by: myUid, emoji: reaction.rawValue) ? 1.15 : 1)
+                }
+                .buttonStyle(.pressable)
+            }
+        }
+        .padding(.horizontal, 20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -426,5 +668,168 @@ private struct FullscreenImageViewer: View {
             }
         }
         .statusBarHidden(true)
+    }
+}
+
+private struct VoiceBubble: View {
+    let path: String
+    let durationMs: Int
+    let isMine: Bool
+
+    @State private var player: AVPlayer?
+    @State private var isPlaying = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button(action: toggle) {
+                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(isMine ? .white : Theme.accent)
+                    .frame(width: 32, height: 32)
+                    .background(
+                        (isMine ? Color.white.opacity(0.2) : Theme.accent.opacity(0.15)),
+                        in: Circle()
+                    )
+            }
+            .buttonStyle(.plain)
+
+            Capsule()
+                .fill(isMine ? Color.white.opacity(0.35) : Theme.hairline)
+                .frame(width: 110, height: 4)
+
+            Text(Self.format(durationMs))
+                .font(.meta)
+                .foregroundStyle(isMine ? Color.white.opacity(0.85) : Theme.subtle)
+                .monospacedDigit()
+        }
+        .onDisappear { stop() }
+    }
+
+    private func toggle() {
+        if isPlaying {
+            stop()
+            return
+        }
+        let url: URL?
+        if path.hasPrefix("http://") || path.hasPrefix("https://") {
+            url = URL(string: path)
+        } else {
+            url = LocalMediaStore.url(forRelativePath: path)
+        }
+        guard let url else { return }
+        let item = AVPlayerItem(url: url)
+        let av = AVPlayer(playerItem: item)
+        player = av
+        isPlaying = true
+        NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { _ in
+            isPlaying = false
+        }
+        av.play()
+    }
+
+    private func stop() {
+        player?.pause()
+        player = nil
+        isPlaying = false
+    }
+
+    private static func format(_ ms: Int) -> String {
+        let total = max(1, ms / 1000)
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+}
+
+// MARK: - Voice recorder
+
+@MainActor
+@Observable
+final class VoiceRecorder {
+    private(set) var isRecording = false
+    private(set) var elapsedMs = 0
+
+    private var recorder: AVAudioRecorder?
+    private var fileURL: URL?
+    private var timer: Timer?
+    private var startedAt: Date?
+
+    var elapsedLabel: String {
+        let total = elapsedMs / 1000
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    func start() async {
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
+            try session.setActive(true)
+            let granted = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+                session.requestRecordPermission { cont.resume(returning: $0) }
+            }
+            guard granted else { return }
+
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("\(UUID().uuidString).m4a")
+            let settings: [String: Any] = [
+                AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+                AVSampleRateKey: 22_050,
+                AVNumberOfChannelsKey: 1,
+                AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue,
+            ]
+            let av = try AVAudioRecorder(url: url, settings: settings)
+            av.record()
+            recorder = av
+            fileURL = url
+            startedAt = Date()
+            isRecording = true
+            elapsedMs = 0
+            timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self, let started = self.startedAt else { return }
+                    self.elapsedMs = Int(Date().timeIntervalSince(started) * 1000)
+                    if self.elapsedMs >= 60_000 {
+                        _ = self.stop()
+                    }
+                }
+            }
+        } catch {
+            cancel()
+        }
+    }
+
+    func stop() -> PreparedAudio? {
+        timer?.invalidate()
+        timer = nil
+        recorder?.stop()
+        defer {
+            recorder = nil
+            isRecording = false
+            fileURL = nil
+            startedAt = nil
+        }
+        guard let fileURL,
+              let data = try? Data(contentsOf: fileURL),
+              data.count > 0
+        else { return nil }
+        let duration = max(500, elapsedMs)
+        try? FileManager.default.removeItem(at: fileURL)
+        return PreparedAudio(data: data, durationMs: duration, contentType: "audio/mp4")
+    }
+
+    func cancel() {
+        timer?.invalidate()
+        timer = nil
+        recorder?.stop()
+        if let fileURL {
+            try? FileManager.default.removeItem(at: fileURL)
+        }
+        recorder = nil
+        self.fileURL = nil
+        isRecording = false
+        elapsedMs = 0
+        startedAt = nil
     }
 }

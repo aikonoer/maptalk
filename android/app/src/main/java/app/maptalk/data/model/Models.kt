@@ -36,6 +36,8 @@ data class ChatThread(
 enum class MessageKind(val id: String) {
     TEXT("text"),
     IMAGE("image"),
+    VOICE("voice"),
+    STICKER("sticker"),
     ;
 
     companion object {
@@ -43,9 +45,29 @@ enum class MessageKind(val id: String) {
     }
 }
 
+/** Quick reactions available under every bubble. */
+object ReactionEmoji {
+    val ALL = listOf("👍", "❤️", "😂", "😮", "😢", "🔥")
+}
+
+/** Curated sticker glyphs — no network pack. */
+object StickerPack {
+    val ALL = listOf(
+        "👋", "🔥", "💯", "✨", "🎉", "🙌",
+        "😅", "🫡", "🫶", "📍", "🚦", "☕",
+    )
+}
+
+/** Snapshot of the message being replied to, denormalised onto the new message. */
+data class MessageReply(
+    val id: String,
+    val authorName: String,
+    val text: String,
+)
+
 /**
- * One reply inside a thread. Text messages carry only [text]; image messages also carry a
- * local or remote path to the compressed bytes (and optional caption in [text]).
+ * One reply inside a thread. Text / image / voice / sticker kinds share this shape;
+ * unused media fields stay null.
  */
 data class Message(
     val id: String,
@@ -57,8 +79,18 @@ data class Message(
     val imagePath: String? = null,
     val imageWidth: Int? = null,
     val imageHeight: Int? = null,
+    val audioPath: String? = null,
+    val audioDurationMs: Int? = null,
+    val reply: MessageReply? = null,
+    /** emoji → uids who reacted with it */
+    val reactions: Map<String, List<String>> = emptyMap(),
 ) {
     val hasImage: Boolean get() = kind == MessageKind.IMAGE && imagePath != null
+    val hasVoice: Boolean get() = kind == MessageKind.VOICE && audioPath != null
+    val isSticker: Boolean get() = kind == MessageKind.STICKER
+
+    fun reacted(by: String, emoji: String): Boolean =
+        reactions[emoji]?.contains(by) == true
 }
 
 /** A photo already resized and JPEG-encoded on the device, ready to store. */
@@ -66,6 +98,13 @@ data class PreparedImage(
     val jpegBytes: ByteArray,
     val width: Int,
     val height: Int,
+)
+
+/** A short voice note ready to upload. */
+data class PreparedAudio(
+    val bytes: ByteArray,
+    val durationMs: Int,
+    val contentType: String = "audio/mp4",
 )
 
 /** Who is writing, denormalised onto every thread and message. */

@@ -189,29 +189,40 @@ final class ThreadRepository {
     }
 
     /// The message and the thread's activity fields move together or not at all.
-    /// Image messages upload to Storage first, then the Firestore batch carries the download URL.
+    /// Rich media uploads first, then the Firestore batch carries the download URL.
     func postMessage(
         threadId: String,
         text: String,
         author: Author,
-        image: PreparedImage? = nil
+        image: PreparedImage? = nil,
+        audio: PreparedAudio? = nil,
+        sticker: String? = nil,
+        reply: MessageReply? = nil
     ) {
         switch backend {
         case let .firestore(firestore, uploader):
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard image != nil || !trimmed.isEmpty else { return }
+            guard image != nil || audio != nil || sticker != nil || !trimmed.isEmpty else { return }
             let threadRef = firestore.collection(Fs.threads).document(threadId)
             let messageRef = threadRef.collection(Fs.messages).document()
 
             Task { [weak self] in
                 do {
                     var fields: [String: Any] = [
-                        Fs.text: trimmed,
+                        Fs.text: sticker ?? trimmed,
                         Fs.authorId: author.uid,
                         Fs.authorName: author.displayName,
                         Fs.createdAt: FieldValue.serverTimestamp(),
                     ]
-                    if let image {
+                    if let reply {
+                        fields[Fs.replyToId] = reply.id
+                        fields[Fs.replyToText] = String(reply.text.prefix(200))
+                        fields[Fs.replyToAuthorName] = String(reply.authorName.prefix(64))
+                    }
+                    if let sticker {
+                        fields[Fs.kindMessage] = MessageKind.sticker.rawValue
+                        fields[Fs.text] = sticker
+                    } else if let image {
                         let url = try await uploader.upload(
                             threadId: threadId,
                             messageId: messageRef.documentID,
@@ -221,6 +232,16 @@ final class ThreadRepository {
                         fields[Fs.imagePath] = url
                         fields[Fs.imageWidth] = image.width
                         fields[Fs.imageHeight] = image.height
+                    } else if let audio {
+                        let url = try await uploader.upload(
+                            threadId: threadId,
+                            messageId: messageRef.documentID,
+                            audio: audio
+                        )
+                        fields[Fs.kindMessage] = MessageKind.voice.rawValue
+                        fields[Fs.text] = ""
+                        fields[Fs.audioPath] = url
+                        fields[Fs.audioDurationMs] = audio.durationMs
                     } else {
                         fields[Fs.kindMessage] = MessageKind.text.rawValue
                     }
@@ -240,7 +261,58 @@ final class ThreadRepository {
                 }
             }
         case let .local(store):
-            store.postMessage(threadId: threadId, text: text, author: author, image: image)
+            store.postMessage(
+                threadId: threadId,
+                text: text,
+                author: author,
+                image: image,
+                audio: audio,
+                sticker: sticker,
+                reply: reply
+            )
+        }
+    }
+
+    /// Toggle one emoji reaction from this user. One emoji per user (switching replaces).
+    func toggleReaction(threadId: String, messageId: String, emoji: String, author: Author) {
+        switch backend {
+        case let .firestore(firestore, _):
+            let ref = firestore.collection(Fs.threads).document(threadId)
+                .collection(Fs.messages).document(messageId)
+            firestore.runTransaction({ transaction, errorPointer -> Any? in
+                let snap: DocumentSnapshot
+                do {
+                    snap = try transaction.getDocument(ref)
+                } catch let error as NSError {
+                    errorPointer?.pointee = error
+                    return nil
+                }
+                var reactions = snap.data()?[Fs.reactions] as? [String: [String]] ?? [:]
+                // Remove this user from every emoji first.
+                for key in reactions.keys {
+                    reactions[key] = reactions[key]?.filter { $0 != author.uid }
+                    if reactions[key]?.isEmpty == true { reactions[key] = nil }
+                }
+                var list = reactions[emoji] ?? []
+                if list.contains(author.uid) {
+                    list.removeAll { $0 == author.uid }
+                } else {
+                    list.append(author.uid)
+                }
+                if list.isEmpty {
+                    reactions[emoji] = nil
+                } else {
+                    reactions[emoji] = list
+                }
+                transaction.updateData([Fs.reactions: reactions], forDocument: ref)
+                return nil
+            }, completion: { [weak self] _, error in
+                if let error {
+                    MainActor.assumeIsolated { self?.onError?(error) }
+                }
+            })
+        case let .local(store):
+            store.toggleReaction(threadId: threadId, messageId: messageId, emoji: emoji, author: author)
         }
     }
 }

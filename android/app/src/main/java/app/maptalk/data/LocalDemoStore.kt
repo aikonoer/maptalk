@@ -5,6 +5,8 @@ import app.maptalk.data.model.Author
 import app.maptalk.data.model.ChatThread
 import app.maptalk.data.model.Message
 import app.maptalk.data.model.MessageKind
+import app.maptalk.data.model.MessageReply
+import app.maptalk.data.model.PreparedAudio
 import app.maptalk.data.model.PreparedImage
 import app.maptalk.data.model.ThreadKind
 import app.maptalk.geo.GeoPoint
@@ -102,29 +104,93 @@ class LocalDemoStore(context: Context) {
         text: String,
         author: Author,
         image: PreparedImage? = null,
+        audio: PreparedAudio? = null,
+        sticker: String? = null,
+        reply: MessageReply? = null,
     ) {
         val existing = threads[threadId] ?: return
         val trimmed = text.trim()
-        val imagePath = image?.let { media.save(it.jpegBytes) }
-        if (imagePath == null && trimmed.isEmpty()) return
+
+        val kind: MessageKind
+        var body = trimmed
+        var imagePath: String? = null
+        var imageWidth: Int? = null
+        var imageHeight: Int? = null
+        var audioPath: String? = null
+        var audioDurationMs: Int? = null
+
+        when {
+            sticker != null -> {
+                kind = MessageKind.STICKER
+                body = sticker
+            }
+            image != null -> {
+                kind = MessageKind.IMAGE
+                imagePath = media.save(image.jpegBytes)
+                imageWidth = image.width
+                imageHeight = image.height
+            }
+            audio != null -> {
+                kind = MessageKind.VOICE
+                body = ""
+                audioPath = media.saveAudio(audio.bytes)
+                audioDurationMs = audio.durationMs
+            }
+            else -> {
+                kind = MessageKind.TEXT
+                if (trimmed.isEmpty()) return
+            }
+        }
 
         val now = Instant.now()
         val message = Message(
             id = "local-msg-${UUID.randomUUID().toString().take(8)}",
-            kind = if (imagePath == null) MessageKind.TEXT else MessageKind.IMAGE,
-            text = trimmed,
+            kind = kind,
+            text = body,
             authorId = author.uid,
             authorName = author.displayName,
             createdAt = now,
             imagePath = imagePath,
-            imageWidth = image?.width,
-            imageHeight = image?.height,
+            imageWidth = imageWidth,
+            imageHeight = imageHeight,
+            audioPath = audioPath,
+            audioDurationMs = audioDurationMs,
+            reply = reply,
         )
         messages.getOrPut(threadId) { mutableListOf() }.add(message)
         threads[threadId] = existing.copy(
             lastMessageAt = now,
             messageCount = existing.messageCount + 1,
         )
+        threadPulse.tryEmit(Unit)
+    }
+
+    fun toggleReaction(threadId: String, messageId: String, emoji: String, author: Author) {
+        val list = messages[threadId] ?: return
+        val index = list.indexOfFirst { it.id == messageId }
+        if (index < 0) return
+        val old = list[index]
+        val reactions = old.reactions.mapValues { it.value.toMutableList() }.toMutableMap()
+        for (key in reactions.keys.toList()) {
+            val filtered = reactions[key]?.filter { it != author.uid }.orEmpty().toMutableList()
+            if (filtered.isEmpty()) {
+                reactions.remove(key)
+            } else {
+                reactions[key] = filtered
+            }
+        }
+        val uids = reactions[emoji]?.toMutableList() ?: mutableListOf()
+        if (uids.contains(author.uid)) {
+            uids.remove(author.uid)
+        } else {
+            uids.add(author.uid)
+        }
+        if (uids.isEmpty()) {
+            reactions.remove(emoji)
+        } else {
+            reactions[emoji] = uids
+        }
+        list[index] = old.copy(reactions = reactions)
         threadPulse.tryEmit(Unit)
     }
 

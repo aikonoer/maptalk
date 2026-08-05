@@ -15,5 +15,11 @@ class LocalMediaStore(context: Context) {
         return name
     }
 
+    fun saveAudio(bytes: ByteArray, ext: String = "m4a"): String {
+        val name = "${UUID.randomUUID()}.$ext"
+        File(root, name).writeBytes(bytes)
+        return name
+    }
+
     fun file(relativePath: String): File = File(root, relativePath)
 }

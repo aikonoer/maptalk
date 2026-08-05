@@ -12,6 +12,8 @@ import app.maptalk.data.ThreadRepository
 import app.maptalk.data.model.Author
 import app.maptalk.data.model.ChatThread
 import app.maptalk.data.model.Message
+import app.maptalk.data.model.MessageReply
+import app.maptalk.data.model.PreparedAudio
 import app.maptalk.data.model.PreparedImage
 import java.io.File
 import kotlinx.coroutines.Dispatchers
@@ -30,6 +32,7 @@ data class ThreadUiState(
     val thread: ChatThread? = null,
     val messages: List<Message> = emptyList(),
     val isLoading: Boolean = true,
+    val replyTarget: Message? = null,
 )
 
 class ThreadViewModel(
@@ -45,11 +48,19 @@ class ThreadViewModel(
     private val _isPreparingImage = MutableStateFlow(false)
     val isPreparingImage: StateFlow<Boolean> = _isPreparingImage.asStateFlow()
 
+    private val _replyTarget = MutableStateFlow<Message?>(null)
+
     val state: StateFlow<ThreadUiState> = combine(
         threadRepository.thread(threadId),
         threadRepository.messages(threadId),
-    ) { thread, messages ->
-        ThreadUiState(thread = thread, messages = messages, isLoading = false)
+        _replyTarget,
+    ) { thread, messages, reply ->
+        ThreadUiState(
+            thread = thread,
+            messages = messages,
+            isLoading = false,
+            replyTarget = reply,
+        )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ThreadUiState())
 
     init {
@@ -60,9 +71,49 @@ class ThreadViewModel(
 
     fun mediaFile(relativePath: String): File? = resolveMedia(relativePath)
 
-    fun send(text: String, author: Author, image: PreparedImage? = null) {
-        if (text.isBlank() && image == null) return
-        threadRepository.postMessage(threadId, text, author, image)
+    fun setReply(message: Message) {
+        _replyTarget.value = message
+    }
+
+    fun clearReply() {
+        _replyTarget.value = null
+    }
+
+    fun send(
+        text: String,
+        author: Author,
+        image: PreparedImage? = null,
+        audio: PreparedAudio? = null,
+        sticker: String? = null,
+    ) {
+        if (text.isBlank() && image == null && audio == null && sticker == null) return
+        val target = _replyTarget.value
+        val reply = target?.let {
+            MessageReply(
+                id = it.id,
+                authorName = it.authorName,
+                text = when {
+                    it.isSticker -> it.text
+                    it.hasVoice -> "Voice note"
+                    it.hasImage && it.text.isEmpty() -> "Photo"
+                    else -> it.text
+                },
+            )
+        }
+        threadRepository.postMessage(
+            threadId = threadId,
+            text = text,
+            author = author,
+            image = image,
+            audio = audio,
+            sticker = sticker,
+            reply = reply,
+        )
+        _replyTarget.value = null
+    }
+
+    fun toggleReaction(emoji: String, message: Message, author: Author) {
+        threadRepository.toggleReaction(threadId, message.id, emoji, author)
     }
 
     fun prepareImage(uri: Uri, onReady: (PreparedImage) -> Unit) {

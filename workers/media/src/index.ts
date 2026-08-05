@@ -1,13 +1,11 @@
 /**
- * Authenticated JPEG uploads into the MapTalk R2 bucket.
+ * Authenticated media uploads into the MapTalk R2 bucket.
  *
- * Clients send:
- *   POST /v1/images?threadId=…&messageId=…
- *   Authorization: Bearer <Firebase ID token>
- *   Content-Type: image/jpeg
- *   body = compressed JPEG bytes (<= 2 MB)
+ * POST /v1/images?threadId=&messageId=   Content-Type: image/jpeg
+ * POST /v1/audio?threadId=&messageId=   Content-Type: audio/mp4 | audio/m4a | audio/aac
  *
- * Response: { "url": "https://pub-….r2.dev/threads/…/….jpg" }
+ * Authorization: Bearer <Firebase ID token>
+ * Soft rate limit: 30 uploads / uid / rolling 10 minutes (per isolate).
  */
 
 export interface Env {
@@ -16,8 +14,14 @@ export interface Env {
   PUBLIC_BASE_URL: string;
 }
 
-const MAX_BYTES = 2 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
+const MAX_AUDIO_BYTES = 1 * 1024 * 1024;
 const KEY_RE = /^[A-Za-z0-9_-]{1,128}$/;
+const RATE_WINDOW_MS = 10 * 60 * 1000;
+const RATE_MAX = 30;
+
+/** uid → upload timestamps inside this isolate */
+const recentUploads = new Map<string, number[]>();
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -32,23 +36,54 @@ export default {
     }
 
     if (request.method === "POST" && url.pathname === "/v1/images") {
-      return uploadImage(request, env, url);
+      return upload(request, env, url, {
+        kinds: ["image/jpeg"],
+        maxBytes: MAX_IMAGE_BYTES,
+        extension: "jpg",
+        contentType: "image/jpeg",
+      });
+    }
+
+    if (request.method === "POST" && url.pathname === "/v1/audio") {
+      return upload(request, env, url, {
+        kinds: ["audio/mp4", "audio/m4a", "audio/aac", "audio/x-m4a"],
+        maxBytes: MAX_AUDIO_BYTES,
+        extension: "m4a",
+        contentType: "audio/mp4",
+      });
     }
 
     return json({ error: "not_found" }, 404);
   },
 } satisfies ExportedHandler<Env>;
 
-async function uploadImage(request: Request, env: Env, url: URL): Promise<Response> {
+type UploadSpec = {
+  kinds: string[];
+  maxBytes: number;
+  extension: string;
+  contentType: string;
+};
+
+async function upload(
+  request: Request,
+  env: Env,
+  url: URL,
+  spec: UploadSpec,
+): Promise<Response> {
   const auth = request.headers.get("Authorization") ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
   if (!token) return json({ error: "missing_token" }, 401);
 
+  let uid: string;
   try {
-    await verifyFirebaseIdToken(token, env.FIREBASE_PROJECT_ID);
+    uid = await verifyFirebaseIdToken(token, env.FIREBASE_PROJECT_ID);
   } catch (cause) {
     console.warn("token rejected", cause);
     return json({ error: "invalid_token" }, 401);
+  }
+
+  if (!allowUpload(uid)) {
+    return json({ error: "rate_limited" }, 429);
   }
 
   const threadId = url.searchParams.get("threadId") ?? "";
@@ -57,23 +92,38 @@ async function uploadImage(request: Request, env: Env, url: URL): Promise<Respon
     return json({ error: "bad_ids" }, 400);
   }
 
-  const contentType = (request.headers.get("Content-Type") ?? "").split(";")[0].trim();
-  if (contentType !== "image/jpeg") {
+  const contentType = (request.headers.get("Content-Type") ?? "").split(";")[0].trim().toLowerCase();
+  if (!spec.kinds.includes(contentType)) {
     return json({ error: "unsupported_type" }, 415);
   }
 
   const bytes = new Uint8Array(await request.arrayBuffer());
-  if (bytes.byteLength === 0 || bytes.byteLength > MAX_BYTES) {
+  if (bytes.byteLength === 0 || bytes.byteLength > spec.maxBytes) {
     return json({ error: "bad_size" }, 413);
   }
 
-  const key = `threads/${threadId}/${messageId}.jpg`;
+  const key = `threads/${threadId}/${messageId}.${spec.extension}`;
   await env.MEDIA.put(key, bytes, {
-    httpMetadata: { contentType: "image/jpeg", cacheControl: "public, max-age=31536000, immutable" },
+    httpMetadata: {
+      contentType: spec.contentType,
+      cacheControl: "public, max-age=31536000, immutable",
+    },
   });
 
   const publicUrl = `${env.PUBLIC_BASE_URL.replace(/\/$/, "")}/${key}`;
   return json({ url: publicUrl, path: key });
+}
+
+function allowUpload(uid: string): boolean {
+  const now = Date.now();
+  const prior = (recentUploads.get(uid) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
+  if (prior.length >= RATE_MAX) {
+    recentUploads.set(uid, prior);
+    return false;
+  }
+  prior.push(now);
+  recentUploads.set(uid, prior);
+  return true;
 }
 
 function corsHeaders(): HeadersInit {
@@ -95,8 +145,8 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-/** Verify a Firebase ID token with Google's JWKS (no Admin SDK). */
-async function verifyFirebaseIdToken(token: string, projectId: string): Promise<void> {
+/** Verify a Firebase ID token; returns the subject (uid). */
+async function verifyFirebaseIdToken(token: string, projectId: string): Promise<string> {
   const parts = token.split(".");
   if (parts.length !== 3) throw new Error("malformed");
 
@@ -130,6 +180,7 @@ async function verifyFirebaseIdToken(token: string, projectId: string): Promise<
   if (payload.aud !== projectId) throw new Error("bad_aud");
   if (payload.iss !== `https://securetoken.google.com/${projectId}`) throw new Error("bad_iss");
   if (!payload.sub || !payload.exp || payload.exp < now) throw new Error("expired");
+  return payload.sub;
 }
 
 type Jwks = { keys: JsonWebKey & { kid?: string }[] };

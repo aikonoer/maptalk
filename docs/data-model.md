@@ -24,27 +24,34 @@ A public conversation pinned to a single point on the map.
 
 ### `threads/{threadId}/messages/{messageId}`
 
-| Field          | Type      | Notes                                                          |
-| -------------- | --------- | -------------------------------------------------------------- |
-| `text`         | string    | Caption or body. May be empty when `messageKind` is `image`.   |
-| `messageKind`  | string    | `text` (default) or `image`.                                   |
-| `imagePath`    | string?   | Relative local path or remote URL once Storage/R2 is wired.    |
-| `imageWidth`   | number?   | Pixel width of the compressed image.                           |
-| `imageHeight`  | number?   | Pixel height of the compressed image.                          |
-| `authorId`     | string    | Must equal the writer's `auth.uid`.                            |
-| `authorName`   | string    | 1-24 chars.                                                    |
-| `createdAt`    | timestamp | Server timestamp, equals `request.time`.                       |
+| Field               | Type      | Notes                                                          |
+| ------------------- | --------- | -------------------------------------------------------------- |
+| `text`              | string    | Caption or body. Empty for voice; sticker glyph for stickers.  |
+| `messageKind`       | string    | `text`, `image`, `voice`, or `sticker`. Defaults to `text`.    |
+| `imagePath`         | string?   | Relative local path or remote URL for image messages.          |
+| `imageWidth`        | number?   | Pixel width of the compressed image.                           |
+| `imageHeight`       | number?   | Pixel height of the compressed image.                          |
+| `audioPath`         | string?   | Relative local path or remote URL for voice notes.             |
+| `audioDurationMs`   | number?   | Duration in ms (1–60000).                                      |
+| `replyToId`         | string?   | Id of the message being replied to.                            |
+| `replyToText`       | string?   | Snapshot of reply body (≤200 chars).                           |
+| `replyToAuthorName` | string?   | Snapshot of reply author name (≤64 chars).                     |
+| `reactions`         | map?      | emoji → list of uids. Only field updatable after create.       |
+| `authorId`          | string    | Must equal the writer's `auth.uid`.                            |
+| `authorName`        | string    | 1-24 chars.                                                    |
+| `createdAt`         | timestamp | Server timestamp, equals `request.time`.                       |
 
 Images are compressed on the device (max edge 1280 px, JPEG ~0.72) before storage.
+Voice notes are AAC/M4A, max ~60s / 1 MB. Stickers are curated emoji glyphs (no pack download).
 
-| Mode | Where bytes live | What `imagePath` holds |
-| ---- | ---------------- | ---------------------- |
+| Mode | Where bytes live | What path fields hold |
+| ---- | ---------------- | --------------------- |
 | Local demo | App files directory | Relative filename |
 | Emulator | Firebase Storage emulator | Emulator download URL |
-| Live | Cloudflare R2 via `workers/media` | `https://pub-….r2.dev/threads/…/….jpg` |
+| Live | Cloudflare R2 via `workers/media` | `https://pub-….r2.dev/threads/…/….jpg` or `.m4a` |
 
 R2 is the production store (zero egress). The Worker verifies the Firebase ID token before
-accepting a JPEG. Object layout: `threads/{threadId}/{messageId}.jpg`.
+accepting JPEG or audio. Object layout: `threads/{threadId}/{messageId}.{jpg\|m4a}`.
 
 Firebase Storage rules in `firebase/storage.rules` remain for the emulator path.
 
@@ -69,6 +76,9 @@ Posting a message is a single atomic batch of two writes:
 The security rules only let an update touch `lastMessageAt` and `messageCount`, and only
 when the count goes up by exactly one, so there are no Cloud Functions and the whole
 backend runs on the free Spark plan.
+
+Message documents may also be updated solely to change the `reactions` map (emoji → uids).
+All other message fields are immutable after create.
 
 ## Reading the map
 

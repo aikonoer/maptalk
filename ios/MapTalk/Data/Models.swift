@@ -48,10 +48,36 @@ struct ChatThread: Identifiable, Equatable, Sendable {
 enum MessageKind: String, Sendable {
     case text
     case image
+    case voice
+    case sticker
 }
 
-/// One reply inside a thread. Text messages carry only `text`; image messages also carry a
-/// local or remote path to the compressed bytes (and optional caption in `text`).
+/// Quick reactions available under every bubble.
+enum ReactionEmoji: String, CaseIterable, Sendable {
+    case thumb = "👍"
+    case heart = "❤️"
+    case laugh = "😂"
+    case wow = "😮"
+    case sad = "😢"
+    case fire = "🔥"
+}
+
+/// Curated sticker glyphs (no network pack — just expressive emoji sent as sticker messages).
+enum StickerPack {
+    static let all: [String] = [
+        "👋", "🔥", "💯", "✨", "🎉", "🙌",
+        "😅", "🫡", "🫶", "📍", "🚦", "☕",
+    ]
+}
+
+/// Snapshot of the message being replied to, denormalised onto the new message.
+struct MessageReply: Equatable, Sendable {
+    let id: String
+    let authorName: String
+    let text: String
+}
+
+/// One reply inside a thread.
 struct Message: Identifiable, Equatable, Sendable {
     let id: String
     let kind: MessageKind
@@ -59,12 +85,18 @@ struct Message: Identifiable, Equatable, Sendable {
     let authorId: String
     let authorName: String
     let createdAt: Date?
-    /// Relative path under the app's media directory, or a remote URL once Storage is wired.
     let imagePath: String?
     let imageWidth: Int?
     let imageHeight: Int?
+    let audioPath: String?
+    let audioDurationMs: Int?
+    let reply: MessageReply?
+    /// emoji → uids who reacted with it
+    let reactions: [String: [String]]
 
     var hasImage: Bool { kind == .image && imagePath != nil }
+    var hasVoice: Bool { kind == .voice && audioPath != nil }
+    var isSticker: Bool { kind == .sticker }
 
     init(
         id: String,
@@ -75,7 +107,11 @@ struct Message: Identifiable, Equatable, Sendable {
         createdAt: Date?,
         imagePath: String? = nil,
         imageWidth: Int? = nil,
-        imageHeight: Int? = nil
+        imageHeight: Int? = nil,
+        audioPath: String? = nil,
+        audioDurationMs: Int? = nil,
+        reply: MessageReply? = nil,
+        reactions: [String: [String]] = [:]
     ) {
         self.id = id
         self.kind = kind
@@ -86,18 +122,34 @@ struct Message: Identifiable, Equatable, Sendable {
         self.imagePath = imagePath
         self.imageWidth = imageWidth
         self.imageHeight = imageHeight
+        self.audioPath = audioPath
+        self.audioDurationMs = audioDurationMs
+        self.reply = reply
+        self.reactions = reactions
+    }
+
+    func reactionCount(for emoji: String) -> Int {
+        reactions[emoji]?.count ?? 0
+    }
+
+    func reacted(by uid: String, emoji: String) -> Bool {
+        reactions[emoji]?.contains(uid) == true
     }
 }
 
-/// Who is writing, denormalised onto every thread and message.
 struct Author: Equatable, Sendable {
     let uid: String
     let displayName: String
 }
 
-/// A photo that has already been resized and JPEG-encoded on the device, ready to store.
 struct PreparedImage: Sendable {
     let jpegData: Data
     let width: Int
     let height: Int
+}
+
+struct PreparedAudio: Sendable {
+    let data: Data
+    let durationMs: Int
+    let contentType: String
 }

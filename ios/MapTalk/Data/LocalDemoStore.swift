@@ -114,27 +114,60 @@ final class LocalDemoStore {
         return id
     }
 
-    func postMessage(threadId: String, text: String, author: Author, image: PreparedImage? = nil) {
+    func postMessage(
+        threadId: String,
+        text: String,
+        author: Author,
+        image: PreparedImage? = nil,
+        audio: PreparedAudio? = nil,
+        sticker: String? = nil,
+        reply: MessageReply? = nil
+    ) {
         guard let existing = threads[threadId] else { return }
         let now = Date()
-        var imagePath: String?
-        if let image {
-            imagePath = try? LocalMediaStore.save(jpeg: image.jpegData)
-        }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Image messages may ship with an empty caption; text messages need a body.
-        if imagePath == nil, trimmed.isEmpty { return }
+
+        let kind: MessageKind
+        var imagePath: String?
+        var imageWidth: Int?
+        var imageHeight: Int?
+        var audioPath: String?
+        var audioDurationMs: Int?
+        var body = trimmed
+
+        if let sticker {
+            kind = .sticker
+            body = sticker
+        } else if let image {
+            kind = .image
+            imagePath = try? LocalMediaStore.save(jpeg: image.jpegData)
+            imageWidth = image.width
+            imageHeight = image.height
+            if imagePath == nil { return }
+        } else if let audio {
+            kind = .voice
+            body = ""
+            audioPath = try? LocalMediaStore.save(audio: audio.data, ext: "m4a")
+            audioDurationMs = audio.durationMs
+            if audioPath == nil { return }
+        } else {
+            kind = .text
+            if trimmed.isEmpty { return }
+        }
 
         let message = Message(
             id: "local-msg-\(UUID().uuidString.prefix(8))",
-            kind: imagePath == nil ? .text : .image,
-            text: trimmed,
+            kind: kind,
+            text: body,
             authorId: author.uid,
             authorName: author.displayName,
             createdAt: now,
             imagePath: imagePath,
-            imageWidth: image?.width,
-            imageHeight: image?.height
+            imageWidth: imageWidth,
+            imageHeight: imageHeight,
+            audioPath: audioPath,
+            audioDurationMs: audioDurationMs,
+            reply: reply
         )
         messages[threadId, default: []].append(message)
         threads[threadId] = ChatThread(
@@ -151,6 +184,46 @@ final class LocalDemoStore {
         )
         publishAllThreadLists()
         publishThread(threadId)
+        publishMessages(threadId)
+    }
+
+    func toggleReaction(threadId: String, messageId: String, emoji: String, author: Author) {
+        guard var list = messages[threadId],
+              let index = list.firstIndex(where: { $0.id == messageId })
+        else { return }
+        var reactions = list[index].reactions
+        for key in reactions.keys {
+            reactions[key] = reactions[key]?.filter { $0 != author.uid }
+            if reactions[key]?.isEmpty == true { reactions[key] = nil }
+        }
+        var uids = reactions[emoji] ?? []
+        if uids.contains(author.uid) {
+            uids.removeAll { $0 == author.uid }
+        } else {
+            uids.append(author.uid)
+        }
+        if uids.isEmpty {
+            reactions[emoji] = nil
+        } else {
+            reactions[emoji] = uids
+        }
+        let old = list[index]
+        list[index] = Message(
+            id: old.id,
+            kind: old.kind,
+            text: old.text,
+            authorId: old.authorId,
+            authorName: old.authorName,
+            createdAt: old.createdAt,
+            imagePath: old.imagePath,
+            imageWidth: old.imageWidth,
+            imageHeight: old.imageHeight,
+            audioPath: old.audioPath,
+            audioDurationMs: old.audioDurationMs,
+            reply: old.reply,
+            reactions: reactions
+        )
+        messages[threadId] = list
         publishMessages(threadId)
     }
 

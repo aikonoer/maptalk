@@ -21,6 +21,13 @@ enum LocalMediaStore {
         return name
     }
 
+    static func save(audio: Data, ext: String = "m4a") throws -> String {
+        let name = "\(UUID().uuidString).\(ext)"
+        let file = root.appendingPathComponent(name)
+        try audio.write(to: file, options: .atomic)
+        return name
+    }
+
     static func url(forRelativePath path: String) -> URL {
         root.appendingPathComponent(path)
     }
