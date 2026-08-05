@@ -36,5 +36,8 @@
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>MapTalk reaches the Firebase emulators on your Mac when you run with mock data.</string>
+	<!-- Expanded from the MAPTALK_MODE build setting (local / live). -->
+	<key>MapTalkMode</key>
+	<string>$(MAPTALK_MODE)</string>
 </dict>
 </plist>

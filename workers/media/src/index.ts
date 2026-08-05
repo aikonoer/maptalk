@@ -7,6 +7,8 @@
  *   Body streamed to R2 (no full-buffer in Worker); validated after put.
  *   Optional: X-MapTalk-Duration-Ms (cross-checked against mvhd when present)
  *   Prefer PUT; POST kept for older clients.
+ * GET  /health                              Limits + daily upload metrics
+ * GET  /__ping                              Deploy smoke check
  *
  * Authorization: Bearer <Firebase ID token>
  *
@@ -51,10 +53,15 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders() });
     }
 
+    if (request.method === "GET" && url.pathname === "/__ping") {
+      return new Response("pong-v2", { status: 200, headers: { "content-type": "text/plain" } });
+    }
+
     if (request.method === "GET" && url.pathname === "/health") {
       const metrics = env.RATE ? await readMetrics(env.RATE) : null;
       return json({
         ok: true,
+        version: 2,
         limits: {
           maxImageBytes: MAX_IMAGE_BYTES,
           maxAudioBytes: MAX_AUDIO_BYTES,
@@ -219,6 +226,7 @@ async function upload(
 
   const base = env.PUBLIC_BASE_URL.replace(/\/$/, "");
   const publicUrl = `${base}/${key}`;
+  void recordSample(env, spec.kind, "size", bytes.byteLength);
   return reply({ url: publicUrl, path: key });
 }
 
@@ -341,6 +349,8 @@ async function uploadVideoStreaming(
 
   const base = env.PUBLIC_BASE_URL.replace(/\/$/, "");
   const publicUrl = `${base}/${key}`;
+  void recordSample(env, "video", "size", obj.size);
+  void recordSample(env, "video", "durationMs", durationMs);
   return reply({ url: publicUrl, path: key });
 }
 
@@ -512,6 +522,34 @@ async function bumpMetric(env: Env, kind: UploadKind, status: number): Promise<v
   }
 }
 
+const SAMPLE_CAP = 200;
+
+async function recordSample(
+  env: Env,
+  kind: UploadKind,
+  field: "size" | "durationMs",
+  value: number,
+): Promise<void> {
+  if (!env.RATE || !Number.isFinite(value) || value < 0) return;
+  const day = new Date().toISOString().slice(0, 10);
+  const key = `metrics:${day}:${kind}:${field}:samples`;
+  try {
+    const samples = parseStamps(await env.RATE.get(key));
+    samples.push(Math.round(value));
+    while (samples.length > SAMPLE_CAP) samples.shift();
+    await env.RATE.put(key, JSON.stringify(samples), { expirationTtl: 60 * 60 * 24 * 14 });
+  } catch (cause) {
+    console.warn("sample record failed", cause);
+  }
+}
+
+function percentile(samples: number[], p: number): number | null {
+  if (samples.length === 0) return null;
+  const sorted = [...samples].sort((a, b) => a - b);
+  const rank = Math.ceil((p / 100) * sorted.length) - 1;
+  return sorted[Math.max(0, Math.min(sorted.length - 1, rank))] ?? null;
+}
+
 async function readMetrics(kv: KVNamespace): Promise<Record<string, unknown>> {
   const day = new Date().toISOString().slice(0, 10);
   const kinds: UploadKind[] = ["image", "audio", "video"];
@@ -523,7 +561,21 @@ async function readMetrics(kv: KVNamespace): Promise<Record<string, unknown>> {
       if (raw) counts[`${kind}_${bucket}`] = Number(raw);
     }
   }
-  return { day, counts };
+
+  const percentiles: Record<string, number> = {};
+  for (const kind of kinds) {
+    for (const field of ["size", "durationMs"] as const) {
+      if (kind !== "video" && field === "durationMs") continue;
+      const samples = parseStamps(await kv.get(`metrics:${day}:${kind}:${field}:samples`));
+      const p50 = percentile(samples, 50);
+      const p95 = percentile(samples, 95);
+      if (p50 != null) percentiles[`${kind}_${field}_p50`] = p50;
+      if (p95 != null) percentiles[`${kind}_${field}_p95`] = p95;
+      if (samples.length > 0) percentiles[`${kind}_${field}_n`] = samples.length;
+    }
+  }
+
+  return { day, counts, percentiles };
 }
 
 function looksLikeJpeg(bytes: Uint8Array): boolean {

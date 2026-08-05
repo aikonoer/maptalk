@@ -7,6 +7,11 @@ options:
   createIntermediateGroups: true
   groupSortPosition: top
 
+configs:
+  Debug: debug
+  Live: debug
+  Release: release
+
 packages:
   Firebase:
     url: https://github.com/firebase/firebase-ios-sdk
@@ -17,6 +22,14 @@ settings:
     SWIFT_VERSION: "6.0"
     DEVELOPMENT_TEAM: "LJH248Q9BP"
     CODE_SIGN_STYLE: Automatic
+    MAPTALK_MODE: local
+  configs:
+    Debug:
+      MAPTALK_MODE: local
+    Live:
+      MAPTALK_MODE: live
+    Release:
+      MAPTALK_MODE: live
 
 targets:
   MapTalk:
@@ -95,12 +108,13 @@ schemes:
       environmentVariables:
         MAPTALK_MODE: "local"
 
-  # Real Firebase (maptalk-app) + Cloudflare R2 photo uploads.
+  # Real Firebase (maptalk-app) + Cloudflare R2. Mode is baked into Info.plist via the
+  # Live build configuration so home-screen launches stay live (scheme env vars do not).
   MapTalk Live:
     build:
       targets:
         MapTalk: all
     run:
-      config: Debug
+      config: Live
       environmentVariables:
         MAPTALK_MODE: "live"

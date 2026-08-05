@@ -62,19 +62,26 @@ Target for both platforms before upload:
 
 - [x] Push `main` + store release with Live video
   - Partial: `main` pushed; store release still pending
-- [ ] Device matrix: portrait/landscape, HEVC→H.264, short/long, offline fail
 - [x] Metrics: upload success %, p95 duration/size, Worker 413/415/429
-  - Partial: daily status counters on Worker `/health`; p95 size/duration still open
+  - Daily status counters + rolling p50/p95 size (and video duration) on `/health`
+- [ ] Device matrix (run on a physical phone before store submit):
+  - [ ] Portrait clip encode + play
+  - [ ] Landscape clip encode + play
+  - [ ] HEVC camera roll → H.264 upload envelope
+  - [ ] Short (~3s) and near-limit (~28s) clips
+  - [ ] Offline / airplane during upload → clear error + retry
+  - [ ] Cellular / ≥5 MB confirm dialog
+  - [ ] Pause-others when a second bubble plays
+  - [ ] Home-screen relaunch stays Live (iOS Live config / Android `-Pmaptalk.mode=live`)
 
 ---
 
 ## Current slice (done)
 
-Video PUT streaming; upload concurrency gate (2); Worker `/health` daily status metrics.
+Bake iOS Live mode into Info.plist; Worker p50/p95 size + video duration samples.
 
 ## Still open
 
 - True client→R2 presigned PUT (needs R2 S3 API tokens)
-- Device matrix + App Store / Play release
-- p95 upload size/duration histograms
+- Device matrix checkboxes + App Store / Play release
 

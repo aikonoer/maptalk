@@ -8,13 +8,13 @@ struct MapTalkApp: App {
 
     init() {
         // Mode selection (first match wins):
-        //   MAPTALK_MODE=local     → on-device demo (no network)
-        //   MAPTALK_MODE=emulator  → Firebase emulators on the Mac
-        //   MAPTALK_MODE=live      → real Firebase project
-        //   unset + Debug device   → local demo (so Personal Hotspot / no Mac still works)
+        //   MAPTALK_MODE env (Xcode scheme / devicectl)
+        //   MapTalkMode Info.plist (baked build setting — survives home-screen launch)
         //   unset + Debug sim      → emulator on localhost
+        //   unset + Debug device   → local demo
         //   unset + Release        → live Firebase
         let mode = ProcessInfo.processInfo.environment["MAPTALK_MODE"]
+            ?? (Bundle.main.object(forInfoDictionaryKey: "MapTalkMode") as? String)
             ?? Self.defaultMode
 
         switch mode {

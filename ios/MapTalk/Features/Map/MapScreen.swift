@@ -33,6 +33,7 @@ struct MapScreen: View {
     /// centres on the user once location arrives.
     private static var startsInDemo: Bool {
         let mode = ProcessInfo.processInfo.environment["MAPTALK_MODE"]
+            ?? (Bundle.main.object(forInfoDictionaryKey: "MapTalkMode") as? String)
         if mode == "local" || mode == "emulator" || mode == "live" { return true }
         #if DEBUG && !targetEnvironment(simulator)
         return true
