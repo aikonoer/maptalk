@@ -53,10 +53,12 @@ firebase deploy --only firestore:rules,firestore:indexes,storage
 
 Firestore rules are already deployed to `maptalk-app`.
 
+### 2. Google Maps key (Android only)
+
 iOS uses MapKit, which needs no key. Android needs a Maps SDK key:
 
-1. In the [Google Cloud console](https://console.cloud.google.com), pick the project
-   Firebase created for you and enable **Maps SDK for Android**.
+1. In the [Google Cloud console](https://console.cloud.google.com), pick project **maptalk-app**
+   and enable **Maps SDK for Android**.
 2. Create an API key and restrict it to Android apps with package `app.maptalk`.
 3. Put it in `android/local.properties` (gitignored):
 
@@ -66,14 +68,6 @@ MAPS_API_KEY=AIza...
 
 The Android build reads that value and injects it into the manifest. Without it the app
 still builds and runs, but the map renders blank.
-
-### 4. Deploy the security rules
-
-```bash
-cd firebase
-firebase use --add            # pick your project, once
-firebase deploy --only firestore:rules
-```
 
 ## Running the Android app
 
