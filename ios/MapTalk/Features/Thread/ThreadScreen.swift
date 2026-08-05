@@ -13,7 +13,7 @@ struct ThreadScreen: View {
     @State private var pendingImage: UIImage?
     @State private var isPreparingImage = false
     @State private var showStickers = false
-    @State private var reactionTarget: Message?
+    @State private var longPressTarget: Message?
     @State private var reportTarget: ReportSheetTarget?
     @State private var blockConfirm: BlockConfirm?
     @State private var reportThanks = false
@@ -81,19 +81,38 @@ struct ThreadScreen: View {
                 guard let item else { return }
                 Task { await loadPickerItem(item) }
             }
-            .sheet(item: $reactionTarget) { message in
-                ReactionPicker(
-                    message: message,
-                    myUid: author.uid,
-                    onPick: { emoji in
-                        model.toggleReaction(emoji, on: message, as: author)
-                        reactionTarget = nil
-                    }
-                )
-                .presentationDetents([.height(120)])
-                .presentationDragIndicator(.visible)
-                .presentationBackground(Theme.surface)
+            .overlay {
+                if let message = longPressTarget {
+                    MessageLongPressOverlay(
+                        message: message,
+                        isMine: message.authorId == author.uid,
+                        myUid: author.uid,
+                        onReact: { emoji in
+                            model.toggleReaction(emoji, on: message, as: author)
+                            longPressTarget = nil
+                        },
+                        onReply: {
+                            model.setReply(to: message)
+                            longPressTarget = nil
+                        },
+                        onReport: {
+                            reportTarget = .message(message)
+                            longPressTarget = nil
+                        },
+                        onBlock: {
+                            blockConfirm = BlockConfirm(
+                                uid: message.authorId,
+                                name: message.authorName
+                            )
+                            longPressTarget = nil
+                        },
+                        onDismiss: { longPressTarget = nil }
+                    )
+                    .transition(.opacity)
+                    .zIndex(20)
+                }
             }
+            .animation(.easeOut(duration: 0.18), value: longPressTarget?.id)
             .sheet(item: $reportTarget) { target in
                 ReportReasonSheet { reason in
                     switch target {
@@ -199,19 +218,9 @@ struct ThreadScreen: View {
                                 myUid: author.uid,
                                 startsRun: startsRun(at: index),
                                 endsRun: endsRun(at: index),
-                                onReply: { model.setReply(to: message) },
-                                onReact: { reactionTarget = message },
+                                onLongPress: { longPressTarget = message },
                                 onToggleReaction: { emoji in
                                     model.toggleReaction(emoji, on: message, as: author)
-                                },
-                                onReport: {
-                                    reportTarget = .message(message)
-                                },
-                                onBlock: {
-                                    blockConfirm = BlockConfirm(
-                                        uid: message.authorId,
-                                        name: message.authorName
-                                    )
                                 }
                             )
                             .id(message.id)
@@ -510,6 +519,155 @@ private struct ReportReasonSheet: View {
     }
 }
 
+/// Facebook-style long-press: dimmed scrim, reaction pill, action list.
+private struct MessageLongPressOverlay: View {
+    let message: Message
+    let isMine: Bool
+    let myUid: String
+    let onReact: (String) -> Void
+    let onReply: () -> Void
+    let onReport: () -> Void
+    let onBlock: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.55)
+                .ignoresSafeArea()
+                .onTapGesture(perform: onDismiss)
+
+            VStack(spacing: 14) {
+                Spacer(minLength: 40)
+
+                reactionBar
+                    .scaleEffect(1)
+                    .transition(.scale.combined(with: .opacity))
+
+                previewBubble
+                    .frame(maxWidth: 280)
+                    .frame(maxWidth: .infinity, alignment: isMine ? .trailing : .leading)
+                    .padding(.horizontal, 28)
+
+                actionMenu
+                    .frame(maxWidth: 260)
+                    .frame(maxWidth: .infinity, alignment: isMine ? .trailing : .leading)
+                    .padding(.horizontal, 28)
+
+                Spacer(minLength: 80)
+            }
+        }
+    }
+
+    private var reactionBar: some View {
+        HStack(spacing: 10) {
+            ForEach(ReactionEmoji.allCases, id: \.rawValue) { reaction in
+                Button {
+                    onReact(reaction.rawValue)
+                } label: {
+                    Text(reaction.rawValue)
+                        .font(.system(size: 30))
+                        .frame(width: 42, height: 42)
+                        .background(
+                            message.reacted(by: myUid, emoji: reaction.rawValue)
+                                ? Theme.accent.opacity(0.25)
+                                : Color.clear,
+                            in: Circle()
+                        )
+                }
+                .buttonStyle(.pressable)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay {
+            Capsule().strokeBorder(Theme.hairline, lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.35), radius: 16, y: 8)
+    }
+
+    @ViewBuilder
+    private var previewBubble: some View {
+        if message.isSticker {
+            Text(message.text)
+                .font(.system(size: 64))
+                .padding(8)
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                if message.hasImage {
+                    Label("Photo", systemImage: "photo")
+                        .font(.subheadline)
+                        .foregroundStyle(isMine ? Color.white.opacity(0.85) : Theme.subtle)
+                }
+                if message.hasVoice {
+                    Label("Voice note", systemImage: "waveform")
+                        .font(.subheadline)
+                        .foregroundStyle(isMine ? Color.white.opacity(0.85) : Theme.subtle)
+                }
+                if !message.text.isEmpty, !message.hasVoice {
+                    Text(message.text)
+                        .font(.body)
+                        .foregroundStyle(isMine ? .white : Theme.text)
+                        .lineLimit(4)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(
+                isMine ? Theme.accent : Theme.raised,
+                in: RoundedRectangle(cornerRadius: Theme.Radius.bubble, style: .continuous)
+            )
+            .shadow(color: .black.opacity(0.3), radius: 12, y: 6)
+        }
+    }
+
+    private var actionMenu: some View {
+        VStack(spacing: 0) {
+            menuRow(title: "Reply", systemImage: "arrowshape.turn.up.left", action: onReply)
+            if !isMine {
+                Divider().overlay(Theme.hairline)
+                menuRow(title: "Report", systemImage: "flag", action: onReport)
+                Divider().overlay(Theme.hairline)
+                menuRow(
+                    title: "Block \(message.authorName)",
+                    systemImage: "hand.raised",
+                    tint: Theme.danger,
+                    action: onBlock
+                )
+            }
+        }
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Theme.hairline, lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.4), radius: 18, y: 10)
+    }
+
+    private func menuRow(
+        title: String,
+        systemImage: String,
+        tint: Color = Theme.text,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 16, weight: .semibold))
+                    .frame(width: 22)
+                Text(title)
+                    .font(.body)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(tint)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 // MARK: - Rows
 
 private struct MessageRow: View {
@@ -518,11 +676,8 @@ private struct MessageRow: View {
     let myUid: String
     let startsRun: Bool
     let endsRun: Bool
-    let onReply: () -> Void
-    let onReact: () -> Void
+    let onLongPress: () -> Void
     let onToggleReaction: (String) -> Void
-    let onReport: () -> Void
-    let onBlock: () -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -543,16 +698,9 @@ private struct MessageRow: View {
                 }
 
                 bubble
-                    .contextMenu {
-                        Button("Reply", systemImage: "arrowshape.turn.up.left") { onReply() }
-                        Button("React", systemImage: "face.smiling") { onReact() }
-                        if !isMine {
-                            Divider()
-                            Button("Report", systemImage: "flag") { onReport() }
-                            Button("Block \(message.authorName)", systemImage: "hand.raised", role: .destructive) {
-                                onBlock()
-                            }
-                        }
+                    .onLongPressGesture(minimumDuration: 0.35) {
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        onLongPress()
                     }
 
                 if !message.reactions.isEmpty {
@@ -671,30 +819,6 @@ private struct ReactionStrip: View {
                 .buttonStyle(.plain)
             }
         }
-    }
-}
-
-private struct ReactionPicker: View {
-    let message: Message
-    let myUid: String
-    let onPick: (String) -> Void
-
-    var body: some View {
-        HStack(spacing: 14) {
-            ForEach(ReactionEmoji.allCases, id: \.rawValue) { reaction in
-                Button {
-                    onPick(reaction.rawValue)
-                } label: {
-                    Text(reaction.rawValue)
-                        .font(.system(size: 32))
-                        .opacity(message.reacted(by: myUid, emoji: reaction.rawValue) ? 1 : 0.85)
-                        .scaleEffect(message.reacted(by: myUid, emoji: reaction.rawValue) ? 1.15 : 1)
-                }
-                .buttonStyle(.pressable)
-            }
-        }
-        .padding(.horizontal, 20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

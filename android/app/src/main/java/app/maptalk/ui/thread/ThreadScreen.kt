@@ -124,8 +124,7 @@ fun ThreadScreen(
     var pendingImage by remember { mutableStateOf<PreparedImage?>(null) }
     var fullscreenPath by remember { mutableStateOf<String?>(null) }
     var showStickers by remember { mutableStateOf(false) }
-    var reactionTarget by remember { mutableStateOf<Message?>(null) }
-    var messageActions by remember { mutableStateOf<Message?>(null) }
+    var longPressTarget by remember { mutableStateOf<Message?>(null) }
     var reportTarget by remember { mutableStateOf<ReportTarget?>(null) }
     var blockConfirm by remember { mutableStateOf<Pair<String, String>?>(null) }
     var reportThanks by remember { mutableStateOf(false) }
@@ -227,71 +226,27 @@ fun ThreadScreen(
         )
     }
 
-    reactionTarget?.let { message ->
-        AlertDialog(
-            onDismissRequest = { reactionTarget = null },
-            containerColor = MapTalkColors.Surface,
-            title = {
-                Text("React", color = MapTalkColors.Text)
+    longPressTarget?.let { message ->
+        MessageLongPressDialog(
+            message = message,
+            isMine = message.authorId == author.uid,
+            myUid = author.uid,
+            onDismiss = { longPressTarget = null },
+            onReact = { emoji ->
+                viewModel.toggleReaction(emoji, message, author)
+                longPressTarget = null
             },
-            text = {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    ReactionEmoji.ALL.forEach { emoji ->
-                        Text(
-                            text = emoji,
-                            fontSize = 28.sp,
-                            modifier = Modifier
-                                .clickable {
-                                    viewModel.toggleReaction(emoji, message, author)
-                                    reactionTarget = null
-                                }
-                                .padding(4.dp),
-                        )
-                    }
-                }
+            onReply = {
+                viewModel.setReply(message)
+                longPressTarget = null
             },
-            confirmButton = {
-                TextButton(onClick = { reactionTarget = null }) {
-                    Text("Close", color = MapTalkColors.Subtle)
-                }
+            onReport = {
+                reportTarget = ReportTarget.Message(message)
+                longPressTarget = null
             },
-        )
-    }
-
-    messageActions?.let { message ->
-        AlertDialog(
-            onDismissRequest = { messageActions = null },
-            containerColor = MapTalkColors.Surface,
-            title = { Text("Message", color = MapTalkColors.Text) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    TextButton(onClick = {
-                        viewModel.setReply(message)
-                        messageActions = null
-                    }) { Text("Reply", color = MapTalkColors.Text) }
-                    TextButton(onClick = {
-                        reactionTarget = message
-                        messageActions = null
-                    }) { Text("React", color = MapTalkColors.Text) }
-                    if (message.authorId != author.uid) {
-                        TextButton(onClick = {
-                            reportTarget = ReportTarget.Message(message)
-                            messageActions = null
-                        }) { Text("Report", color = MapTalkColors.Text) }
-                        TextButton(onClick = {
-                            blockConfirm = message.authorId to message.authorName
-                            messageActions = null
-                        }) { Text("Block ${message.authorName}", color = MapTalkColors.Danger) }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { messageActions = null }) {
-                    Text("Close", color = MapTalkColors.Subtle)
-                }
+            onBlock = {
+                blockConfirm = message.authorId to message.authorName
+                longPressTarget = null
             },
         )
     }
@@ -489,7 +444,7 @@ fun ThreadScreen(
                                 resolveMedia = viewModel::mediaFile,
                                 onImageClick = { path -> fullscreenPath = path },
                                 onReply = { viewModel.setReply(message) },
-                                onLongPress = { messageActions = message },
+                                onLongPress = { longPressTarget = message },
                                 onToggleReaction = { emoji ->
                                     viewModel.toggleReaction(emoji, message, author)
                                 },
@@ -1273,4 +1228,133 @@ private fun Message.follows(previous: Message): Boolean {
 private sealed interface ReportTarget {
     data class Message(val message: app.maptalk.data.model.Message) : ReportTarget
     data class Thread(val thread: ChatThread) : ReportTarget
+}
+
+@Composable
+private fun MessageLongPressDialog(
+    message: Message,
+    isMine: Boolean,
+    myUid: String,
+    onDismiss: () -> Unit,
+    onReact: (String) -> Unit,
+    onReply: () -> Unit,
+    onReport: () -> Unit,
+    onBlock: () -> Unit,
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = true,
+        ),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.55f))
+                .clickable(onClick = onDismiss),
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(
+                horizontalAlignment = if (isMine) Alignment.End else Alignment.Start,
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 28.dp),
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = MapTalkColors.Surface.copy(alpha = 0.95f),
+                    border = BorderStroke(1.dp, MapTalkColors.Hairline),
+                    shadowElevation = 12.dp,
+                    modifier = Modifier.align(Alignment.CenterHorizontally),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        ReactionEmoji.ALL.forEach { emoji ->
+                            val mine = message.reacted(by = myUid, emoji = emoji)
+                            Text(
+                                text = emoji,
+                                fontSize = 28.sp,
+                                modifier = Modifier
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (mine) MapTalkColors.Accent.copy(alpha = 0.25f)
+                                        else Color.Transparent,
+                                    )
+                                    .clickable { onReact(emoji) }
+                                    .padding(6.dp),
+                            )
+                        }
+                    }
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(18.dp),
+                    color = if (isMine) MapTalkColors.Accent else MapTalkColors.Raised,
+                    contentColor = if (isMine) Color.White else MapTalkColors.Text,
+                    shadowElevation = 10.dp,
+                    modifier = Modifier.widthIn(max = 280.dp),
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+                        when {
+                            message.isSticker -> Text(message.text, fontSize = 48.sp)
+                            message.hasVoice -> Text("Voice note", style = MaterialTheme.typography.bodyMedium)
+                            message.hasImage && message.text.isEmpty() ->
+                                Text("Photo", style = MaterialTheme.typography.bodyMedium)
+                            else -> Text(
+                                text = message.text.ifEmpty { "Photo" },
+                                style = MaterialTheme.typography.bodyLarge,
+                                maxLines = 4,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MapTalkColors.Surface,
+                    border = BorderStroke(1.dp, MapTalkColors.Hairline),
+                    shadowElevation = 14.dp,
+                    modifier = Modifier.widthIn(max = 260.dp),
+                ) {
+                    Column {
+                        LongPressMenuRow("Reply", onClick = onReply)
+                        if (!isMine) {
+                            HorizontalDivider(color = MapTalkColors.Hairline)
+                            LongPressMenuRow("Report", onClick = onReport)
+                            HorizontalDivider(color = MapTalkColors.Hairline)
+                            LongPressMenuRow(
+                                title = "Block ${message.authorName}",
+                                tint = MapTalkColors.Danger,
+                                onClick = onBlock,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LongPressMenuRow(
+    title: String,
+    tint: Color = MapTalkColors.Text,
+    onClick: () -> Unit,
+) {
+    Text(
+        text = title,
+        color = tint,
+        style = MaterialTheme.typography.bodyLarge,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+    )
 }
