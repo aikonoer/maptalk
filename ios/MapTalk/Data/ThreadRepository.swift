@@ -245,7 +245,6 @@ final class ThreadRepository {
                             video: video
                         )
                         fields[Fs.kindMessage] = MessageKind.video.rawValue
-                        fields[Fs.text] = ""
                         fields[Fs.videoPath] = url
                         fields[Fs.videoDurationMs] = video.durationMs
                         fields[Fs.videoWidth] = video.width

@@ -267,7 +267,7 @@ class ThreadRepository private constructor(
                                         threadRef = threadRef,
                                         messageRef = messageRef,
                                         fields = mapOf(
-                                            Fs.TEXT to "",
+                                            Fs.TEXT to trimmed,
                                             Fs.MESSAGE_KIND to MessageKind.VIDEO.id,
                                             Fs.VIDEO_PATH to url,
                                             Fs.VIDEO_DURATION_MS to video.durationMs,
@@ -369,6 +369,7 @@ class ThreadRepository private constructor(
         threadId: String,
         author: Author,
         video: PreparedVideo,
+        text: String = "",
         reply: MessageReply? = null,
     ): Result<Unit> = when (val backend = backend) {
         is Backend.Firestore -> {
@@ -390,7 +391,7 @@ class ThreadRepository private constructor(
                         set(
                             messageRef,
                             mapOf(
-                                Fs.TEXT to "",
+                                Fs.TEXT to text.trim(),
                                 Fs.MESSAGE_KIND to MessageKind.VIDEO.id,
                                 Fs.VIDEO_PATH to url,
                                 Fs.VIDEO_DURATION_MS to video.durationMs,
@@ -419,7 +420,7 @@ class ThreadRepository private constructor(
         is Backend.Local -> {
             backend.store.postMessage(
                 threadId = threadId,
-                text = "",
+                text = text.trim(),
                 author = author,
                 video = video,
                 reply = reply,

@@ -70,10 +70,10 @@ private fun ThreadBubble(thread: ChatThread) {
         shape = BubbleShape,
         color = MapTalkColors.Surface,
         contentColor = MapTalkColors.Text,
-        shadowElevation = 6.dp,
+        shadowElevation = if (live) 10.dp else 6.dp,
         modifier = Modifier.border(
-            1.dp,
-            if (live) MapTalkColors.Accent.copy(alpha = 0.55f) else MapTalkColors.Hairline,
+            if (live) 1.5.dp else 1.dp,
+            if (live) MapTalkColors.Accent.copy(alpha = 0.7f) else MapTalkColors.Hairline,
             BubbleShape,
         ),
     ) {

@@ -19,8 +19,12 @@ struct ThreadScreen: View {
     @State private var videoPreview: UIImage?
     @State private var pendingOutgoing: Message?
     @State private var videoTask: Task<Void, Never>?
+    @State private var pendingVideo: PreparedVideo?
     @State private var retryPreparedVideo: PreparedVideo?
+    @State private var retryVideoCaption = ""
     @State private var showStickers = false
+    /// Messenger-style: media buttons collapse into a chevron once you start typing.
+    @State private var mediaExpanded = true
     @State private var longPressTarget: Message?
     @State private var longPressFrame: CGRect = .zero
     @State private var bubbleFrames: [String: CGRect] = [:]
@@ -67,8 +71,15 @@ struct ThreadScreen: View {
         draft.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Full media tray when the field is empty, or after tapping the chevron.
+    private var mediaTrayVisible: Bool {
+        trimmedDraft.isEmpty || mediaExpanded
+    }
+
+    private static let composerSpring = Animation.spring(response: 0.42, dampingFraction: 0.78)
+
     private var canSend: Bool {
-        pendingImage != nil || !trimmedDraft.isEmpty
+        pendingImage != nil || pendingVideo != nil || !trimmedDraft.isEmpty
     }
 
     private var displayedMessages: [Message] {
@@ -474,6 +485,38 @@ struct ThreadScreen: View {
                 .padding(.top, 10)
             }
 
+            if pendingVideo != nil {
+                HStack(alignment: .top, spacing: 10) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Theme.raised)
+                            .frame(width: 72, height: 72)
+                        if let videoPreview {
+                            Image(uiImage: videoPreview)
+                                .resizable()
+                                .interpolation(.high)
+                                .scaledToFill()
+                                .frame(width: 72, height: 72)
+                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        }
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 28, height: 28)
+                            .background(.black.opacity(0.45), in: Circle())
+                    }
+                    Spacer(minLength: 0)
+                    Button(action: removePendingVideo) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 22))
+                            .foregroundStyle(Theme.subtle)
+                    }
+                    .accessibilityLabel("Remove video")
+                }
+                .padding(.horizontal, 14)
+                .padding(.top, 10)
+            }
+
             if let status = videoSendPhase.statusCopy(detail: videoFailDetail) {
                 VideoSendStatusBanner(
                     status: status,
@@ -531,38 +574,27 @@ struct ThreadScreen: View {
                 .padding(.vertical, 12)
             } else {
                 HStack(alignment: .bottom, spacing: 8) {
-                    Button {
-                        showStickers.toggle()
-                    } label: {
-                        Image(systemName: showStickers ? "face.smiling.fill" : "face.smiling")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(Theme.subtle)
-                            .frame(width: 36, height: 40)
-                    }
-                    .accessibilityLabel("Stickers")
-
-                    PhotosPicker(selection: $pickerItem, matching: .images, photoLibrary: .shared()) {
-                        Image(systemName: "photo")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(Theme.subtle)
-                            .frame(width: 36, height: 40)
-                    }
-                    .accessibilityLabel("Add a photo")
-                    .disabled(isPreparingImage || isPreparingVideo)
-
-                    PhotosPicker(selection: $videoPickerItem, matching: .videos, photoLibrary: .shared()) {
-                        Image(systemName: "video")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(isPreparingVideo ? Theme.faint : Theme.subtle)
-                            .frame(width: 36, height: 40)
-                    }
-                    .accessibilityLabel("Add a video")
-                    .disabled(isPreparingImage || isPreparingVideo)
+                    ComposerMediaControls(
+                        expanded: mediaTrayVisible,
+                        showStickers: showStickers,
+                        isPreparingImage: isPreparingImage,
+                        isPreparingVideo: isPreparingVideo,
+                        pendingImage: pendingImage != nil,
+                        pendingVideo: pendingVideo != nil,
+                        pickerItem: $pickerItem,
+                        videoPickerItem: $videoPickerItem,
+                        onToggleStickers: { showStickers.toggle() },
+                        onExpand: {
+                            withAnimation(Self.composerSpring) {
+                                mediaExpanded = true
+                            }
+                        }
+                    )
 
                     TextField(
                         "",
                         text: $draft,
-                        prompt: Text(pendingImage == nil ? "Say something" : "Add a caption")
+                        prompt: Text(pendingImage == nil && pendingVideo == nil ? "Say something" : "Add a caption")
                             .foregroundStyle(Theme.faint),
                         axis: .vertical
                     )
@@ -572,13 +604,35 @@ struct ThreadScreen: View {
                     .lineLimit(1...5)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
-                    .background(Theme.raised, in: Capsule())
+                    // Rounded rect, not Capsule — a capsule stretches into a weird
+                    // sausage as soon as the field grows past one line.
+                    .background(Theme.raised, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                     .overlay {
-                        Capsule().strokeBorder(isComposing ? Theme.accent : Theme.hairline, lineWidth: 1)
+                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            .strokeBorder(isComposing ? Theme.accent : Theme.hairline, lineWidth: 1)
                     }
                     .onChange(of: draft) { _, newValue in
                         if newValue.count > ThreadModel.maxMessageLength {
                             draft = String(newValue.prefix(ThreadModel.maxMessageLength))
+                        }
+                        let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                        withAnimation(Self.composerSpring) {
+                            if trimmed.isEmpty {
+                                mediaExpanded = true
+                            } else if mediaExpanded {
+                                // Any keystroke while the tray is open tucks it away again
+                                // (including after reopening via the chevron).
+                                mediaExpanded = false
+                                showStickers = false
+                            }
+                        }
+                    }
+                    .onChange(of: isComposing) { _, focused in
+                        // Tapping back into the field while you have text collapses the tray again.
+                        guard focused, !trimmedDraft.isEmpty else { return }
+                        withAnimation(Self.composerSpring) {
+                            mediaExpanded = false
+                            showStickers = false
                         }
                     }
 
@@ -599,6 +653,7 @@ struct ThreadScreen: View {
                         .buttonStyle(.pressable)
                         .disabled(!canSend || isPreparingImage)
                         .accessibilityLabel("Send")
+                        .transition(.scale(scale: 0.6).combined(with: .opacity))
                     } else {
                         Button {
                             Task { await recorder.start() }
@@ -611,8 +666,10 @@ struct ThreadScreen: View {
                         }
                         .buttonStyle(.pressable)
                         .accessibilityLabel("Record a voice note")
+                        .transition(.scale(scale: 0.6).combined(with: .opacity))
                     }
                 }
+                .animation(Self.composerSpring, value: canSend || isPreparingImage)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 10)
             }
@@ -623,19 +680,35 @@ struct ThreadScreen: View {
     private func replyPreview(_ message: Message) -> String {
         if message.isSticker { return message.text }
         if message.hasVoice { return "Voice note" }
-        if message.hasVideo { return "Video" }
+        if message.hasVideo { return message.text.isEmpty ? "Video" : message.text }
         if message.hasImage { return message.text.isEmpty ? "Photo" : message.text }
         return message.text
     }
 
     private func send() {
         let caption = draft
+        draft = ""
+        showStickers = false
+
+        if let video = pendingVideo {
+            pendingVideo = nil
+            videoPickerItem = nil
+            videoTask?.cancel()
+            videoTask = Task { await uploadPreparedVideo(video, caption: caption) }
+            return
+        }
+
         let image = pendingImage.flatMap(ImageCompressor.prepare)
         model.send(caption, as: author, image: image)
-        draft = ""
         pendingImage = nil
         pickerItem = nil
-        showStickers = false
+    }
+
+    private func removePendingVideo() {
+        pendingVideo?.deleteTempFile()
+        pendingVideo = nil
+        videoPickerItem = nil
+        videoPreview = nil
     }
 
     private func loadPickerItem(_ item: PhotosPickerItem) async {
@@ -701,19 +774,23 @@ struct ThreadScreen: View {
                 videoSendPhase = .idle
                 return
             }
-            retryPreparedVideo = prepared
             if videoPreview == nil {
                 videoPreview = await Self.videoPoster(from: prepared.fileURL)
             }
-            await uploadPreparedVideo(prepared)
+            // Park it on the composer instead of sending, so there's a chance to
+            // write a caption first — same as a photo.
+            pendingVideo = prepared
+            videoSendPhase = .idle
         }
     }
 
-    private func uploadPreparedVideo(_ prepared: PreparedVideo) async {
+    private func uploadPreparedVideo(_ prepared: PreparedVideo, caption: String) async {
+        retryPreparedVideo = prepared
+        retryVideoCaption = caption
         pendingOutgoing = Message(
             id: "local:video-pending",
             kind: .video,
-            text: "",
+            text: caption,
             authorId: author.uid,
             authorName: author.displayName,
             createdAt: Date(),
@@ -726,7 +803,7 @@ struct ThreadScreen: View {
         model.errorMessage = nil
         videoFailDetail = nil
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            model.send("", as: author, video: prepared) {
+            model.send(caption, as: author, video: prepared) {
                 cont.resume()
             }
         }
@@ -749,9 +826,10 @@ struct ThreadScreen: View {
 
     private func retryVideoSend() {
         guard let prepared = retryPreparedVideo else { return }
+        let caption = retryVideoCaption
         videoTask?.cancel()
         videoTask = Task {
-            await uploadPreparedVideo(prepared)
+            await uploadPreparedVideo(prepared, caption: caption)
         }
     }
 
@@ -762,8 +840,11 @@ struct ThreadScreen: View {
             try? FileManager.default.removeItem(at: trim.sourceURL)
         }
         pendingTrim = nil
+        pendingVideo?.deleteTempFile()
+        pendingVideo = nil
         retryPreparedVideo?.deleteTempFile()
         retryPreparedVideo = nil
+        retryVideoCaption = ""
         pendingOutgoing = nil
         videoFailDetail = nil
         videoPreview = nil
@@ -810,6 +891,14 @@ private struct BubbleFrameKey: PreferenceKey {
 
     static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
         value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
+private struct ReactionBarWidthKey: PreferenceKey {
+    nonisolated(unsafe) static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 
@@ -885,6 +974,9 @@ private struct MessageLongPressOverlay: View {
     @State private var chromeIn = false
     @State private var emojiPop: [Bool]
     @State private var isExiting = false
+    /// Measured width of the reaction pill — the clamp used to assume 5 icons (286pt)
+    /// while we ship 6, which clipped the trailing edge on outgoing bubbles.
+    @State private var reactionBarWidth: CGFloat = 330
 
     init(
         message: Message,
@@ -910,41 +1002,61 @@ private struct MessageLongPressOverlay: View {
     }
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
-            Color.black.opacity(scrim ? 0.55 : 0)
-                .ignoresSafeArea()
-                .onTapGesture(perform: dismissAnimated)
+        GeometryReader { geo in
+            ZStack(alignment: .topLeading) {
+                Color.black.opacity(scrim ? 0.55 : 0)
+                    .ignoresSafeArea()
+                    .onTapGesture(perform: dismissAnimated)
 
-            // Photo never moves — pinned to the bubble's real frame.
-            liftedMessage
-                .shadow(color: .black.opacity(chromeIn ? 0.4 : 0), radius: chromeIn ? 18 : 0, y: chromeIn ? 10 : 0)
-                .offset(x: anchor.minX, y: anchor.minY)
-                .allowsHitTesting(false)
+                // Photo never moves — pinned to the bubble's real frame.
+                liftedMessage
+                    .shadow(color: .black.opacity(chromeIn ? 0.4 : 0), radius: chromeIn ? 18 : 0, y: chromeIn ? 10 : 0)
+                    .offset(x: anchor.minX, y: anchor.minY)
+                    .allowsHitTesting(false)
 
-            reactionBar
-                .fixedSize()
-                .scaleEffect(chromeIn ? 1 : 0.82)
-                .opacity(chromeIn ? 1 : 0)
-                .offset(
-                    x: anchor.midX - reactionBarWidth / 2,
-                    y: anchor.minY - 58
-                )
+                reactionBar
+                    .fixedSize()
+                    .background {
+                        GeometryReader { barGeo in
+                            Color.clear.preference(
+                                key: ReactionBarWidthKey.self,
+                                value: barGeo.size.width
+                            )
+                        }
+                    }
+                    .onPreferenceChange(ReactionBarWidthKey.self) { reactionBarWidth = $0 }
+                    .scaleEffect(chromeIn ? 1 : 0.82)
+                    .opacity(chromeIn ? 1 : 0)
+                    .offset(
+                        x: clampedReactionBarX(in: geo.size.width),
+                        y: anchor.minY - 58
+                    )
 
-            actionMenu
-                .fixedSize()
-                .scaleEffect(chromeIn ? 1 : 0.94, anchor: isMine ? .topTrailing : .topLeading)
-                .opacity(chromeIn ? 1 : 0)
-                .offset(
-                    x: isMine ? anchor.maxX - menuWidth : anchor.minX,
-                    y: anchor.maxY + 10
-                )
+                actionMenu
+                    .fixedSize()
+                    .scaleEffect(chromeIn ? 1 : 0.94, anchor: isMine ? .topTrailing : .topLeading)
+                    .opacity(chromeIn ? 1 : 0)
+                    .offset(
+                        x: isMine ? anchor.maxX - menuWidth : anchor.minX,
+                        y: anchor.maxY + 10
+                    )
+            }
         }
         .onAppear(perform: playEnter)
     }
 
-    // Approximate widths so we can center chrome without a second layout pass.
-    private var reactionBarWidth: CGFloat { 286 }
+    // Approximate menu width so we can place it without a second layout pass.
     private var menuWidth: CGFloat { isMine ? 160 : 220 }
+
+    /// Keep the reaction pill fully on-screen. Outgoing bubbles sit near the
+    /// trailing edge, so centering on midX would push half the bar off-screen.
+    private func clampedReactionBarX(in width: CGFloat) -> CGFloat {
+        let margin: CGFloat = 12
+        let barW = max(reactionBarWidth, 1)
+        let ideal = anchor.midX - barW / 2
+        let maxX = max(margin, width - barW - margin)
+        return min(max(ideal, margin), maxX)
+    }
 
     private var reactionBar: some View {
         HStack(spacing: 10) {
@@ -1035,7 +1147,7 @@ private struct MessageLongPressOverlay: View {
                     )
                 }
 
-                if !message.text.isEmpty, !message.hasVoice, !message.hasVideo {
+                if !message.text.isEmpty, !message.hasVoice {
                     Text(message.text)
                         .font(.body)
                         .foregroundStyle(isMine ? .white : Theme.text)
@@ -1258,7 +1370,7 @@ private struct MessageRow: View {
                     )
                 }
 
-                if !message.text.isEmpty, !message.hasVoice, !message.hasVideo {
+                if !message.text.isEmpty, !message.hasVoice {
                     Text(message.text)
                         .font(.body)
                         .foregroundStyle(isMine ? .white : Theme.text)
@@ -1382,6 +1494,13 @@ private struct FullscreenImageViewer: View {
 
     @State private var scale: CGFloat = 1
     @State private var lastScale: CGFloat = 1
+    @State private var dragOffset: CGFloat = 0
+
+    private var dragProgress: CGFloat {
+        min(1, dragOffset / Self.dragTravel)
+    }
+
+    private var isZoomed: Bool { scale > 1.05 }
 
     var body: some View {
         ZStack {
@@ -1391,22 +1510,12 @@ private struct FullscreenImageViewer: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFit()
-                    .scaleEffect(scale)
-                    .gesture(
-                        MagnifyGesture()
-                            .onChanged { value in
-                                scale = max(1, min(4, lastScale * value.magnification))
-                            }
-                            .onEnded { _ in
-                                lastScale = scale
-                                if scale < 1.05 {
-                                    withAnimation(.easeOut(duration: 0.2)) {
-                                        scale = 1
-                                        lastScale = 1
-                                    }
-                                }
-                            }
-                    )
+                    .scaleEffect(scale * (1 - dragProgress * 0.14))
+                    .offset(y: dragOffset)
+                    .geometryGroup()
+                    .padding(12)
+                    .gesture(magnifyGesture)
+                    .simultaneousGesture(swipeToDismiss)
                     .onTapGesture(count: 2) {
                         withAnimation(.easeOut(duration: 0.2)) {
                             if scale > 1.1 {
@@ -1418,7 +1527,6 @@ private struct FullscreenImageViewer: View {
                             }
                         }
                     }
-                    .padding(12)
             }
 
             VStack {
@@ -1434,8 +1542,133 @@ private struct FullscreenImageViewer: View {
                 }
                 Spacer()
             }
+            .opacity(1 - Double(min(1, dragOffset / 70)))
         }
         .statusBarHidden(true)
+    }
+
+    private var magnifyGesture: some Gesture {
+        MagnifyGesture()
+            .onChanged { value in
+                scale = max(1, min(4, lastScale * value.magnification))
+            }
+            .onEnded { _ in
+                lastScale = scale
+                if scale < 1.05 {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        scale = 1
+                        lastScale = 1
+                    }
+                }
+            }
+    }
+
+    private var swipeToDismiss: some Gesture {
+        DragGesture(minimumDistance: 14)
+            .onChanged { value in
+                guard !isZoomed else { return }
+                dragOffset = max(0, value.translation.height)
+            }
+            .onEnded { value in
+                guard !isZoomed else {
+                    dragOffset = 0
+                    return
+                }
+                let flung = value.predictedEndTranslation.height > Self.dragTravel
+                if dragOffset > Self.dismissThreshold || flung {
+                    onDismiss()
+                } else {
+                    withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.82)) {
+                        dragOffset = 0
+                    }
+                }
+            }
+    }
+
+    private static let dragTravel: CGFloat = 240
+    private static let dismissThreshold: CGFloat = 110
+}
+
+/// Stickers / photo / video — collapses into a chevron once you start typing (Messenger-style).
+private struct ComposerMediaControls: View {
+    let expanded: Bool
+    let showStickers: Bool
+    let isPreparingImage: Bool
+    let isPreparingVideo: Bool
+    let pendingImage: Bool
+    let pendingVideo: Bool
+    @Binding var pickerItem: PhotosPickerItem?
+    @Binding var videoPickerItem: PhotosPickerItem?
+    let onToggleStickers: () -> Void
+    let onExpand: () -> Void
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            HStack(spacing: 2) {
+                mediaButton(delay: 0) {
+                    Button(action: onToggleStickers) {
+                        Image(systemName: showStickers ? "face.smiling.fill" : "face.smiling")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(Theme.subtle)
+                            .frame(width: 36, height: 40)
+                    }
+                    .accessibilityLabel("Stickers")
+                }
+
+                mediaButton(delay: 0.04) {
+                    PhotosPicker(selection: $pickerItem, matching: .images, photoLibrary: .shared()) {
+                        Image(systemName: "photo")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(Theme.subtle)
+                            .frame(width: 36, height: 40)
+                    }
+                    .accessibilityLabel("Add a photo")
+                    .disabled(isPreparingImage || isPreparingVideo || pendingVideo)
+                }
+
+                mediaButton(delay: 0.08) {
+                    PhotosPicker(selection: $videoPickerItem, matching: .videos, photoLibrary: .shared()) {
+                        Image(systemName: "video")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(isPreparingVideo ? Theme.faint : Theme.subtle)
+                            .frame(width: 36, height: 40)
+                    }
+                    .accessibilityLabel("Add a video")
+                    .disabled(isPreparingImage || isPreparingVideo || pendingImage || pendingVideo)
+                }
+            }
+            .opacity(expanded ? 1 : 0)
+            .offset(x: expanded ? 0 : -18)
+            .allowsHitTesting(expanded)
+
+            Button(action: onExpand) {
+                Image(systemName: "chevron.forward")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(Theme.subtle)
+                    .frame(width: 32, height: 40)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("Show media options")
+            .opacity(expanded ? 0 : 1)
+            .scaleEffect(expanded ? 0.45 : 1, anchor: .leading)
+            .offset(x: expanded ? 10 : 0)
+            .allowsHitTesting(!expanded)
+            .symbolEffect(.bounce.up.byLayer, value: expanded == false)
+        }
+        .frame(width: expanded ? 112 : 32, alignment: .leading)
+        .animation(.spring(response: 0.42, dampingFraction: 0.78), value: expanded)
+    }
+
+    @ViewBuilder
+    private func mediaButton<Content: View>(delay: Double, @ViewBuilder content: () -> Content) -> some View {
+        content()
+            .scaleEffect(expanded ? 1 : 0.55, anchor: .leading)
+            .opacity(expanded ? 1 : 0)
+            .animation(
+                .spring(response: 0.42, dampingFraction: 0.78)
+                    .delay(expanded ? delay : max(0, 0.08 - delay)),
+                value: expanded
+            )
     }
 }
 

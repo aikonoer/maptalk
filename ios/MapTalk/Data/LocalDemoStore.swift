@@ -209,7 +209,6 @@ final class LocalDemoStore {
             if imagePath == nil { return }
         } else if let video {
             kind = .video
-            body = ""
             if let data = try? Data(contentsOf: video.fileURL) {
                 videoPath = try? LocalMediaStore.save(video: data)
             }

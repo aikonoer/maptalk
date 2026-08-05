@@ -34,6 +34,8 @@ struct MapScreen: View {
     /// Consumed by the next fix that arrives, so the map centres on you once at launch and again
     /// whenever you ask, but a late fix never yanks the camera away while you are panning.
     @State private var wantsToCenterOnUser = !Self.startsInDemo
+    @State private var nearbyCountFlash = false
+    @State private var lastNearbyCount = -1
 
     private var openThreadBinding: Binding<ThreadRoute?> {
         Binding(
@@ -167,6 +169,28 @@ struct MapScreen: View {
         .onChange(of: pendingDeepLink) { _, _ in
             openPendingDeepLink()
         }
+        .onChange(of: nearbyChatCount) { _, count in
+            guard !model.isGlobalView, !model.isLoading else {
+                lastNearbyCount = count
+                return
+            }
+            if lastNearbyCount >= 0, count != lastNearbyCount {
+                flashNearbyCount()
+            }
+            lastNearbyCount = count
+        }
+    }
+
+    private var nearbyChatCount: Int {
+        model.bubbles.reduce(0) { $0 + $1.size }
+    }
+
+    private func flashNearbyCount() {
+        withAnimation(.easeOut(duration: 0.2)) { nearbyCountFlash = true }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(500))
+            withAnimation(.easeOut(duration: 0.35)) { nearbyCountFlash = false }
+        }
     }
 
     private func openPendingDeepLink() {
@@ -240,9 +264,7 @@ struct MapScreen: View {
                     if model.isLoading {
                         ProgressView().controlSize(.mini).tint(Theme.subtle)
                     } else {
-                        Image(systemName: model.isGlobalView ? "globe" : "dot.radiowaves.left.and.right")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(Theme.accent)
+                        NearbyStatusIcon(isGlobal: model.isGlobalView, isActive: !model.isGlobalView && !model.bubbles.isEmpty)
                     }
                     Text(statusText)
                         .font(.control)
@@ -252,7 +274,12 @@ struct MapScreen: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 9)
                 .background(Theme.surface.opacity(0.92), in: Capsule())
-                .overlay { Capsule().strokeBorder(Theme.hairline, lineWidth: 1) }
+                .overlay {
+                    Capsule().strokeBorder(
+                        nearbyCountFlash ? Theme.accent.opacity(0.55) : Theme.hairline,
+                        lineWidth: 1
+                    )
+                }
 
                 Button {
                     showSettings = true
@@ -484,78 +511,145 @@ private struct BubblePressModifier: ViewModifier {
     }
 }
 
+/// Soft radar breath on the nearby icon so the status pill feels connected to the map.
+private struct NearbyStatusIcon: View {
+    let isGlobal: Bool
+    let isActive: Bool
+    @State private var pulse = false
+
+    var body: some View {
+        Image(systemName: isGlobal ? "globe" : "dot.radiowaves.left.and.right")
+            .font(.system(size: 12, weight: .bold))
+            .foregroundStyle(Theme.accent)
+            .scaleEffect(isActive && pulse ? 1.12 : 1)
+            .opacity(isActive && pulse ? 0.7 : 1)
+            .animation(
+                isActive
+                    ? .easeInOut(duration: 1.4).repeatForever(autoreverses: true)
+                    : .default,
+                value: pulse
+            )
+            .onAppear { pulse = isActive }
+            .onChange(of: isActive) { _, active in
+                pulse = active
+            }
+    }
+}
+
 /// A marker drawn as a chat bubble: the thread's title when it stands alone, a count when
 /// several threads share a geohash cell at this zoom.
 private struct BubbleMarker: View {
     let bubble: GeoCluster<ChatThread>
-    @State private var pulse = false
 
     var body: some View {
-        if let thread = bubble.single {
-            let live = LiveNow.isLive(thread.lastMessageAt)
-            HStack(spacing: 7) {
-                if live {
-                    Circle()
-                        .fill(Theme.accent)
-                        .frame(width: 8, height: 8)
-                        .scaleEffect(pulse ? 1.35 : 1)
-                        .opacity(pulse ? 0.55 : 1)
-                        .animation(
-                            .easeInOut(duration: 0.9).repeatForever(autoreverses: true),
-                            value: pulse
-                        )
-                        .onAppear { pulse = true }
-                }
-
-                Text(thread.kind.glyph)
-                    .font(.system(size: 13))
-
-                Text(thread.title)
-                    .font(.markerTitle)
-                    .foregroundStyle(Theme.text)
-                    .lineLimit(1)
-
-                if thread.messageCount > 0 {
-                    Text("\(thread.messageCount)")
-                        .font(.meta)
-                        .foregroundStyle(thread.kind.tint)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(thread.kind.tint.opacity(0.16), in: Capsule())
-                }
-
-                Text(live ? "Live" : relativeTime(thread.lastMessageAt))
-                    .font(.meta)
-                    .foregroundStyle(live ? Theme.accent : Theme.faint)
+        // Re-evaluate Live every 30s so badges age off without a pan.
+        TimelineView(.periodic(from: .now, by: 30)) { context in
+            if let thread = bubble.single {
+                LiveThreadBubble(thread: thread, now: context.date)
+            } else {
+                ClusterBubbleMarker(count: bubble.size)
             }
-            .padding(.leading, 10)
-            .padding(.trailing, 9)
-            .padding(.vertical, 8)
-            .frame(maxWidth: 200)
-            .background(Theme.surface, in: Theme.bubble(radius: 14))
-            .overlay {
-                Theme.bubble(radius: 14).strokeBorder(
-                    live ? Theme.accent.opacity(0.55) : Theme.hairline,
-                    lineWidth: 1
-                )
-            }
-            .shadow(color: .black.opacity(0.45), radius: 8, y: 3)
-        } else {
-            HStack(spacing: 5) {
-                Image(systemName: "bubble.left.and.bubble.right.fill")
-                    .font(.system(size: 11, weight: .bold))
-                Text("\(bubble.size)")
-                    .font(.markerTitle)
-            }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Theme.accent, in: Theme.bubble(radius: 14))
-            .overlay {
-                Theme.bubble(radius: 14).strokeBorder(.white.opacity(0.25), lineWidth: 1)
-            }
-            .shadow(color: .black.opacity(0.45), radius: 8, y: 3)
         }
+    }
+}
+
+private struct LiveThreadBubble: View {
+    let thread: ChatThread
+    let now: Date
+
+    @State private var flash = false
+    @State private var seenMessageAt: Date?
+
+    private var live: Bool { LiveNow.isLive(thread.lastMessageAt, now: now) }
+
+    var body: some View {
+        bubbleChip
+            .scaleEffect(flash ? 1.08 : 1)
+            .brightness(flash ? 0.08 : 0)
+            .onAppear { seenMessageAt = thread.lastMessageAt }
+            .onChange(of: thread.lastMessageAt) { _, newValue in
+                guard let newValue else { return }
+                if let seen = seenMessageAt, newValue > seen {
+                    triggerFlash()
+                }
+                seenMessageAt = newValue
+            }
+    }
+
+    private var bubbleChip: some View {
+        HStack(spacing: 7) {
+            if live {
+                Circle()
+                    .fill(Theme.accent)
+                    .frame(width: 8, height: 8)
+            }
+
+            Text(thread.kind.glyph)
+                .font(.system(size: 13))
+
+            Text(thread.title)
+                .font(.markerTitle)
+                .foregroundStyle(Theme.text)
+                .lineLimit(1)
+
+            if thread.messageCount > 0 {
+                Text("\(thread.messageCount)")
+                    .font(.meta)
+                    .foregroundStyle(thread.kind.tint)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(thread.kind.tint.opacity(0.16), in: Capsule())
+            }
+
+            Text(live ? "Live" : relativeTime(thread.lastMessageAt))
+                .font(.meta)
+                .foregroundStyle(live ? Theme.accent : Theme.faint)
+        }
+        .padding(.leading, 10)
+        .padding(.trailing, 9)
+        .padding(.vertical, 8)
+        .frame(maxWidth: 200)
+        .background(Theme.surface, in: Theme.bubble(radius: 14))
+        .overlay {
+            Theme.bubble(radius: 14).strokeBorder(
+                live ? Theme.accent.opacity(flash ? 0.95 : 0.7) : Theme.hairline,
+                lineWidth: live ? (flash ? 2 : 1.5) : 1
+            )
+        }
+        .shadow(
+            color: live ? Theme.accent.opacity(flash ? 0.6 : 0.35) : .black.opacity(0.45),
+            radius: flash ? 14 : (live ? 10 : 8),
+            y: 3
+        )
+    }
+
+    private func triggerFlash() {
+        withAnimation(.spring(duration: 0.28, bounce: 0.35)) { flash = true }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(420))
+            withAnimation(.easeOut(duration: 0.35)) { flash = false }
+        }
+    }
+}
+
+private struct ClusterBubbleMarker: View {
+    let count: Int
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "bubble.left.and.bubble.right.fill")
+                .font(.system(size: 11, weight: .bold))
+            Text("\(count)")
+                .font(.markerTitle)
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Theme.accent, in: Theme.bubble(radius: 14))
+        .overlay {
+            Theme.bubble(radius: 14).strokeBorder(.white.opacity(0.25), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.45), radius: 8, y: 3)
     }
 }
 

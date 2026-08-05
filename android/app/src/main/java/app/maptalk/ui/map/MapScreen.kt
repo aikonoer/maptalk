@@ -3,6 +3,11 @@ package app.maptalk.ui.map
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import kotlin.math.roundToInt
@@ -54,6 +59,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
@@ -77,6 +83,7 @@ import com.google.maps.android.compose.GoogleMap
 import com.google.maps.android.compose.MapProperties
 import com.google.maps.android.compose.MapUiSettings
 import com.google.maps.android.compose.rememberCameraPositionState
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private val WorldCenter = LatLng(20.0, 10.0)
@@ -231,6 +238,11 @@ fun MapScreen(
                 }
             }
 
+            LiveMapPulseOverlay(
+                bubbles = state.bubbles,
+                cameraPositionState = cameraPositionState,
+            )
+
             // Invisible hit targets over bubbles — MarkerComposable is a bitmap, so
             // long-press has to live in Compose, not the Maps SDK.
             val projection = cameraPositionState.projection
@@ -298,6 +310,7 @@ fun MapScreen(
             StatusPill(
                 isLoading = state.isLoading,
                 isGlobalView = state.isGlobalView,
+                nearbyCount = state.bubbles.sumOf { it.size },
                 text = when {
                     state.isLoading -> "Looking around\u2026"
                     state.isGlobalView -> "Busiest chats worldwide"
@@ -458,10 +471,39 @@ fun MapScreen(
 private fun StatusPill(
     isLoading: Boolean,
     isGlobalView: Boolean,
+    nearbyCount: Int,
     text: String,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val isActive = !isLoading && !isGlobalView && nearbyCount > 0
+    var countFlash by remember { mutableStateOf(false) }
+    var lastCount by remember { mutableStateOf(-1) }
+
+    LaunchedEffect(nearbyCount, isGlobalView, isLoading) {
+        if (isGlobalView || isLoading) {
+            lastCount = nearbyCount
+            return@LaunchedEffect
+        }
+        if (lastCount >= 0 && nearbyCount != lastCount) {
+            countFlash = true
+            delay(500)
+            countFlash = false
+        }
+        lastCount = nearbyCount
+    }
+
+    val iconPulse = rememberInfiniteTransition(label = "nearbyIcon")
+    val iconScale by iconPulse.animateFloat(
+        initialValue = 1f,
+        targetValue = if (isActive) 1.14f else 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1400),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "nearbyScale",
+    )
+
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
@@ -471,7 +513,10 @@ private fun StatusPill(
             shape = CircleShape,
             color = MapTalkColors.Surface.copy(alpha = 0.92f),
             contentColor = MapTalkColors.Text,
-            border = BorderStroke(1.dp, MapTalkColors.Hairline),
+            border = BorderStroke(
+                1.dp,
+                if (countFlash) MapTalkColors.Accent.copy(alpha = 0.55f) else MapTalkColors.Hairline,
+            ),
             shadowElevation = 8.dp,
         ) {
             Row(
@@ -492,7 +537,13 @@ private fun StatusPill(
                         ),
                         contentDescription = null,
                         tint = MapTalkColors.Accent,
-                        modifier = Modifier.size(13.dp),
+                        modifier = Modifier
+                            .size(13.dp)
+                            .graphicsLayer {
+                                scaleX = iconScale
+                                scaleY = iconScale
+                                alpha = if (isActive) 0.75f + 0.25f * ((iconScale - 1f) / 0.14f) else 1f
+                            },
                     )
                 }
                 Text(text = text, style = MaterialTheme.typography.labelLarge)

@@ -61,6 +61,12 @@ data class VideoTrimRequest(
     val durationMs: Int,
 )
 
+/** A compressed clip waiting on the composer so a caption can be typed. */
+data class PendingVideo(
+    val video: PreparedVideo,
+    val preview: android.graphics.Bitmap?,
+)
+
 data class VideoSendUi(
     val phase: VideoSendPhase = VideoSendPhase.Idle,
     /** Human reason when [phase] is Failed. */
@@ -113,10 +119,16 @@ class ThreadViewModel(
     private val _videoTrim = MutableStateFlow<VideoTrimRequest?>(null)
     val videoTrim: StateFlow<VideoTrimRequest?> = _videoTrim.asStateFlow()
 
+    private val _pendingVideo = MutableStateFlow<PendingVideo?>(null)
+    val pendingVideo: StateFlow<PendingVideo?> = _pendingVideo.asStateFlow()
+
     private var videoJob: Job? = null
     private var retryVideoUri: Uri? = null
     private var retryVideoAuthor: Author? = null
     private var trimAuthor: Author? = null
+    /** Set on retry so the re-prepared clip skips the composer and its caption survives. */
+    private var resendCaption: String? = null
+    private var failedCaption: String? = null
 
     private val _pendingOutgoing = MutableStateFlow<Message?>(null)
     private val _replyTarget = MutableStateFlow<Message?>(null)
@@ -193,7 +205,7 @@ class ThreadViewModel(
                 text = when {
                     it.isSticker -> it.text
                     it.hasVoice -> "Voice note"
-                    it.hasVideo -> "Video"
+                    it.hasVideo && it.text.isEmpty() -> "Video"
                     it.hasImage && it.text.isEmpty() -> "Photo"
                     else -> it.text
                 },
@@ -214,7 +226,12 @@ class ThreadViewModel(
     }
 
     fun prepareAndSendVideo(uri: Uri, author: Author) {
+        startVideoPrepare(uri, author, resend = null)
+    }
+
+    private fun startVideoPrepare(uri: Uri, author: Author, resend: String?) {
         cancelVideoSend()
+        resendCaption = resend
         retryVideoUri = uri
         retryVideoAuthor = author
         videoJob = viewModelScope.launch {
@@ -296,18 +313,44 @@ class ThreadViewModel(
         val filePreview = withContext(Dispatchers.IO) {
             loadFilePoster(video.file) ?: preview
         }
-        uploadPreparedVideo(video, author, filePreview)
+        val resend = resendCaption
+        if (resend != null) {
+            resendCaption = null
+            uploadPreparedVideo(video, author, filePreview, resend)
+            return
+        }
+        // Park it on the composer instead of sending, so there's a chance to write
+        // a caption first — same as a photo.
+        _pendingVideo.value = PendingVideo(video, filePreview)
+        _videoSend.value = VideoSendUi()
+    }
+
+    /** Sends the clip sitting on the composer, using [caption] as its text. */
+    fun sendPendingVideo(caption: String, author: Author) {
+        val pending = _pendingVideo.value ?: return
+        _pendingVideo.value = null
+        videoJob = viewModelScope.launch {
+            uploadPreparedVideo(pending.video, author, pending.preview, caption)
+        }
+    }
+
+    fun removePendingVideo() {
+        val pending = _pendingVideo.value ?: return
+        _pendingVideo.value = null
+        pending.video.file.delete()
+        _videoSend.value = VideoSendUi()
     }
 
     private suspend fun uploadPreparedVideo(
         video: PreparedVideo,
         author: Author,
         preview: android.graphics.Bitmap?,
+        caption: String,
     ) {
         _pendingOutgoing.value = Message(
             id = "local:video-pending",
             kind = MessageKind.VIDEO,
-            text = "",
+            text = caption.trim(),
             authorId = author.uid,
             authorName = author.displayName,
             createdAt = Instant.now(),
@@ -324,6 +367,7 @@ class ThreadViewModel(
             threadId = threadId,
             author = author,
             video = video,
+            text = caption,
             reply = _replyTarget.value?.let {
                 MessageReply(
                     id = it.id,
@@ -331,7 +375,7 @@ class ThreadViewModel(
                     text = when {
                         it.isSticker -> it.text
                         it.hasVoice -> "Voice note"
-                        it.hasVideo -> "Video"
+                        it.hasVideo && it.text.isEmpty() -> "Video"
                         it.hasImage && it.text.isEmpty() -> "Photo"
                         else -> it.text
                     },
@@ -341,10 +385,12 @@ class ThreadViewModel(
         _replyTarget.value = null
         _pendingOutgoing.value = null
         if (outcome.isSuccess) {
+            failedCaption = null
             video.file.delete()
             _videoSend.value = VideoSendUi()
         } else {
             val detail = outcome.exceptionOrNull()?.message ?: "Couldn’t send that video"
+            failedCaption = caption
             video.file.delete()
             _videoSend.value = VideoSendUi(
                 phase = VideoSendPhase.Failed,
@@ -357,7 +403,7 @@ class ThreadViewModel(
     fun retryVideoSend() {
         val uri = retryVideoUri ?: return
         val author = retryVideoAuthor ?: return
-        prepareAndSendVideo(uri, author)
+        startVideoPrepare(uri, author, resend = failedCaption)
     }
 
     fun cancelVideoSend() {
@@ -365,6 +411,9 @@ class ThreadViewModel(
         videoJob = null
         _videoTrim.value = null
         trimAuthor = null
+        resendCaption = null
+        _pendingVideo.value?.video?.file?.delete()
+        _pendingVideo.value = null
         _pendingOutgoing.value = null
         _videoSend.value = VideoSendUi()
     }
