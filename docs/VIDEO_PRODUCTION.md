@@ -55,14 +55,16 @@ Target for both platforms before upload:
 - [x] Delete R2 object when message/thread is deleted (or TTL abandoned uploads)
   - Worker `DELETE /v1/admin/object` + Function `onThreadMessageDeleted` (`MEDIA_DELETE_SECRET` set)
 - [x] Cap concurrent uploads; metrics on size / 4xx rates
-  - Clients gate R2 uploads to 2 in flight; Worker metrics still open
+  - Clients gate R2 uploads to 2 in flight
+  - Worker daily KV counters on `/health` (`ok` / `413` / `415` / `429` / `4xx` / `5xx`)
 
 ## 6. Ship
 
 - [x] Push `main` + store release with Live video
   - Partial: `main` pushed; store release still pending
 - [ ] Device matrix: portrait/landscape, HEVC→H.264, short/long, offline fail
-- [ ] Metrics: upload success %, p95 duration/size, Worker 413/415/429
+- [x] Metrics: upload success %, p95 duration/size, Worker 413/415/429
+  - Partial: daily status counters on Worker `/health`; p95 size/duration still open
 
 ---
 

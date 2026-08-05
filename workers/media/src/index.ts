@@ -52,6 +52,7 @@ export default {
     }
 
     if (request.method === "GET" && url.pathname === "/health") {
+      const metrics = env.RATE ? await readMetrics(env.RATE) : null;
       return json({
         ok: true,
         limits: {
@@ -64,6 +65,7 @@ export default {
           videoPer10Min: RATE_MAX_VIDEO,
           durableRateLimits: Boolean(env.RATE),
         },
+        metrics,
       });
     }
 
@@ -125,21 +127,26 @@ async function upload(
   url: URL,
   spec: UploadSpec,
 ): Promise<Response> {
+  const reply = (body: unknown, status = 200, extraHeaders: HeadersInit = {}) => {
+    void bumpMetric(env, spec.kind, status);
+    return json(body, status, extraHeaders);
+  };
+
   const auth = request.headers.get("Authorization") ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-  if (!token) return json({ error: "missing_token" }, 401);
+  if (!token) return reply({ error: "missing_token" }, 401);
 
   let uid: string;
   try {
     uid = await verifyFirebaseIdToken(token, env.FIREBASE_PROJECT_ID);
   } catch (cause) {
     console.warn("token rejected", cause);
-    return json({ error: "invalid_token" }, 401);
+    return reply({ error: "invalid_token" }, 401);
   }
 
   const rate = await allowUpload(env, uid, spec.kind);
   if (!rate.ok) {
-    return json(
+    return reply(
       { error: "rate_limited", scope: rate.scope },
       429,
       { "Retry-After": "60" },
@@ -149,51 +156,51 @@ async function upload(
   const threadId = url.searchParams.get("threadId") ?? "";
   const messageId = url.searchParams.get("messageId") ?? "";
   if (!KEY_RE.test(threadId) || !KEY_RE.test(messageId)) {
-    return json({ error: "bad_ids" }, 400);
+    return reply({ error: "bad_ids" }, 400);
   }
 
   const contentType = (request.headers.get("Content-Type") ?? "").split(";")[0].trim().toLowerCase();
   if (!spec.kinds.includes(contentType)) {
-    return json({ error: "unsupported_type" }, 415);
+    return reply({ error: "unsupported_type" }, 415);
   }
 
   const declared = Number(request.headers.get("Content-Length") ?? "0");
   if (declared > spec.maxBytes) {
-    return json({ error: "bad_size" }, 413);
+    return reply({ error: "bad_size" }, 413);
   }
 
   if (!request.body) {
-    return json({ error: "bad_size" }, 413);
+    return reply({ error: "bad_size" }, 413);
   }
 
   // Stream with early abort so oversized bodies never fully buffer.
   const bytes = await readBodyCapped(request.body, spec.maxBytes);
   if (bytes === null) {
-    return json({ error: "bad_size" }, 413);
+    return reply({ error: "bad_size" }, 413);
   }
   if (bytes.byteLength === 0) {
-    return json({ error: "bad_size" }, 413);
+    return reply({ error: "bad_size" }, 413);
   }
 
   if (spec.kind === "image" && !looksLikeJpeg(bytes)) {
-    return json({ error: "bad_magic" }, 415);
+    return reply({ error: "bad_magic" }, 415);
   }
   if ((spec.kind === "audio" || spec.kind === "video") && !looksLikeMp4Container(bytes)) {
-    return json({ error: "bad_magic" }, 415);
+    return reply({ error: "bad_magic" }, 415);
   }
 
   if (spec.kind === "video") {
     const durationMs = mp4DurationMs(bytes);
     if (durationMs == null || durationMs <= 0) {
-      return json({ error: "bad_duration" }, 415);
+      return reply({ error: "bad_duration" }, 415);
     }
     if (durationMs > MAX_VIDEO_DURATION_MS) {
-      return json({ error: "bad_duration", durationMs }, 413);
+      return reply({ error: "bad_duration", durationMs }, 413);
     }
     const claimed = Number(request.headers.get("X-MapTalk-Duration-Ms") ?? "");
     if (Number.isFinite(claimed) && claimed > 0) {
       if (Math.abs(claimed - durationMs) > 1_500) {
-        return json({ error: "duration_mismatch", durationMs, claimed }, 400);
+        return reply({ error: "duration_mismatch", durationMs, claimed }, 400);
       }
     }
   }
@@ -212,7 +219,7 @@ async function upload(
 
   const base = env.PUBLIC_BASE_URL.replace(/\/$/, "");
   const publicUrl = `${base}/${key}`;
-  return json({ url: publicUrl, path: key });
+  return reply({ url: publicUrl, path: key });
 }
 
 /**
@@ -224,21 +231,26 @@ async function uploadVideoStreaming(
   env: Env,
   url: URL,
 ): Promise<Response> {
+  const reply = (body: unknown, status = 200, extraHeaders: HeadersInit = {}) => {
+    void bumpMetric(env, "video", status);
+    return json(body, status, extraHeaders);
+  };
+
   const auth = request.headers.get("Authorization") ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-  if (!token) return json({ error: "missing_token" }, 401);
+  if (!token) return reply({ error: "missing_token" }, 401);
 
   let uid: string;
   try {
     uid = await verifyFirebaseIdToken(token, env.FIREBASE_PROJECT_ID);
   } catch (cause) {
     console.warn("token rejected", cause);
-    return json({ error: "invalid_token" }, 401);
+    return reply({ error: "invalid_token" }, 401);
   }
 
   const rate = await allowUpload(env, uid, "video");
   if (!rate.ok) {
-    return json(
+    return reply(
       { error: "rate_limited", scope: rate.scope },
       429,
       { "Retry-After": "60" },
@@ -248,24 +260,24 @@ async function uploadVideoStreaming(
   const threadId = url.searchParams.get("threadId") ?? "";
   const messageId = url.searchParams.get("messageId") ?? "";
   if (!KEY_RE.test(threadId) || !KEY_RE.test(messageId)) {
-    return json({ error: "bad_ids" }, 400);
+    return reply({ error: "bad_ids" }, 400);
   }
 
   const contentType = (request.headers.get("Content-Type") ?? "").split(";")[0].trim().toLowerCase();
   if (contentType !== "video/mp4") {
-    return json({ error: "unsupported_type" }, 415);
+    return reply({ error: "unsupported_type" }, 415);
   }
 
   const declared = Number(request.headers.get("Content-Length") ?? "0");
   if (!Number.isFinite(declared) || declared <= 0) {
-    return json({ error: "bad_size" }, 413);
+    return reply({ error: "bad_size" }, 413);
   }
   if (declared > MAX_VIDEO_BYTES) {
-    return json({ error: "bad_size" }, 413);
+    return reply({ error: "bad_size" }, 413);
   }
 
   if (!request.body) {
-    return json({ error: "bad_size" }, 413);
+    return reply({ error: "bad_size" }, 413);
   }
 
   const key = `threads/${threadId}/${messageId}.mp4`;
@@ -282,17 +294,17 @@ async function uploadVideoStreaming(
     });
   } catch (cause) {
     console.warn("r2 put failed", cause);
-    return json({ error: "upload_failed" }, 502);
+    return reply({ error: "upload_failed" }, 502);
   }
 
   const obj = await env.MEDIA.get(key);
   if (!obj) {
-    return json({ error: "upload_failed" }, 502);
+    return reply({ error: "upload_failed" }, 502);
   }
 
   if (obj.size <= 0 || obj.size > MAX_VIDEO_BYTES) {
     await env.MEDIA.delete(key);
-    return json({ error: "bad_size" }, 413);
+    return reply({ error: "bad_size" }, 413);
   }
 
   // Sniff at most 2 MB for ftyp + mvhd; duration boxes sit early in typical exports.
@@ -302,34 +314,34 @@ async function uploadVideoStreaming(
     : new Uint8Array(await obj.arrayBuffer());
   if (sample === null || sample.byteLength === 0) {
     await env.MEDIA.delete(key);
-    return json({ error: "bad_size" }, 413);
+    return reply({ error: "bad_size" }, 413);
   }
 
   if (!looksLikeMp4Container(sample)) {
     await env.MEDIA.delete(key);
-    return json({ error: "bad_magic" }, 415);
+    return reply({ error: "bad_magic" }, 415);
   }
 
   const durationMs = mp4DurationMs(sample);
   if (durationMs == null || durationMs <= 0) {
     await env.MEDIA.delete(key);
-    return json({ error: "bad_duration" }, 415);
+    return reply({ error: "bad_duration" }, 415);
   }
   if (durationMs > MAX_VIDEO_DURATION_MS) {
     await env.MEDIA.delete(key);
-    return json({ error: "bad_duration", durationMs }, 413);
+    return reply({ error: "bad_duration", durationMs }, 413);
   }
   const claimed = Number(request.headers.get("X-MapTalk-Duration-Ms") ?? "");
   if (Number.isFinite(claimed) && claimed > 0) {
     if (Math.abs(claimed - durationMs) > 1_500) {
       await env.MEDIA.delete(key);
-      return json({ error: "duration_mismatch", durationMs, claimed }, 400);
+      return reply({ error: "duration_mismatch", durationMs, claimed }, 400);
     }
   }
 
   const base = env.PUBLIC_BASE_URL.replace(/\/$/, "");
   const publicUrl = `${base}/${key}`;
-  return json({ url: publicUrl, path: key });
+  return reply({ url: publicUrl, path: key });
 }
 
 /** Read the body in chunks; return null if it exceeds maxBytes. */
@@ -478,6 +490,40 @@ function pruneMap(map: Map<string, number[]>, now: number) {
   for (let i = 0; i < ranked.length - RATE_UID_CAP; i++) {
     map.delete(ranked[i][0]);
   }
+}
+
+function metricBucket(status: number): string {
+  if (status >= 200 && status < 300) return "ok";
+  if (status === 413 || status === 415 || status === 429) return String(status);
+  if (status >= 400 && status < 500) return "4xx";
+  if (status >= 500) return "5xx";
+  return "other";
+}
+
+async function bumpMetric(env: Env, kind: UploadKind, status: number): Promise<void> {
+  if (!env.RATE) return;
+  const day = new Date().toISOString().slice(0, 10);
+  const key = `metrics:${day}:${kind}:${metricBucket(status)}`;
+  try {
+    const next = Number((await env.RATE.get(key)) ?? "0") + 1;
+    await env.RATE.put(key, String(next), { expirationTtl: 60 * 60 * 24 * 14 });
+  } catch (cause) {
+    console.warn("metric bump failed", cause);
+  }
+}
+
+async function readMetrics(kv: KVNamespace): Promise<Record<string, unknown>> {
+  const day = new Date().toISOString().slice(0, 10);
+  const kinds: UploadKind[] = ["image", "audio", "video"];
+  const buckets = ["ok", "413", "415", "429", "4xx", "5xx"];
+  const counts: Record<string, number> = {};
+  for (const kind of kinds) {
+    for (const bucket of buckets) {
+      const raw = await kv.get(`metrics:${day}:${kind}:${bucket}`);
+      if (raw) counts[`${kind}_${bucket}`] = Number(raw);
+    }
+  }
+  return { day, counts };
 }
 
 function looksLikeJpeg(bytes: Uint8Array): boolean {
