@@ -36,32 +36,45 @@ final class R2MediaUploader: MediaUploading {
     }
 
     func upload(threadId: String, messageId: String, image: PreparedImage) async throws -> String {
-        try await uploadGate.withPermit {
-            try await post(
+        await uploadGate.acquire()
+        do {
+            let url = try await post(
                 endpoint: imageEndpoint,
                 threadId: threadId,
                 messageId: messageId,
                 body: image.jpegData,
                 contentType: "image/jpeg"
             )
+            await uploadGate.release()
+            return url
+        } catch {
+            await uploadGate.release()
+            throw error
         }
     }
 
     func upload(threadId: String, messageId: String, audio: PreparedAudio) async throws -> String {
-        try await uploadGate.withPermit {
-            try await post(
+        await uploadGate.acquire()
+        do {
+            let url = try await post(
                 endpoint: audioEndpoint,
                 threadId: threadId,
                 messageId: messageId,
                 body: audio.data,
                 contentType: audio.contentType
             )
+            await uploadGate.release()
+            return url
+        } catch {
+            await uploadGate.release()
+            throw error
         }
     }
 
     func upload(threadId: String, messageId: String, video: PreparedVideo) async throws -> String {
-        try await uploadGate.withPermit {
-            try await putFile(
+        await uploadGate.acquire()
+        do {
+            let url = try await putFile(
                 endpoint: videoEndpoint,
                 threadId: threadId,
                 messageId: messageId,
@@ -69,6 +82,11 @@ final class R2MediaUploader: MediaUploading {
                 contentType: video.contentType,
                 extraHeaders: ["X-MapTalk-Duration-Ms": "\(video.durationMs)"]
             )
+            await uploadGate.release()
+            return url
+        } catch {
+            await uploadGate.release()
+            throw error
         }
     }
 
@@ -240,19 +258,7 @@ private actor UploadGate {
         self.limit = limit
     }
 
-    func withPermit<T>(_ work: () async throws -> T) async throws -> T {
-        await acquire()
-        do {
-            let value = try await work()
-            release()
-            return value
-        } catch {
-            release()
-            throw error
-        }
-    }
-
-    private func acquire() async {
+    func acquire() async {
         while inFlight >= limit {
             await withCheckedContinuation { cont in
                 waiters.append(cont)
@@ -261,7 +267,7 @@ private actor UploadGate {
         inFlight += 1
     }
 
-    private func release() {
+    func release() {
         inFlight = max(0, inFlight - 1)
         guard !waiters.isEmpty else { return }
         waiters.removeFirst().resume()
