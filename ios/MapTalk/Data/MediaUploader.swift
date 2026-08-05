@@ -14,6 +14,8 @@ final class R2MediaUploader: MediaUploading {
     private let imageEndpoint: URL
     private let audioEndpoint: URL
     private let videoEndpoint: URL
+    private let videoPresignEndpoint: URL
+    private let videoConfirmEndpoint: URL
     private let uploadGate = UploadGate(limit: 2)
 
     init(auth: Auth, endpoint: URL) {
@@ -33,6 +35,8 @@ final class R2MediaUploader: MediaUploading {
         }
         self.audioEndpoint = audio
         self.videoEndpoint = video
+        self.videoPresignEndpoint = video.appendingPathComponent("presign")
+        self.videoConfirmEndpoint = video.appendingPathComponent("confirm")
     }
 
     func upload(threadId: String, messageId: String, image: PreparedImage) async throws -> String {
@@ -74,20 +78,183 @@ final class R2MediaUploader: MediaUploading {
     func upload(threadId: String, messageId: String, video: PreparedVideo) async throws -> String {
         await uploadGate.acquire()
         do {
-            let url = try await putFile(
-                endpoint: videoEndpoint,
-                threadId: threadId,
-                messageId: messageId,
-                fileURL: video.fileURL,
-                contentType: video.contentType,
-                extraHeaders: ["X-MapTalk-Duration-Ms": "\(video.durationMs)"]
-            )
+            let url = try await uploadVideo(threadId: threadId, messageId: messageId, video: video)
             await uploadGate.release()
             return url
         } catch {
             await uploadGate.release()
             throw error
         }
+    }
+
+    private func uploadVideo(
+        threadId: String,
+        messageId: String,
+        video: PreparedVideo
+    ) async throws -> String {
+        let durationHeaders = ["X-MapTalk-Duration-Ms": "\(video.durationMs)"]
+        let length = (try? FileManager.default.attributesOfItem(atPath: video.fileURL.path)[.size] as? NSNumber)?
+            .int64Value ?? 0
+        guard length > 0 else {
+            throw URLError(.zeroByteResource)
+        }
+
+        if let presign = try await tryPresign(
+            threadId: threadId,
+            messageId: messageId,
+            contentLength: length,
+            extraHeaders: durationHeaders
+        ) {
+            try await putToPresignedUrl(
+                uploadUrl: presign.uploadUrl,
+                fileURL: video.fileURL,
+                contentType: presign.contentType ?? "video/mp4"
+            )
+            return try await postConfirm(
+                threadId: threadId,
+                messageId: messageId,
+                extraHeaders: durationHeaders
+            )
+        }
+
+        return try await putFile(
+            endpoint: videoEndpoint,
+            threadId: threadId,
+            messageId: messageId,
+            fileURL: video.fileURL,
+            contentType: video.contentType,
+            extraHeaders: durationHeaders
+        )
+    }
+
+    private struct PresignResponse: Decodable {
+        let uploadUrl: String
+        let contentType: String?
+    }
+
+    private func tryPresign(
+        threadId: String,
+        messageId: String,
+        contentLength: Int64,
+        extraHeaders: [String: String]
+    ) async throws -> PresignResponse? {
+        guard let user = auth.currentUser else {
+            throw URLError(.userAuthenticationRequired)
+        }
+        let token = try await user.getIDToken()
+        var components = URLComponents(url: videoPresignEndpoint, resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "threadId", value: threadId),
+            URLQueryItem(name: "messageId", value: messageId),
+        ]
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("\(contentLength)", forHTTPHeaderField: "X-MapTalk-Content-Length")
+        for (key, value) in extraHeaders {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+        if http.statusCode == 503,
+           let body = String(data: data, encoding: .utf8),
+           body.contains("presign_unavailable") {
+            return nil
+        }
+        guard (200...299).contains(http.statusCode) else {
+            let detail = String(data: data, encoding: .utf8) ?? ""
+            throw NSError(
+                domain: "MapTalk.MediaUploader",
+                code: http.statusCode,
+                userInfo: [NSLocalizedDescriptionKey: "Upload failed (\(http.statusCode)): \(detail)"]
+            )
+        }
+        let decoded = try JSONDecoder().decode(PresignResponse.self, from: data)
+        return PresignResponse(
+            uploadUrl: decoded.uploadUrl,
+            contentType: decoded.contentType ?? "video/mp4"
+        )
+    }
+
+    private func putToPresignedUrl(
+        uploadUrl: String,
+        fileURL: URL,
+        contentType: String
+    ) async throws {
+        guard let url = URL(string: uploadUrl) else {
+            throw URLError(.badURL)
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        let (data, response) = try await URLSession.shared.upload(for: request, fromFile: fileURL)
+        guard let http = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+        guard (200...299).contains(http.statusCode) else {
+            let detail = String(data: data, encoding: .utf8) ?? ""
+            throw NSError(
+                domain: "MapTalk.MediaUploader",
+                code: http.statusCode,
+                userInfo: [NSLocalizedDescriptionKey: "Upload failed (\(http.statusCode)): \(detail)"]
+            )
+        }
+    }
+
+    private func postConfirm(
+        threadId: String,
+        messageId: String,
+        extraHeaders: [String: String],
+        maxAttempts: Int = 3
+    ) async throws -> String {
+        var lastError: Error?
+        for attempt in 0..<maxAttempts {
+            try Task.checkCancellation()
+            do {
+                return try await postEmpty(
+                    endpoint: videoConfirmEndpoint,
+                    threadId: threadId,
+                    messageId: messageId,
+                    extraHeaders: extraHeaders
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                lastError = error
+                guard Self.isTransient(error), attempt < maxAttempts - 1 else { throw error }
+                try await Task.sleep(nanoseconds: UInt64(400_000_000) << attempt)
+            }
+        }
+        throw lastError ?? URLError(.unknown)
+    }
+
+    private func postEmpty(
+        endpoint: URL,
+        threadId: String,
+        messageId: String,
+        extraHeaders: [String: String]
+    ) async throws -> String {
+        guard let user = auth.currentUser else {
+            throw URLError(.userAuthenticationRequired)
+        }
+        let token = try await user.getIDToken()
+        var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "threadId", value: threadId),
+            URLQueryItem(name: "messageId", value: messageId),
+        ]
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        for (key, value) in extraHeaders {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        return try Self.parseUploadURL(data: data, response: response)
     }
 
     private func post(

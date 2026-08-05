@@ -3,10 +3,13 @@
  *
  * POST /v1/images?threadId=&messageId=   Content-Type: image/jpeg
  * POST /v1/audio?threadId=&messageId=   Content-Type: audio/mp4 | audio/m4a | audio/aac
+ * POST /v1/video/presign?threadId=&messageId=
+ *   Headers: X-MapTalk-Content-Length, optional X-MapTalk-Duration-Ms
+ *   → { uploadUrl, path, publicUrl, contentType }  (client PUTs bytes to R2)
+ * POST /v1/video/confirm?threadId=&messageId=
+ *   After client PUT: sniff + duration checks; → { url, path }
  * POST|PUT /v1/video?threadId=&messageId=   Content-Type: video/mp4
- *   Body streamed to R2 (no full-buffer in Worker); validated after put.
- *   Optional: X-MapTalk-Duration-Ms (cross-checked against mvhd when present)
- *   Prefer PUT; POST kept for older clients.
+ *   Legacy: body streamed Worker→R2 (kept when R2 S3 secrets missing / old clients).
  * GET  /health                              Limits + daily upload metrics
  * GET  /__ping                              Deploy smoke check
  *
@@ -19,12 +22,19 @@
  *   - Magic-byte sniff + size caps + video duration from mvhd
  */
 
+import { AwsClient } from "aws4fetch";
+
 export interface Env {
   MEDIA: R2Bucket;
   RATE?: KVNamespace;
   FIREBASE_PROJECT_ID: string;
   PUBLIC_BASE_URL: string;
   MEDIA_DELETE_SECRET?: string;
+  /** R2 S3 API credentials — required for /v1/video/presign. */
+  R2_ACCESS_KEY_ID?: string;
+  R2_SECRET_ACCESS_KEY?: string;
+  R2_ACCOUNT_ID?: string;
+  R2_BUCKET_NAME?: string;
 }
 
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
@@ -37,6 +47,8 @@ const RATE_MAX_TOTAL = 20;
 const RATE_MAX_AUDIO = 8;
 const RATE_MAX_VIDEO = 4;
 const RATE_UID_CAP = 4_000;
+const PRESIGN_TTL_SEC = 900;
+const R2_BUCKET_DEFAULT = "maptalk-media";
 
 type UploadKind = "image" | "audio" | "video";
 
@@ -72,6 +84,9 @@ export default {
           videoPer10Min: RATE_MAX_VIDEO,
           durableRateLimits: Boolean(env.RATE),
         },
+        videoPresign: Boolean(
+          env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY && env.R2_ACCOUNT_ID,
+        ),
         metrics,
       });
     }
@@ -94,6 +109,14 @@ export default {
         extension: "m4a",
         contentType: "audio/mp4",
       });
+    }
+
+    if (request.method === "POST" && url.pathname === "/v1/video/presign") {
+      return presignVideo(request, env, url);
+    }
+
+    if (request.method === "POST" && url.pathname === "/v1/video/confirm") {
+      return confirmVideo(request, env, url);
     }
 
     if (
@@ -232,7 +255,7 @@ async function upload(
 
 /**
  * Stream the request body straight into R2, then sniff the stored object.
- * Keeps Worker memory off the full 12 MB path (image/audio still use buffered upload).
+ * Kept as a fallback when R2 S3 secrets are missing or for older clients.
  */
 async function uploadVideoStreaming(
   request: Request,
@@ -244,21 +267,161 @@ async function uploadVideoStreaming(
     return json(body, status, extraHeaders);
   };
 
+  const gate = await authorizeVideoUpload(request, env, url);
+  if (gate instanceof Response) return withVideoMetric(env, gate);
+
+  const contentType = (request.headers.get("Content-Type") ?? "").split(";")[0].trim().toLowerCase();
+  if (contentType !== "video/mp4") {
+    return reply({ error: "unsupported_type" }, 415);
+  }
+
+  const declared = Number(request.headers.get("Content-Length") ?? "0");
+  if (!Number.isFinite(declared) || declared <= 0 || declared > MAX_VIDEO_BYTES) {
+    return reply({ error: "bad_size" }, 413);
+  }
+
+  if (!request.body) {
+    return reply({ error: "bad_size" }, 413);
+  }
+
+  try {
+    await env.MEDIA.put(gate.key, request.body, {
+      httpMetadata: {
+        contentType: "video/mp4",
+        cacheControl: "public, max-age=31536000, immutable",
+      },
+      customMetadata: {
+        uid: gate.uid,
+        kind: "video",
+      },
+    });
+  } catch (cause) {
+    console.warn("r2 put failed", cause);
+    return reply({ error: "upload_failed" }, 502);
+  }
+
+  return finalizeStoredVideo(env, gate.key, request.headers.get("X-MapTalk-Duration-Ms"));
+}
+
+/** Mint a short-lived R2 PUT URL so the device uploads bytes directly. */
+async function presignVideo(
+  request: Request,
+  env: Env,
+  url: URL,
+): Promise<Response> {
+  const reply = (body: unknown, status = 200, extraHeaders: HeadersInit = {}) => {
+    void bumpMetric(env, "video", status);
+    return json(body, status, extraHeaders);
+  };
+
+  if (!env.R2_ACCESS_KEY_ID || !env.R2_SECRET_ACCESS_KEY || !env.R2_ACCOUNT_ID) {
+    return reply({ error: "presign_unavailable" }, 503);
+  }
+
+  const gate = await authorizeVideoUpload(request, env, url);
+  if (gate instanceof Response) return withVideoMetric(env, gate);
+
+  const declared = Number(
+    request.headers.get("X-MapTalk-Content-Length")
+      ?? request.headers.get("Content-Length")
+      ?? "0",
+  );
+  if (!Number.isFinite(declared) || declared <= 0 || declared > MAX_VIDEO_BYTES) {
+    return reply({ error: "bad_size" }, 413);
+  }
+
+  const bucket = env.R2_BUCKET_NAME?.trim() || R2_BUCKET_DEFAULT;
+  const objectUrl =
+    `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com/${bucket}/${gate.key}` +
+    `?X-Amz-Expires=${PRESIGN_TTL_SEC}`;
+
+  const client = new AwsClient({
+    accessKeyId: env.R2_ACCESS_KEY_ID,
+    secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+    service: "s3",
+    region: "auto",
+  });
+
+  let uploadUrl: string;
+  try {
+    const signed = await client.sign(
+      new Request(objectUrl, {
+        method: "PUT",
+        headers: { "Content-Type": "video/mp4" },
+      }),
+      { aws: { signQuery: true } },
+    );
+    uploadUrl = signed.url;
+  } catch (cause) {
+    console.warn("presign failed", cause);
+    return reply({ error: "presign_failed" }, 502);
+  }
+
+  const base = env.PUBLIC_BASE_URL.replace(/\/$/, "");
+  // Presign itself is not a completed upload — don't count as 200 video success.
+  return json({
+    uploadUrl,
+    path: gate.key,
+    publicUrl: `${base}/${gate.key}`,
+    contentType: "video/mp4",
+    expiresIn: PRESIGN_TTL_SEC,
+  });
+}
+
+/** After client→R2 PUT: sniff + duration checks (same rules as streaming upload). */
+async function confirmVideo(
+  request: Request,
+  env: Env,
+  url: URL,
+): Promise<Response> {
   const auth = request.headers.get("Authorization") ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-  if (!token) return reply({ error: "missing_token" }, 401);
+  if (!token) {
+    void bumpMetric(env, "video", 401);
+    return json({ error: "missing_token" }, 401);
+  }
+
+  try {
+    await verifyFirebaseIdToken(token, env.FIREBASE_PROJECT_ID);
+  } catch (cause) {
+    console.warn("token rejected", cause);
+    void bumpMetric(env, "video", 401);
+    return json({ error: "invalid_token" }, 401);
+  }
+
+  const threadId = url.searchParams.get("threadId") ?? "";
+  const messageId = url.searchParams.get("messageId") ?? "";
+  if (!KEY_RE.test(threadId) || !KEY_RE.test(messageId)) {
+    void bumpMetric(env, "video", 400);
+    return json({ error: "bad_ids" }, 400);
+  }
+
+  const key = `threads/${threadId}/${messageId}.mp4`;
+  return finalizeStoredVideo(env, key, request.headers.get("X-MapTalk-Duration-Ms"));
+}
+
+type VideoGate = { uid: string; key: string };
+
+async function authorizeVideoUpload(
+  request: Request,
+  env: Env,
+  url: URL,
+): Promise<VideoGate | Response> {
+  const auth = request.headers.get("Authorization") ?? "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+  if (!token) return json({ error: "missing_token" }, 401);
 
   let uid: string;
   try {
     uid = await verifyFirebaseIdToken(token, env.FIREBASE_PROJECT_ID);
   } catch (cause) {
     console.warn("token rejected", cause);
-    return reply({ error: "invalid_token" }, 401);
+    return json({ error: "invalid_token" }, 401);
   }
 
   const rate = await allowUpload(env, uid, "video");
   if (!rate.ok) {
-    return reply(
+    return json(
       { error: "rate_limited", scope: rate.scope },
       429,
       { "Retry-After": "60" },
@@ -268,42 +431,26 @@ async function uploadVideoStreaming(
   const threadId = url.searchParams.get("threadId") ?? "";
   const messageId = url.searchParams.get("messageId") ?? "";
   if (!KEY_RE.test(threadId) || !KEY_RE.test(messageId)) {
-    return reply({ error: "bad_ids" }, 400);
+    return json({ error: "bad_ids" }, 400);
   }
 
-  const contentType = (request.headers.get("Content-Type") ?? "").split(";")[0].trim().toLowerCase();
-  if (contentType !== "video/mp4") {
-    return reply({ error: "unsupported_type" }, 415);
-  }
+  return { uid, key: `threads/${threadId}/${messageId}.mp4` };
+}
 
-  const declared = Number(request.headers.get("Content-Length") ?? "0");
-  if (!Number.isFinite(declared) || declared <= 0) {
-    return reply({ error: "bad_size" }, 413);
-  }
-  if (declared > MAX_VIDEO_BYTES) {
-    return reply({ error: "bad_size" }, 413);
-  }
+function withVideoMetric(env: Env, response: Response): Response {
+  void bumpMetric(env, "video", response.status);
+  return response;
+}
 
-  if (!request.body) {
-    return reply({ error: "bad_size" }, 413);
-  }
-
-  const key = `threads/${threadId}/${messageId}.mp4`;
-  try {
-    await env.MEDIA.put(key, request.body, {
-      httpMetadata: {
-        contentType: "video/mp4",
-        cacheControl: "public, max-age=31536000, immutable",
-      },
-      customMetadata: {
-        uid,
-        kind: "video",
-      },
-    });
-  } catch (cause) {
-    console.warn("r2 put failed", cause);
-    return reply({ error: "upload_failed" }, 502);
-  }
+async function finalizeStoredVideo(
+  env: Env,
+  key: string,
+  claimedDurationHeader: string | null,
+): Promise<Response> {
+  const reply = (body: unknown, status = 200, extraHeaders: HeadersInit = {}) => {
+    void bumpMetric(env, "video", status);
+    return json(body, status, extraHeaders);
+  };
 
   const obj = await env.MEDIA.get(key);
   if (!obj) {
@@ -315,7 +462,6 @@ async function uploadVideoStreaming(
     return reply({ error: "bad_size" }, 413);
   }
 
-  // Sniff at most 2 MB for ftyp + mvhd; duration boxes sit early in typical exports.
   const sampleCap = Math.min(obj.size, 2 * 1024 * 1024);
   const sample = obj.body
     ? await readBodyCapped(obj.body, sampleCap)
@@ -339,7 +485,7 @@ async function uploadVideoStreaming(
     await env.MEDIA.delete(key);
     return reply({ error: "bad_duration", durationMs }, 413);
   }
-  const claimed = Number(request.headers.get("X-MapTalk-Duration-Ms") ?? "");
+  const claimed = Number(claimedDurationHeader ?? "");
   if (Number.isFinite(claimed) && claimed > 0) {
     if (Math.abs(claimed - durationMs) > 1_500) {
       await env.MEDIA.delete(key);

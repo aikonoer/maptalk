@@ -72,3 +72,25 @@ To brand them (e.g. `media.maptalk.app` + `cdn.maptalk.app`):
 4. Point both apps’ `MAPTALK_MEDIA_UPLOAD_URL` at the Worker custom domain (`…/v1/images`).
 
 Until then, the `*.workers.dev` / `*.r2.dev` URLs are fine for development and closed testing.
+
+### R2 S3 API tokens (direct client→R2 video PUT)
+
+Video clients prefer `POST /v1/video/presign` → PUT to R2 → `POST /v1/video/confirm`.
+That needs R2 **S3 API** credentials on the Worker (the R2 binding alone cannot mint
+presigned URLs). Until secrets are set, `/health` shows `"videoPresign": false` and
+clients fall back to legacy `PUT /v1/video` through the Worker.
+
+1. Cloudflare → R2 → **Manage R2 API Tokens** → Create token with Object Read & Write
+   on bucket `maptalk-media`.
+2. From `workers/media`:
+
+```bash
+npx wrangler secret put R2_ACCESS_KEY_ID
+npx wrangler secret put R2_SECRET_ACCESS_KEY
+npx wrangler secret put R2_ACCOUNT_ID   # Cloudflare account id
+# optional if not using the default bucket name:
+# npx wrangler secret put R2_BUCKET_NAME
+npx wrangler deploy
+```
+
+3. Confirm `GET /health` → `"videoPresign": true`.

@@ -17,6 +17,8 @@ struct ThreadScreen: View {
     @State private var videoSendPhase: VideoSendPhase = .idle
     @State private var videoFailDetail: String?
     @State private var videoUploadMegabytes: Int?
+    @State private var videoPreview: UIImage?
+    @State private var pendingOutgoing: Message?
     @State private var videoTask: Task<Void, Never>?
     @State private var retryPreparedVideo: PreparedVideo?
     @State private var pendingUploadConfirm: PendingVideoUpload?
@@ -61,6 +63,13 @@ struct ThreadScreen: View {
 
     private var canSend: Bool {
         pendingImage != nil || !trimmedDraft.isEmpty
+    }
+
+    private var displayedMessages: [Message] {
+        if let pendingOutgoing {
+            return model.messages + [pendingOutgoing]
+        }
+        return model.messages
     }
 
     var body: some View {
@@ -270,7 +279,7 @@ struct ThreadScreen: View {
             ProgressView()
                 .tint(Theme.subtle)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if model.messages.isEmpty {
+        } else if displayedMessages.isEmpty {
             VStack(spacing: 10) {
                 Image(systemName: "bubble.left.and.bubble.right")
                     .font(.system(size: 30, weight: .light))
@@ -289,7 +298,7 @@ struct ThreadScreen: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(Array(model.messages.enumerated()), id: \.element.id) { index, message in
+                        ForEach(Array(displayedMessages.enumerated()), id: \.element.id) { index, message in
                             MessageRow(
                                 message: message,
                                 isMine: message.authorId == author.uid,
@@ -298,11 +307,13 @@ struct ThreadScreen: View {
                                 endsRun: endsRun(at: index),
                                 isLifted: longPressTarget?.id == message.id,
                                 onLongPress: {
+                                    guard !message.isLocalPending else { return }
                                     longPressFrame = bubbleFrames[message.id] ?? .zero
                                     isComposing = false
                                     longPressTarget = message
                                 },
                                 onToggleReaction: { emoji in
+                                    guard !message.isLocalPending else { return }
                                     model.toggleReaction(emoji, on: message, as: author)
                                 }
                             )
@@ -313,7 +324,7 @@ struct ThreadScreen: View {
                     .padding(.vertical, 16)
                 }
                 .scrollDismissesKeyboard(.interactively)
-                .onChange(of: model.messages.count) { _, _ in scroll(proxy, animated: true) }
+                .onChange(of: displayedMessages.count) { _, _ in scroll(proxy, animated: true) }
                 .onAppear { scroll(proxy, animated: false) }
             }
         }
@@ -379,6 +390,7 @@ struct ThreadScreen: View {
                     status: status,
                     phase: videoSendPhase,
                     isBusy: isPreparingVideo,
+                    preview: videoPreview,
                     onCancel: cancelVideoSend,
                     onRetry: retryVideoSend
                 )
@@ -555,6 +567,8 @@ struct ThreadScreen: View {
     private func loadVideoItem(_ item: PhotosPickerItem) async {
         videoFailDetail = nil
         videoUploadMegabytes = nil
+        videoPreview = nil
+        pendingOutgoing = nil
         videoSendPhase = .compressing
         defer { videoPickerItem = nil }
         guard let movie = try? await item.loadTransferable(type: PickedMovie.self) else {
@@ -565,6 +579,7 @@ struct ThreadScreen: View {
             return
         }
         defer { try? FileManager.default.removeItem(at: movie.url) }
+        videoPreview = await Self.videoPoster(from: movie.url)
         if Task.isCancelled {
             videoSendPhase = .idle
             return
@@ -583,6 +598,9 @@ struct ThreadScreen: View {
                 return
             }
             retryPreparedVideo = prepared
+            if videoPreview == nil {
+                videoPreview = await Self.videoPoster(from: prepared.fileURL)
+            }
             let mb = max(1, (prepared.byteCount + 512 * 1024) / (1024 * 1024))
             videoUploadMegabytes = mb
             let needsConfirm = NetworkExpense.isExpensiveOrConstrained
@@ -597,6 +615,18 @@ struct ThreadScreen: View {
     }
 
     private func uploadPreparedVideo(_ prepared: PreparedVideo) async {
+        pendingOutgoing = Message(
+            id: "local:video-pending",
+            kind: .video,
+            text: "",
+            authorId: author.uid,
+            authorName: author.displayName,
+            createdAt: Date(),
+            videoPath: prepared.fileURL.path,
+            videoDurationMs: prepared.durationMs,
+            videoWidth: prepared.width,
+            videoHeight: prepared.height
+        )
         videoSendPhase = .uploading
         model.errorMessage = nil
         videoFailDetail = nil
@@ -605,6 +635,7 @@ struct ThreadScreen: View {
                 cont.resume()
             }
         }
+        pendingOutgoing = nil
         if Task.isCancelled {
             prepared.deleteTempFile()
             retryPreparedVideo = nil
@@ -617,6 +648,7 @@ struct ThreadScreen: View {
             prepared.deleteTempFile()
             retryPreparedVideo = nil
             videoUploadMegabytes = nil
+            videoPreview = nil
             videoSendPhase = .idle
         }
     }
@@ -636,13 +668,25 @@ struct ThreadScreen: View {
         pendingUploadConfirm = nil
         retryPreparedVideo?.deleteTempFile()
         retryPreparedVideo = nil
+        pendingOutgoing = nil
         videoFailDetail = nil
         videoUploadMegabytes = nil
+        videoPreview = nil
         videoSendPhase = .idle
     }
 
+    private static func videoPoster(from url: URL) async -> UIImage? {
+        let asset = AVURLAsset(url: url)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 220, height: 220)
+        let time = CMTime(seconds: 0.05, preferredTimescale: 600)
+        guard let cg = try? await generator.image(at: time).image else { return nil }
+        return UIImage(cgImage: cg)
+    }
+
     private func scroll(_ proxy: ScrollViewProxy, animated: Bool) {
-        guard let last = model.messages.last else { return }
+        guard let last = displayedMessages.last else { return }
         if animated {
             withAnimation(.spring(duration: 0.35)) { proxy.scrollTo(last.id, anchor: .bottom) }
         } else {
@@ -652,12 +696,12 @@ struct ThreadScreen: View {
 
     private func startsRun(at index: Int) -> Bool {
         guard index > 0 else { return true }
-        return !model.messages[index].follows(model.messages[index - 1])
+        return !displayedMessages[index].follows(displayedMessages[index - 1])
     }
 
     private func endsRun(at index: Int) -> Bool {
-        guard index < model.messages.count - 1 else { return true }
-        return !model.messages[index + 1].follows(model.messages[index])
+        guard index < displayedMessages.count - 1 else { return true }
+        return !displayedMessages[index + 1].follows(displayedMessages[index])
     }
 
     private func dismissLongPress() {
@@ -883,7 +927,8 @@ private struct MessageLongPressOverlay: View {
                         path: path,
                         durationMs: message.videoDurationMs ?? 0,
                         width: message.videoWidth,
-                        height: message.videoHeight
+                        height: message.videoHeight,
+                        isSending: message.isLocalPending
                     )
                 }
 
@@ -1049,7 +1094,7 @@ private struct MessageRow: View {
                 }
 
                 if endsRun {
-                    Text(relativeTime(message.createdAt))
+                    Text(message.isLocalPending ? "Sending…" : relativeTime(message.createdAt))
                         .font(.meta)
                         .foregroundStyle(Theme.faint)
                         .padding(.horizontal, 2)
@@ -1101,7 +1146,8 @@ private struct MessageRow: View {
                         path: path,
                         durationMs: message.videoDurationMs ?? 0,
                         width: message.videoWidth,
-                        height: message.videoHeight
+                        height: message.videoHeight,
+                        isSending: message.isLocalPending
                     )
                 }
 
@@ -1328,12 +1374,20 @@ private struct VideoSendStatusBanner: View {
     let status: VideoSendPhase.StatusCopy
     let phase: VideoSendPhase
     let isBusy: Bool
+    let preview: UIImage?
     let onCancel: () -> Void
     let onRetry: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
+                if let preview {
+                    Image(uiImage: preview)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 44, height: 44)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
                 if isBusy {
                     ProgressView()
                         .controlSize(.small)
@@ -1385,6 +1439,7 @@ private struct VideoBubble: View {
     let durationMs: Int
     let width: Int?
     let height: Int?
+    var isSending: Bool = false
 
     @State private var poster: UIImage?
     @State private var isPreparing = false
@@ -1396,6 +1451,12 @@ private struct VideoBubble: View {
     private var mediaURL: URL? {
         if path.hasPrefix("http://") || path.hasPrefix("https://") {
             return URL(string: path)
+        }
+        if path.hasPrefix("file://") {
+            return URL(string: path)
+        }
+        if path.hasPrefix("/") {
+            return URL(fileURLWithPath: path)
         }
         return LocalMediaStore.url(forRelativePath: path)
     }
@@ -1414,13 +1475,24 @@ private struct VideoBubble: View {
 
             if isThisPlaying, let player = playback.player {
                 VideoPlayer(player: player)
+                    .disabled(true)
             } else if let poster {
                 Image(uiImage: poster)
                     .resizable()
                     .scaledToFill()
             }
 
-            if showBusy {
+            if isSending {
+                Color.black.opacity(0.45)
+                VStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.regular)
+                        .tint(.white)
+                    Text("Sending…")
+                        .font(.meta)
+                        .foregroundStyle(.white)
+                }
+            } else if showBusy {
                 VStack(spacing: 8) {
                     ProgressView()
                         .controlSize(.regular)
@@ -1437,18 +1509,35 @@ private struct VideoBubble: View {
                     .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
             }
 
-            Text(Self.format(durationMs))
-                .font(.meta)
-                .foregroundStyle(.white)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(.black.opacity(0.55), in: Capsule())
-                .padding(8)
+            HStack {
+                if isThisPlaying && !isSending {
+                    Button {
+                        playback.toggleMute()
+                    } label: {
+                        Image(systemName: playback.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(.black.opacity(0.55), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(playback.isMuted ? "Unmute" : "Mute")
+                }
+                Spacer(minLength: 0)
+                Text(Self.format(durationMs))
+                    .font(.meta)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.black.opacity(0.55), in: Capsule())
+            }
+            .padding(8)
         }
         .frame(width: displayWidth, height: displayHeight)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .onTapGesture { toggle() }
+        .onTapGesture { if !isSending { toggle() } }
         .task(id: path) { await loadPoster() }
         .onDisappear {
             playTask?.cancel()
@@ -1457,8 +1546,8 @@ private struct VideoBubble: View {
                 playback.pause()
             }
         }
-        .accessibilityLabel("Video, \(Self.format(durationMs))")
-        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel(isSending ? "Sending video" : "Video, \(Self.format(durationMs))")
+        .accessibilityAddTraits(isSending ? [] : .isButton)
     }
 
     private var displayWidth: CGFloat { 220 }

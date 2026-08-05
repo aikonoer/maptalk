@@ -56,6 +56,9 @@ sealed class MediaUploader {
                 "https://maptalk-media.hhypkfpshg.workers.dev/v1/video"
             }
 
+        private val videoPresignEndpoint: String = "$videoEndpoint/presign"
+        private val videoConfirmEndpoint: String = "$videoEndpoint/confirm"
+
         override suspend fun upload(threadId: String, messageId: String, image: PreparedImage): String =
             uploadSlots.withPermit {
                 post(imageEndpoint, threadId, messageId, image.jpegBytes, "image/jpeg")
@@ -68,15 +71,156 @@ sealed class MediaUploader {
 
         override suspend fun upload(threadId: String, messageId: String, video: PreparedVideo): String =
             uploadSlots.withPermit {
-                putFile(
-                    videoEndpoint,
-                    threadId,
-                    messageId,
-                    video.file,
-                    video.contentType,
-                    extraHeaders = mapOf("X-MapTalk-Duration-Ms" to video.durationMs.toString()),
-                )
+                uploadVideo(threadId, messageId, video)
             }
+
+        private suspend fun uploadVideo(
+            threadId: String,
+            messageId: String,
+            video: PreparedVideo,
+        ): String = withContext(Dispatchers.IO) {
+            val durationHeader = mapOf("X-MapTalk-Duration-Ms" to video.durationMs.toString())
+            val length = video.file.length()
+            if (length <= 0L) throw IOException("Video file is empty")
+
+            val presign = tryPresign(threadId, messageId, length, durationHeader)
+            if (presign != null) {
+                putToPresignedUrl(presign.uploadUrl, video.file, presign.contentType)
+                return@withContext postConfirm(threadId, messageId, durationHeader)
+            }
+
+            // Worker without R2 S3 secrets (or old deploy): stream through Worker.
+            putFile(
+                videoEndpoint,
+                threadId,
+                messageId,
+                video.file,
+                video.contentType,
+                extraHeaders = durationHeader,
+            )
+        }
+
+        private suspend fun tryPresign(
+            threadId: String,
+            messageId: String,
+            contentLength: Long,
+            extraHeaders: Map<String, String>,
+        ): PresignResponse? {
+            val token = auth.currentUser?.getIdToken(false)?.await()?.token
+                ?: throw IllegalStateException("Sign in before sending media")
+            val url = URL(
+                "$videoPresignEndpoint?threadId=${enc(threadId)}&messageId=${enc(messageId)}",
+            )
+            val connection = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                doOutput = false
+                connectTimeout = 30_000
+                readTimeout = 30_000
+                setRequestProperty("Authorization", "Bearer $token")
+                setRequestProperty("X-MapTalk-Content-Length", contentLength.toString())
+                extraHeaders.forEach { (k, v) -> setRequestProperty(k, v) }
+            }
+            try {
+                val code = connection.responseCode
+                val body = (if (code in 200..299) connection.inputStream else connection.errorStream)
+                    ?.bufferedReader()
+                    ?.use { it.readText() }
+                    .orEmpty()
+                if (code == 503 && body.contains("presign_unavailable")) {
+                    return null
+                }
+                if (code !in 200..299) {
+                    throw IOException("Media upload failed ($code): $body")
+                }
+                val json = JSONObject(body)
+                return PresignResponse(
+                    uploadUrl = json.getString("uploadUrl"),
+                    contentType = json.optString("contentType", "video/mp4"),
+                )
+            } finally {
+                connection.disconnect()
+            }
+        }
+
+        private fun putToPresignedUrl(uploadUrl: String, file: java.io.File, contentType: String) {
+            val length = file.length()
+            val connection = (URL(uploadUrl).openConnection() as HttpURLConnection).apply {
+                requestMethod = "PUT"
+                doOutput = true
+                connectTimeout = 30_000
+                readTimeout = 120_000
+                setFixedLengthStreamingMode(length)
+                setRequestProperty("Content-Type", contentType)
+                setRequestProperty("Content-Length", length.toString())
+            }
+            try {
+                connection.outputStream.use { out ->
+                    file.inputStream().use { input ->
+                        input.copyTo(out, bufferSize = 64 * 1024)
+                    }
+                }
+                val code = connection.responseCode
+                if (code !in 200..299) {
+                    val err = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                    throw IOException("Media upload failed ($code): $err")
+                }
+            } finally {
+                connection.disconnect()
+            }
+        }
+
+        private suspend fun postConfirm(
+            threadId: String,
+            messageId: String,
+            extraHeaders: Map<String, String>,
+            maxAttempts: Int = 3,
+        ): String {
+            var lastError: Exception? = null
+            repeat(maxAttempts) { attempt ->
+                try {
+                    return postEmpty(videoConfirmEndpoint, threadId, messageId, extraHeaders)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    lastError = e
+                    if (!isTransientUploadError(e) || attempt == maxAttempts - 1) throw e
+                    delay(400L * (1L shl attempt))
+                }
+            }
+            throw lastError ?: IOException("Media upload failed")
+        }
+
+        private suspend fun postEmpty(
+            endpoint: String,
+            threadId: String,
+            messageId: String,
+            extraHeaders: Map<String, String>,
+        ): String {
+            val token = auth.currentUser?.getIdToken(false)?.await()?.token
+                ?: throw IllegalStateException("Sign in before sending media")
+            val url = URL(
+                "$endpoint?threadId=${enc(threadId)}&messageId=${enc(messageId)}",
+            )
+            val connection = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                doOutput = false
+                connectTimeout = 30_000
+                readTimeout = 60_000
+                setRequestProperty("Authorization", "Bearer $token")
+                extraHeaders.forEach { (k, v) -> setRequestProperty(k, v) }
+            }
+            try {
+                return readUploadUrl(connection)
+            } finally {
+                connection.disconnect()
+            }
+        }
+
+        private data class PresignResponse(
+            val uploadUrl: String,
+            val contentType: String,
+        )
+
         private suspend fun post(
             endpoint: String,
             threadId: String,

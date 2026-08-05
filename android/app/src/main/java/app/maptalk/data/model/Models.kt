@@ -94,6 +94,8 @@ data class Message(
     val hasVoice: Boolean get() = kind == MessageKind.VOICE && audioPath != null
     val hasVideo: Boolean get() = kind == MessageKind.VIDEO && videoPath != null
     val isSticker: Boolean get() = kind == MessageKind.STICKER
+    /** Optimistic local send — not yet on the server. */
+    val isLocalPending: Boolean get() = id.startsWith("local:")
 
     fun reacted(by: String, emoji: String): Boolean =
         reactions[emoji]?.contains(by) == true

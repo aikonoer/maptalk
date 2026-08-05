@@ -16,6 +16,7 @@ import app.maptalk.data.VideoCompressor
 import app.maptalk.data.model.Author
 import app.maptalk.data.model.ChatThread
 import app.maptalk.data.model.Message
+import app.maptalk.data.model.MessageKind
 import app.maptalk.data.model.MessageReply
 import app.maptalk.data.model.PreparedAudio
 import app.maptalk.data.model.PreparedImage
@@ -23,6 +24,7 @@ import app.maptalk.data.model.PreparedVideo
 import app.maptalk.data.model.ReportReason
 import app.maptalk.data.model.ReportTargetType
 import java.io.File
+import java.time.Instant
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -60,6 +62,8 @@ data class VideoSendUi(
     val detail: String? = null,
     /** Rough size shown while confirming / uploading. */
     val megabytes: Int? = null,
+    /** First-frame preview while preparing / sending. */
+    val preview: android.graphics.Bitmap? = null,
 ) {
     val isBusy: Boolean
         get() = phase == VideoSendPhase.Compressing || phase == VideoSendPhase.Uploading
@@ -113,6 +117,7 @@ class ThreadViewModel(
     private var pendingConfirmVideo: PreparedVideo? = null
     private var pendingConfirmAuthor: Author? = null
 
+    private val _pendingOutgoing = MutableStateFlow<Message?>(null)
     private val _replyTarget = MutableStateFlow<Message?>(null)
     private val _shouldDismiss = MutableStateFlow(false)
 
@@ -126,13 +131,26 @@ class ThreadViewModel(
         _replyTarget,
         blockedUids,
         _shouldDismiss,
-    ) { thread, messages, reply, blocked, dismiss ->
+        _pendingOutgoing,
+    ) { values ->
+        @Suppress("UNCHECKED_CAST")
+        val thread = values[0] as ChatThread?
+        @Suppress("UNCHECKED_CAST")
+        val messages = values[1] as List<Message>
+        @Suppress("UNCHECKED_CAST")
+        val reply = values[2] as Message?
+        @Suppress("UNCHECKED_CAST")
+        val blocked = values[3] as Set<String>
+        val dismiss = values[4] as Boolean
+        @Suppress("UNCHECKED_CAST")
+        val pending = values[5] as Message?
         val filtered = messages.filter { it.authorId !in blocked }
+        val withPending = if (pending != null) filtered + pending else filtered
         val replyVisible = reply?.takeUnless { it.authorId in blocked }
         val authorBlocked = thread != null && thread.authorId in blocked
         ThreadUiState(
             thread = thread,
-            messages = filtered,
+            messages = withPending,
             isLoading = false,
             replyTarget = replyVisible,
             shouldDismiss = dismiss || authorBlocked,
@@ -199,19 +217,25 @@ class ThreadViewModel(
         retryVideoUri = uri
         retryVideoAuthor = author
         videoJob = viewModelScope.launch {
-            _videoSend.value = VideoSendUi(phase = VideoSendPhase.Compressing)
+            val preview = withContext(Dispatchers.IO) { loadUriPoster(uri) }
+            _videoSend.value = VideoSendUi(phase = VideoSendPhase.Compressing, preview = preview)
             try {
                 when (val result = VideoCompressor.prepare(appContext, uri)) {
                     is VideoCompressor.Result.Err -> {
+                        _pendingOutgoing.value = null
                         _videoSend.value = VideoSendUi(
                             phase = VideoSendPhase.Failed,
                             detail = result.message,
+                            preview = preview,
                         )
                     }
                     is VideoCompressor.Result.Ok -> {
                         val mb = ((result.video.byteLength + 512 * 1024) / (1024 * 1024))
                             .toInt()
                             .coerceAtLeast(1)
+                        val filePreview = withContext(Dispatchers.IO) {
+                            loadFilePoster(result.video.file) ?: preview
+                        }
                         val needsConfirm = isMeteredNetwork(appContext) ||
                             result.video.byteLength >= LARGE_VIDEO_WARN_BYTES
                         if (needsConfirm) {
@@ -221,13 +245,15 @@ class ThreadViewModel(
                             _videoSend.value = VideoSendUi(
                                 phase = VideoSendPhase.ConfirmUpload,
                                 megabytes = mb,
+                                preview = filePreview,
                             )
                         } else {
-                            uploadPreparedVideo(result.video, author, mb)
+                            uploadPreparedVideo(result.video, author, mb, filePreview)
                         }
                     }
                 }
             } catch (_: CancellationException) {
+                _pendingOutgoing.value = null
                 _videoSend.value = VideoSendUi()
             }
         }
@@ -237,14 +263,16 @@ class ThreadViewModel(
         val video = pendingConfirmVideo ?: return
         val author = pendingConfirmAuthor ?: return
         val mb = _videoConfirmMb.value
+        val preview = _videoSend.value.preview
         pendingConfirmVideo = null
         pendingConfirmAuthor = null
         _videoConfirmMb.value = null
         videoJob = viewModelScope.launch {
             try {
-                uploadPreparedVideo(video, author, mb)
+                uploadPreparedVideo(video, author, mb, preview)
             } catch (_: CancellationException) {
                 video.file.delete()
+                _pendingOutgoing.value = null
                 _videoSend.value = VideoSendUi()
             }
         }
@@ -255,6 +283,7 @@ class ThreadViewModel(
         pendingConfirmVideo = null
         pendingConfirmAuthor = null
         _videoConfirmMb.value = null
+        _pendingOutgoing.value = null
         _videoSend.value = VideoSendUi()
     }
 
@@ -262,10 +291,27 @@ class ThreadViewModel(
         video: PreparedVideo,
         author: Author,
         megabytes: Int?,
+        preview: android.graphics.Bitmap?,
     ) {
         val mb = megabytes
             ?: ((video.byteLength + 512 * 1024) / (1024 * 1024)).toInt().coerceAtLeast(1)
-        _videoSend.value = VideoSendUi(phase = VideoSendPhase.Uploading, megabytes = mb)
+        _pendingOutgoing.value = Message(
+            id = "local:video-pending",
+            kind = MessageKind.VIDEO,
+            text = "",
+            authorId = author.uid,
+            authorName = author.displayName,
+            createdAt = Instant.now(),
+            videoPath = video.file.absolutePath,
+            videoDurationMs = video.durationMs,
+            videoWidth = video.width,
+            videoHeight = video.height,
+        )
+        _videoSend.value = VideoSendUi(
+            phase = VideoSendPhase.Uploading,
+            megabytes = mb,
+            preview = preview,
+        )
         val outcome = threadRepository.postVideoAwaiting(
             threadId = threadId,
             author = author,
@@ -285,13 +331,18 @@ class ThreadViewModel(
             },
         )
         _replyTarget.value = null
+        _pendingOutgoing.value = null
         if (outcome.isSuccess) {
             video.file.delete()
             _videoSend.value = VideoSendUi()
         } else {
             val detail = outcome.exceptionOrNull()?.message ?: "Video could not be sent"
             video.file.delete()
-            _videoSend.value = VideoSendUi(phase = VideoSendPhase.Failed, detail = detail)
+            _videoSend.value = VideoSendUi(
+                phase = VideoSendPhase.Failed,
+                detail = detail,
+                preview = preview,
+            )
         }
     }
 
@@ -308,7 +359,32 @@ class ThreadViewModel(
         pendingConfirmVideo = null
         pendingConfirmAuthor = null
         _videoConfirmMb.value = null
+        _pendingOutgoing.value = null
         _videoSend.value = VideoSendUi()
+    }
+
+    private fun loadUriPoster(uri: Uri): android.graphics.Bitmap? {
+        val retriever = android.media.MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(appContext, uri)
+            retriever.getFrameAtTime(0, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+        } catch (_: Exception) {
+            null
+        } finally {
+            runCatching { retriever.release() }
+        }
+    }
+
+    private fun loadFilePoster(file: java.io.File): android.graphics.Bitmap? {
+        val retriever = android.media.MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(file.absolutePath)
+            retriever.getFrameAtTime(0, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+        } catch (_: Exception) {
+            null
+        } finally {
+            runCatching { retriever.release() }
+        }
     }
 
     override fun onCleared() {

@@ -103,6 +103,8 @@ struct Message: Identifiable, Equatable, Sendable {
     var hasVoice: Bool { kind == .voice && audioPath != nil }
     var hasVideo: Bool { kind == .video && videoPath != nil }
     var isSticker: Bool { kind == .sticker }
+    /// Optimistic local send — not yet on the server.
+    var isLocalPending: Bool { id.hasPrefix("local:") }
 
     init(
         id: String,

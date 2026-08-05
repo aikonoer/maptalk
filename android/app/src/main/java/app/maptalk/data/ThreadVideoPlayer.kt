@@ -32,6 +32,10 @@ object ThreadVideoPlayer {
     var activePath: String? = null
         private set
 
+    @Volatile
+    var isMuted: Boolean = false
+        private set
+
     fun player(context: Context): ExoPlayer {
         player?.let { return it }
         synchronized(this) {
@@ -43,6 +47,7 @@ object ThreadVideoPlayer {
                 )
                 .build()
                 .also { created ->
+                    created.volume = if (isMuted) 0f else 1f
                     created.addListener(
                         object : Player.Listener {
                             override fun onPlaybackStateChanged(playbackState: Int) {
@@ -62,6 +67,7 @@ object ThreadVideoPlayer {
 
     fun play(context: Context, path: String) {
         val exo = player(context)
+        exo.volume = if (isMuted) 0f else 1f
         if (activePath == path && exo.isPlaying) {
             exo.pause()
             activePath = null
@@ -75,6 +81,11 @@ object ThreadVideoPlayer {
         exo.setMediaItem(MediaItem.fromUri(path))
         exo.prepare()
         exo.playWhenReady = true
+    }
+
+    fun toggleMute(context: Context) {
+        isMuted = !isMuted
+        player(context).volume = if (isMuted) 0f else 1f
     }
 
     fun pauseIfPlaying(path: String) {

@@ -31,9 +31,9 @@ Target for both platforms before upload:
 - [x] Retry with backoff on transient failures
 - [x] Cancel in-flight prepare/upload when leaving the thread
 - [x] Prefer streaming / signed PUT over full-body buffers (Worker + device RAM)
-  - Video: clients stream temp files via PUT; Worker pipes body to R2 then sniffs ≤2 MB
-  - Images/audio still POST buffered (small caps); true client→R2 presigned PUT still open
-
+  - Video: clients prefer `POST /v1/video/presign` → direct R2 PUT → `POST /v1/video/confirm`
+  - Falls back to Worker `PUT /v1/video` when R2 S3 secrets are unset
+  - Images/audio still POST buffered (small caps)
 ## 3. Abuse & integrity
 
 - [x] Server-side duration/size check from the file (not only client-written Firestore fields)
@@ -46,7 +46,7 @@ Target for both platforms before upload:
 
 - [x] Poster / first-frame thumbnail on bubbles (no black rectangle before play)
 - [x] Robust players (ExoPlayer / polished AVPlayer): buffering, pause others, mute
-- [x] Disk cache for recent clips
+  - Shared mute toggle; optimistic outgoing bubble + composer thumbnail while uploading- [x] Disk cache for recent clips
 - [x] Optional cellular / large-size warning (≥5 MB or metered/cellular)
 
 ## 5. Cost & CDN
@@ -76,12 +76,14 @@ Target for both platforms before upload:
 
 ---
 
-## Current slice (done)
-
-Bake iOS Live mode into Info.plist; Worker p50/p95 size + video duration samples.
-
 ## Still open
 
-- True client→R2 presigned PUT (needs R2 S3 API tokens)
+- True client→R2 presigned PUT — code ready; needs R2 S3 API token secrets on Worker:
+  - `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ACCOUNT_ID`
+  - Optional `R2_BUCKET_NAME` (defaults to `maptalk-media`)
+  - Until secrets are set, clients fall back to legacy Worker `PUT /v1/video`
 - Device matrix checkboxes + App Store / Play release
 
+## Current slice
+
+Video send UX (composer thumbnail, optimistic bubble, mute) + client→R2 presign path.

@@ -759,6 +759,7 @@ private fun MessageRow(
                                     durationMs = message.videoDurationMs ?: 0,
                                     width = message.videoWidth,
                                     height = message.videoHeight,
+                                    isSending = message.isLocalPending,
                                 )
                             }
                         }
@@ -798,20 +799,22 @@ private fun MessageRow(
             ) {
                 if (endsRun) {
                     Text(
-                        text = relativeTime(message.createdAt),
+                        text = if (message.isLocalPending) "Sending…" else relativeTime(message.createdAt),
                         style = MaterialTheme.typography.labelSmall,
                         color = MapTalkColors.Faint,
                         modifier = Modifier.padding(horizontal = 2.dp, vertical = 3.dp),
                     )
                 }
-                Text(
-                    text = "Reply",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MapTalkColors.Subtle,
-                    modifier = Modifier
-                        .clickable(onClick = onReply)
-                        .padding(vertical = 3.dp),
-                )
+                if (!message.isLocalPending) {
+                    Text(
+                        text = "Reply",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MapTalkColors.Subtle,
+                        modifier = Modifier
+                            .clickable(onClick = onReply)
+                            .padding(vertical = 3.dp),
+                    )
+                }
             }
         }
     }
@@ -864,6 +867,7 @@ private fun VideoBubble(
     durationMs: Int,
     width: Int?,
     height: Int?,
+    isSending: Boolean = false,
 ) {
     val context = LocalContext.current
     val displayWidth = 220.dp
@@ -874,42 +878,54 @@ private fun VideoBubble(
             160.dp
         }
     }
-    val playUri = remember(path, file?.absolutePath) {
+    val absoluteFile = remember(path, file?.absolutePath) {
+        when {
+            file != null && file.exists() -> file
+            path.startsWith("/") -> File(path).takeIf { it.exists() }
+            else -> null
+        }
+    }
+    val playUri = remember(path, absoluteFile?.absolutePath) {
         when {
             path.startsWith("http://") || path.startsWith("https://") -> path
-            file != null && file.exists() -> Uri.fromFile(file).toString()
+            absoluteFile != null -> Uri.fromFile(absoluteFile).toString()
             else -> null
         }
     }
     var isPlaying by remember(path) { mutableStateOf(false) }
     var isBuffering by remember(path) { mutableStateOf(false) }
-    val poster = remember(path, file?.absolutePath) {
-        loadVideoPoster(context, path, file)
+    var muted by remember { mutableStateOf(ThreadVideoPlayer.isMuted) }
+    val poster = remember(path, absoluteFile?.absolutePath) {
+        loadVideoPoster(context, path, absoluteFile)
     }
 
     DisposableEffect(path) {
-        val exo = ThreadVideoPlayer.player(context)
-        val listener = object : Player.Listener {
-            override fun onIsPlayingChanged(playing: Boolean) {
-                if (ThreadVideoPlayer.activePath == playUri) {
-                    isPlaying = playing
-                } else if (playing.not() && ThreadVideoPlayer.activePath != playUri) {
-                    isPlaying = false
+        if (isSending) {
+            onDispose { }
+        } else {
+            val exo = ThreadVideoPlayer.player(context)
+            val listener = object : Player.Listener {
+                override fun onIsPlayingChanged(playing: Boolean) {
+                    if (ThreadVideoPlayer.activePath == playUri) {
+                        isPlaying = playing
+                    } else if (playing.not() && ThreadVideoPlayer.activePath != playUri) {
+                        isPlaying = false
+                    }
                 }
-            }
 
-            override fun onPlaybackStateChanged(playbackState: Int) {
-                if (ThreadVideoPlayer.activePath != playUri) return
-                isBuffering = playbackState == Player.STATE_BUFFERING
-                if (playbackState == Player.STATE_ENDED) {
-                    isPlaying = false
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    if (ThreadVideoPlayer.activePath != playUri) return
+                    isBuffering = playbackState == Player.STATE_BUFFERING
+                    if (playbackState == Player.STATE_ENDED) {
+                        isPlaying = false
+                    }
                 }
             }
-        }
-        exo.addListener(listener)
-        onDispose {
-            exo.removeListener(listener)
-            playUri?.let { ThreadVideoPlayer.pauseIfPlaying(it) }
+            exo.addListener(listener)
+            onDispose {
+                exo.removeListener(listener)
+                playUri?.let { ThreadVideoPlayer.pauseIfPlaying(it) }
+            }
         }
     }
 
@@ -919,14 +935,17 @@ private fun VideoBubble(
             .height(displayHeight)
             .clip(RoundedCornerShape(14.dp))
             .background(Color.Black.copy(alpha = 0.35f))
-            .clickable {
-                val uri = playUri ?: return@clickable
-                ThreadVideoPlayer.play(context, uri)
-                isPlaying = ThreadVideoPlayer.activePath == uri
-            },
+            .then(
+                if (isSending) Modifier else Modifier.clickable {
+                    val uri = playUri ?: return@clickable
+                    ThreadVideoPlayer.play(context, uri)
+                    muted = ThreadVideoPlayer.isMuted
+                    isPlaying = ThreadVideoPlayer.activePath == uri
+                },
+            ),
         contentAlignment = Alignment.Center,
     ) {
-        if (poster != null && (!isPlaying || isBuffering)) {
+        if (poster != null && (!isPlaying || isBuffering || isSending)) {
             Image(
                 bitmap = poster.asImageBitmap(),
                 contentDescription = null,
@@ -934,7 +953,7 @@ private fun VideoBubble(
                 modifier = Modifier.fillMaxSize(),
             )
         }
-        if (isPlaying && playUri != null) {
+        if (isPlaying && playUri != null && !isSending) {
             AndroidView(
                 factory = { ctx ->
                     FrameLayout(ctx).apply {
@@ -959,6 +978,19 @@ private fun VideoBubble(
             )
         }
         when {
+            isSending -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                CircularProgressIndicator(
+                    color = Color.White,
+                    strokeWidth = 2.dp,
+                    modifier = Modifier.size(28.dp),
+                )
+                Text(
+                    text = "Sending…",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
             isBuffering && isPlaying -> {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     CircularProgressIndicator(
@@ -984,16 +1016,42 @@ private fun VideoBubble(
                     .padding(12.dp),
             )
         }
-        Text(
-            text = formatDuration(durationMs),
-            style = MaterialTheme.typography.labelSmall,
-            color = Color.White,
+        Row(
             modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(8.dp)
-                .background(Color.Black.copy(alpha = 0.55f), CircleShape)
-                .padding(horizontal = 8.dp, vertical = 4.dp),
-        )
+                .align(Alignment.BottomStart)
+                .fillMaxWidth()
+                .padding(8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (isPlaying && !isSending) {
+                Icon(
+                    painter = painterResource(
+                        if (muted) R.drawable.ic_volume_off else R.drawable.ic_volume,
+                    ),
+                    contentDescription = if (muted) "Unmute" else "Mute",
+                    tint = Color.White,
+                    modifier = Modifier
+                        .size(28.dp)
+                        .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                        .clickable {
+                            ThreadVideoPlayer.toggleMute(context)
+                            muted = ThreadVideoPlayer.isMuted
+                        }
+                        .padding(6.dp),
+                )
+            } else {
+                Box(modifier = Modifier.size(28.dp))
+            }
+            Text(
+                text = formatDuration(durationMs),
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.White,
+                modifier = Modifier
+                    .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+            )
+        }
     }
 }
 
@@ -1253,6 +1311,16 @@ private fun Composer(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
+                    videoSend.preview?.let { bmp ->
+                        Image(
+                            bitmap = bmp.asImageBitmap(),
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(RoundedCornerShape(8.dp)),
+                        )
+                    }
                     if (videoSend.isBusy) {
                         CircularProgressIndicator(
                             color = MapTalkColors.Accent,

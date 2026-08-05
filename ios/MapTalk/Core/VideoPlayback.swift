@@ -11,6 +11,7 @@ final class VideoPlaybackController {
     private(set) var currentURL: URL?
     private(set) var isPlaying = false
     private(set) var isBuffering = false
+    private(set) var isMuted = false
 
     private var endObserver: NSObjectProtocol?
     private var timeControlObservation: NSKeyValueObservation?
@@ -22,6 +23,7 @@ final class VideoPlaybackController {
         if currentURL == url, let player {
             self.onEnded = onEnded ?? self.onEnded
             isPlaying = true
+            player.isMuted = isMuted
             player.play()
             return
         }
@@ -32,6 +34,7 @@ final class VideoPlaybackController {
 
         let item = AVPlayerItem(url: url)
         let av = AVPlayer(playerItem: item)
+        av.isMuted = isMuted
         player = av
         isPlaying = true
         isBuffering = true
@@ -60,6 +63,11 @@ final class VideoPlaybackController {
         player?.pause()
         isPlaying = false
         isBuffering = false
+    }
+
+    func toggleMute() {
+        isMuted.toggle()
+        player?.isMuted = isMuted
     }
 
     func stop() {
