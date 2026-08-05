@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  surface_type is constructor-only, so the fullscreen player has to come from a
+  layout. A SurfaceView is composited outside the window and would not follow the
+  swipe-to-dismiss transform, so use a TextureView instead.
+-->
+<androidx.media3.ui.PlayerView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/transparent"
+    app:show_buffering="when_playing"
+    app:surface_type="texture_view" />

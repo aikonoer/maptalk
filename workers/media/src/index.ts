@@ -40,7 +40,7 @@ export interface Env {
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
 const MAX_AUDIO_BYTES = 1 * 1024 * 1024;
 const MAX_VIDEO_BYTES = 12 * 1024 * 1024;
-const MAX_VIDEO_DURATION_MS = 30_000;
+const MAX_VIDEO_DURATION_MS = 15_000;
 const KEY_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const RATE_WINDOW_MS = 10 * 60 * 1000;
 const RATE_MAX_TOTAL = 20;

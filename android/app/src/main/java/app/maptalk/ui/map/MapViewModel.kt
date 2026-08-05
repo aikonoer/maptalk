@@ -27,12 +27,14 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import app.maptalk.data.model.Message
 
 /** What the camera can see: where it is pointed and how far out it is zoomed. */
 data class CameraSnapshot(val center: GeoPoint, val radiusKm: Double)
@@ -105,6 +107,10 @@ class MapViewModel(
         position: GeoPoint,
         author: Author,
     ): String = threadRepository.createThread(title, kind, position, author)
+
+    /** Latest message for the long-press bubble peek. */
+    suspend fun peekMessages(threadId: String): List<Message> =
+        threadRepository.messages(threadId).first().takeLast(1)
 
     /**
      * Panning a map produces a continuous stream of positions. Re-subscribing Firestore for

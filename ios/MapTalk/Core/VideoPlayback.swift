@@ -12,9 +12,12 @@ final class VideoPlaybackController {
     private(set) var isPlaying = false
     private(set) var isBuffering = false
     private(set) var isMuted = false
+    private(set) var currentTimeMs: Int = 0
+    private(set) var durationMs: Int = 0
 
     private var endObserver: NSObjectProtocol?
     private var timeControlObservation: NSKeyValueObservation?
+    private var timeObserver: Any?
     private var onEnded: (() -> Void)?
 
     private init() {}
@@ -31,6 +34,8 @@ final class VideoPlaybackController {
         stopInternal(notifyEnded: false)
         self.onEnded = onEnded
         currentURL = url
+        currentTimeMs = 0
+        durationMs = 0
 
         let item = AVPlayerItem(url: url)
         let av = AVPlayer(playerItem: item)
@@ -56,6 +61,20 @@ final class VideoPlaybackController {
             }
         }
 
+        let interval = CMTime(seconds: 0.25, preferredTimescale: 600)
+        timeObserver = av.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
+            Task { @MainActor in
+                guard let self else { return }
+                self.currentTimeMs = Int((CMTimeGetSeconds(time) * 1_000).rounded())
+                if let item = self.player?.currentItem {
+                    let duration = CMTimeGetSeconds(item.duration)
+                    if duration.isFinite, duration > 0 {
+                        self.durationMs = Int((duration * 1_000).rounded())
+                    }
+                }
+            }
+        }
+
         av.play()
     }
 
@@ -63,6 +82,27 @@ final class VideoPlaybackController {
         player?.pause()
         isPlaying = false
         isBuffering = false
+    }
+
+    func togglePlayPause() {
+        guard let player else { return }
+        if isPlaying {
+            pause()
+        } else {
+            if currentTimeMs > 0, durationMs > 0, currentTimeMs >= durationMs - 200 {
+                seek(toMs: 0)
+            }
+            isPlaying = true
+            player.isMuted = isMuted
+            player.play()
+        }
+    }
+
+    func seek(toMs: Int) {
+        let ms = max(0, toMs)
+        let time = CMTime(value: CMTimeValue(ms), timescale: 1_000)
+        player?.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
+        currentTimeMs = ms
     }
 
     func toggleMute() {
@@ -81,6 +121,7 @@ final class VideoPlaybackController {
         player?.pause()
         isPlaying = false
         isBuffering = false
+        currentTimeMs = 0
         callback?()
     }
 
@@ -91,12 +132,18 @@ final class VideoPlaybackController {
         }
         timeControlObservation?.invalidate()
         timeControlObservation = nil
+        if let timeObserver, let player {
+            player.removeTimeObserver(timeObserver)
+        }
+        timeObserver = nil
 
         player?.pause()
         player = nil
         currentURL = nil
         isPlaying = false
         isBuffering = false
+        currentTimeMs = 0
+        durationMs = 0
 
         let callback = onEnded
         onEnded = nil

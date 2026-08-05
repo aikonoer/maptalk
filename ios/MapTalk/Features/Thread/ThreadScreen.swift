@@ -16,12 +16,10 @@ struct ThreadScreen: View {
     @State private var isPreparingImage = false
     @State private var videoSendPhase: VideoSendPhase = .idle
     @State private var videoFailDetail: String?
-    @State private var videoUploadMegabytes: Int?
     @State private var videoPreview: UIImage?
     @State private var pendingOutgoing: Message?
     @State private var videoTask: Task<Void, Never>?
     @State private var retryPreparedVideo: PreparedVideo?
-    @State private var pendingUploadConfirm: PendingVideoUpload?
     @State private var showStickers = false
     @State private var longPressTarget: Message?
     @State private var longPressFrame: CGRect = .zero
@@ -29,9 +27,17 @@ struct ThreadScreen: View {
     @State private var reportTarget: ReportSheetTarget?
     @State private var blockConfirm: BlockConfirm?
     @State private var reportThanks = false
+    @State private var showBackgroundPicker = false
+    @State private var pendingTrim: PendingVideoTrim?
+    @State private var fullscreenVideo: FullscreenVideoRoute?
+    @AppStorage(ChatBackgroundStore.key) private var backgroundId = ChatBackground.standard.rawValue
     @State private var recorder = VoiceRecorder()
     @FocusState private var isComposing: Bool
     @Environment(\.dismiss) private var dismiss
+
+    private var chatBackground: ChatBackground {
+        ChatBackground.from(id: backgroundId)
+    }
 
     private var threadErrorPresented: Binding<Bool> {
         Binding(
@@ -106,23 +112,6 @@ struct ThreadScreen: View {
             } message: {
                 Text("Their chats and messages will disappear for you. Unblock anytime from Settings.")
             }
-            .confirmationDialog(
-                "Send this video?",
-                isPresented: Binding(
-                    get: { pendingUploadConfirm != nil },
-                    set: { present in
-                        if !present { declinePendingVideoUpload() }
-                    }
-                ),
-                titleVisibility: .visible
-            ) {
-                Button("Send") { confirmPendingVideoUpload() }
-                Button("Cancel", role: .cancel) { declinePendingVideoUpload() }
-            } message: {
-                if let pending = pendingUploadConfirm {
-                    Text("About \(pending.megabytes) MB · up to 30 seconds. On cellular this uses mobile data.")
-                }
-            }
     }
 
     private var threadChrome: some View {
@@ -130,7 +119,10 @@ struct ThreadScreen: View {
             sheetHeader
             messages
         }
-        .background(Theme.base)
+        .background {
+            ChatBackgroundView(style: chatBackground)
+                .ignoresSafeArea()
+        }
         .safeAreaInset(edge: .bottom) { composer }
         .onAppear { model.start() }
         .onDisappear {
@@ -156,6 +148,45 @@ struct ThreadScreen: View {
         .sheet(item: $reportTarget) { target in
             reportSheet(for: target)
         }
+        .sheet(isPresented: $showBackgroundPicker) {
+            ChatBackgroundPicker(
+                selection: Binding(
+                    get: { chatBackground },
+                    set: { backgroundId = $0.rawValue }
+                )
+            )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+            .presentationBackground(Theme.base)
+        }
+        .sheet(item: $pendingTrim) { trim in
+            VideoTrimSheet(
+                sourceURL: trim.sourceURL,
+                durationMs: trim.durationMs,
+                onTrim: { startMs in
+                    let url = trim.sourceURL
+                    pendingTrim = nil
+                    videoTask = Task {
+                        await compressAndContinue(from: url, clipStartMs: startMs, deleteSourceWhenDone: true)
+                    }
+                },
+                onCancel: {
+                    try? FileManager.default.removeItem(at: trim.sourceURL)
+                    pendingTrim = nil
+                    videoSendPhase = .idle
+                    videoPreview = nil
+                }
+            )
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
+            .presentationBackground(Theme.base)
+            .interactiveDismissDisabled()
+        }
+        .fullScreenCover(item: $fullscreenVideo) { route in
+            FullscreenVideoViewer(path: route.path, durationMs: route.durationMs) {
+                fullscreenVideo = nil
+            }
+        }
     }
 
     private var sheetHeader: some View {
@@ -166,7 +197,7 @@ struct ThreadScreen: View {
                 .padding(.top, 10)
                 .padding(.bottom, 8)
 
-            HStack(alignment: .center, spacing: 12) {
+            HStack(alignment: .center, spacing: 10) {
                 Button {
                     dismiss()
                 } label: {
@@ -197,8 +228,15 @@ struct ThreadScreen: View {
 
     @ViewBuilder
     private var threadOptionsMenu: some View {
-        if let thread = model.thread, thread.authorId != author.uid {
-            Menu {
+        Menu {
+            ShareLink(item: ThreadLink.url(threadId: threadId)) {
+                Label("Share chat", systemImage: "square.and.arrow.up")
+            }
+            Button("Background", systemImage: "photo.on.rectangle") {
+                showBackgroundPicker = true
+            }
+            if let thread = model.thread, thread.authorId != author.uid {
+                Divider()
                 Button("Report chat", systemImage: "flag") {
                     reportTarget = .thread(thread)
                 }
@@ -208,17 +246,15 @@ struct ThreadScreen: View {
                         name: thread.authorName
                     )
                 }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Theme.subtle)
-                    .frame(width: 32, height: 32)
-                    .background(Theme.raised, in: Circle())
             }
-            .accessibilityLabel("Chat options")
-        } else {
-            Color.clear.frame(width: 32, height: 32)
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Theme.subtle)
+                .frame(width: 32, height: 32)
+                .background(Theme.raised, in: Circle())
         }
+        .accessibilityLabel("Chat options")
     }
 
     @ViewBuilder
@@ -278,32 +314,29 @@ struct ThreadScreen: View {
         .presentationBackground(Theme.surface)
     }
 
-    private func confirmPendingVideoUpload() {
-        guard let pending = pendingUploadConfirm else { return }
-        videoUploadMegabytes = pending.megabytes
-        pendingUploadConfirm = nil
-        videoTask = Task { await uploadPreparedVideo(pending.video) }
-    }
-
-    private func declinePendingVideoUpload() {
-        pendingUploadConfirm?.video.deleteTempFile()
-        pendingUploadConfirm = nil
-        if videoSendPhase == .confirmUpload { videoSendPhase = .idle }
-    }
-
     private var header: some View {
         VStack(spacing: 2) {
-            Text(model.thread?.title ?? "Chat")
-                .font(.cardTitle)
-                .foregroundStyle(Theme.text)
-                .lineLimit(1)
+            HStack(spacing: 6) {
+                if LiveNow.isLive(model.thread?.lastMessageAt) {
+                    Circle()
+                        .fill(Theme.accent)
+                        .frame(width: 7, height: 7)
+                    Text("Live")
+                        .font(.meta)
+                        .foregroundStyle(Theme.accent)
+                }
+                Text(model.thread?.title ?? "Chat")
+                    .font(.cardTitle)
+                    .foregroundStyle(Theme.text)
+                    .lineLimit(1)
+            }
 
             if let thread = model.thread {
                 HStack(spacing: 5) {
                     Text(thread.kind.glyph).font(.system(size: 9))
                     Text(thread.kind.label)
                         .foregroundStyle(thread.kind.tint)
-                    Text("\u{00b7} \(thread.authorName) \u{00b7} \(relativeTime(thread.createdAt))")
+                    Text("\u{00b7} \(thread.authorName)")
                         .foregroundStyle(Theme.faint)
                 }
                 .font(.meta)
@@ -333,6 +366,8 @@ struct ThreadScreen: View {
             }
             .padding(40)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .onTapGesture { isComposing = false }
         } else {
             ScrollViewReader { proxy in
                 ScrollView {
@@ -354,6 +389,13 @@ struct ThreadScreen: View {
                                 onToggleReaction: { emoji in
                                     guard !message.isLocalPending else { return }
                                     model.toggleReaction(emoji, on: message, as: author)
+                                },
+                                onOpenVideo: { path, durationMs in
+                                    isComposing = false
+                                    fullscreenVideo = FullscreenVideoRoute(
+                                        path: path,
+                                        durationMs: durationMs
+                                    )
                                 }
                             )
                             .id(message.id)
@@ -361,6 +403,14 @@ struct ThreadScreen: View {
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 16)
+                    .frame(maxWidth: .infinity)
+                    // Empty space under/around bubbles — tap dismisses the keyboard (Simulator
+                    // often did this for free; real devices need an explicit gesture).
+                    .background {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onTapGesture { isComposing = false }
+                    }
                 }
                 .scrollDismissesKeyboard(.interactively)
                 .onChange(of: displayedMessages.count) { _, _ in scroll(proxy, animated: true) }
@@ -424,7 +474,7 @@ struct ThreadScreen: View {
                 .padding(.top, 10)
             }
 
-            if let status = videoSendPhase.statusCopy(detail: videoFailDetail, megabytes: videoUploadMegabytes) {
+            if let status = videoSendPhase.statusCopy(detail: videoFailDetail) {
                 VideoSendStatusBanner(
                     status: status,
                     phase: videoSendPhase,
@@ -501,16 +551,10 @@ struct ThreadScreen: View {
                     .disabled(isPreparingImage || isPreparingVideo)
 
                     PhotosPicker(selection: $videoPickerItem, matching: .videos, photoLibrary: .shared()) {
-                        Group {
-                            if isPreparingVideo {
-                                ProgressView().tint(Theme.subtle)
-                            } else {
-                                Image(systemName: "video")
-                                    .font(.system(size: 18, weight: .semibold))
-                                    .foregroundStyle(Theme.subtle)
-                            }
-                        }
-                        .frame(width: 36, height: 40)
+                        Image(systemName: "video")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(isPreparingVideo ? Theme.faint : Theme.subtle)
+                            .frame(width: 36, height: 40)
                     }
                     .accessibilityLabel("Add a video")
                     .disabled(isPreparingImage || isPreparingVideo)
@@ -605,9 +649,9 @@ struct ThreadScreen: View {
 
     private func loadVideoItem(_ item: PhotosPickerItem) async {
         videoFailDetail = nil
-        videoUploadMegabytes = nil
         videoPreview = nil
         pendingOutgoing = nil
+        pendingTrim = nil
         videoSendPhase = .compressing
         defer { videoPickerItem = nil }
         guard let movie = try? await item.loadTransferable(type: PickedMovie.self) else {
@@ -617,22 +661,43 @@ struct ThreadScreen: View {
             }
             return
         }
-        defer { try? FileManager.default.removeItem(at: movie.url) }
         videoPreview = await Self.videoPoster(from: movie.url)
         if Task.isCancelled {
+            try? FileManager.default.removeItem(at: movie.url)
             videoSendPhase = .idle
             return
         }
-        switch await VideoCompressor.prepare(from: movie.url) {
-        case .failure(let error):
+        await compressAndContinue(from: movie.url, clipStartMs: nil, deleteSourceWhenDone: true)
+    }
+
+    private func compressAndContinue(
+        from sourceURL: URL,
+        clipStartMs: Int?,
+        deleteSourceWhenDone: Bool
+    ) async {
+        videoSendPhase = .compressing
+        let outcome = await VideoCompressor.prepare(from: sourceURL, clipStartMs: clipStartMs)
+        switch outcome {
+        case .needsTrim(let url, let durationMs):
+            // Keep source for the trimmer; don't delete here.
+            pendingTrim = PendingVideoTrim(sourceURL: url, durationMs: durationMs)
+            videoSendPhase = .idle
+        case .failed(let error):
+            if deleteSourceWhenDone {
+                try? FileManager.default.removeItem(at: sourceURL)
+            }
             guard !Task.isCancelled else {
                 videoSendPhase = .idle
                 return
             }
             videoFailDetail = error.localizedDescription
             videoSendPhase = .failed
-        case .success(let prepared):
+        case .ready(let prepared):
+            if deleteSourceWhenDone {
+                try? FileManager.default.removeItem(at: sourceURL)
+            }
             guard !Task.isCancelled else {
+                prepared.deleteTempFile()
                 videoSendPhase = .idle
                 return
             }
@@ -640,16 +705,7 @@ struct ThreadScreen: View {
             if videoPreview == nil {
                 videoPreview = await Self.videoPoster(from: prepared.fileURL)
             }
-            let mb = max(1, (prepared.byteCount + 512 * 1024) / (1024 * 1024))
-            videoUploadMegabytes = mb
-            let needsConfirm = NetworkExpense.isExpensiveOrConstrained
-                || prepared.byteCount >= 5 * 1024 * 1024
-            if needsConfirm {
-                pendingUploadConfirm = PendingVideoUpload(video: prepared, megabytes: mb)
-                videoSendPhase = .confirmUpload
-            } else {
-                await uploadPreparedVideo(prepared)
-            }
+            await uploadPreparedVideo(prepared)
         }
     }
 
@@ -686,7 +742,6 @@ struct ThreadScreen: View {
         } else {
             prepared.deleteTempFile()
             retryPreparedVideo = nil
-            videoUploadMegabytes = nil
             videoPreview = nil
             videoSendPhase = .idle
         }
@@ -703,13 +758,14 @@ struct ThreadScreen: View {
     private func cancelVideoSend() {
         videoTask?.cancel()
         videoTask = nil
-        pendingUploadConfirm?.video.deleteTempFile()
-        pendingUploadConfirm = nil
+        if let trim = pendingTrim {
+            try? FileManager.default.removeItem(at: trim.sourceURL)
+        }
+        pendingTrim = nil
         retryPreparedVideo?.deleteTempFile()
         retryPreparedVideo = nil
         pendingOutgoing = nil
         videoFailDetail = nil
-        videoUploadMegabytes = nil
         videoPreview = nil
         videoSendPhase = .idle
     }
@@ -718,7 +774,7 @@ struct ThreadScreen: View {
         let asset = AVURLAsset(url: url)
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: 220, height: 220)
+        generator.maximumSize = CGSize(width: 400, height: 400)
         let time = CMTime(seconds: 0.05, preferredTimescale: 600)
         guard let cg = try? await generator.image(at: time).image else { return nil }
         return UIImage(cgImage: cg)
@@ -1089,6 +1145,7 @@ private struct MessageRow: View {
     var isLifted: Bool = false
     let onLongPress: () -> Void
     let onToggleReaction: (String) -> Void
+    var onOpenVideo: (String, Int) -> Void = { _, _ in }
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -1186,7 +1243,10 @@ private struct MessageRow: View {
                         durationMs: message.videoDurationMs ?? 0,
                         width: message.videoWidth,
                         height: message.videoHeight,
-                        isSending: message.isLocalPending
+                        isSending: message.isLocalPending,
+                        onOpenFullscreen: {
+                            onOpenVideo(path, message.videoDurationMs ?? 0)
+                        }
                     )
                 }
 
@@ -1382,7 +1442,6 @@ private struct FullscreenImageViewer: View {
 private enum VideoSendPhase {
     case idle
     case compressing
-    case confirmUpload
     case uploading
     case failed
 
@@ -1391,19 +1450,18 @@ private enum VideoSendPhase {
         let subtitle: String?
     }
 
-    func statusCopy(detail: String?, megabytes: Int?) -> StatusCopy? {
+    func statusCopy(detail: String?) -> StatusCopy? {
         switch self {
-        case .idle, .confirmUpload:
+        case .idle:
             return nil
         case .compressing:
-            return StatusCopy(title: "Preparing video…", subtitle: "Compressing to under 30 seconds")
+            return StatusCopy(title: "Getting your video ready…", subtitle: "Almost there")
         case .uploading:
-            let sub = megabytes.map { "About \($0) MB" }
-            return StatusCopy(title: "Sending video…", subtitle: sub)
+            return StatusCopy(title: "Sending…", subtitle: nil)
         case .failed:
             return StatusCopy(
-                title: detail ?? "Video could not be sent",
-                subtitle: "Retry or pick another clip"
+                title: detail ?? "Couldn’t send that video",
+                subtitle: "Try again, or pick a different one"
             )
         }
     }
@@ -1418,24 +1476,27 @@ private struct VideoSendStatusBanner: View {
     let onRetry: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                if let preview {
-                    Image(uiImage: preview)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(width: 44, height: 44)
-                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Theme.raised)
+                        .frame(width: 52, height: 52)
+                    if let preview {
+                        Image(uiImage: preview)
+                            .resizable()
+                            .interpolation(.high)
+                            .scaledToFill()
+                            .frame(width: 52, height: 52)
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    } else {
+                        Image(systemName: "video.fill")
+                            .foregroundStyle(Theme.subtle)
+                    }
                 }
-                if isBusy {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(Theme.accent)
-                }
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 3) {
                     Text(status.title)
-                        .font(.meta)
-                        .fontWeight(.semibold)
+                        .font(.control)
                         .foregroundStyle(phase == .failed ? Theme.danger : Theme.text)
                     if let subtitle = status.subtitle {
                         Text(subtitle)
@@ -1449,7 +1510,7 @@ private struct VideoSendStatusBanner: View {
                         .font(.meta)
                         .foregroundStyle(Theme.subtle)
                 } else if phase == .failed {
-                    Button("Retry", action: onRetry)
+                    Button("Try again", action: onRetry)
                         .font(.meta)
                         .foregroundStyle(Theme.accent)
                     Button("Dismiss", action: onCancel)
@@ -1458,19 +1519,51 @@ private struct VideoSendStatusBanner: View {
                 }
             }
             if isBusy {
-                ProgressView()
-                    .progressViewStyle(.linear)
-                    .tint(Theme.accent)
+                BusyBar()
             }
         }
-        .padding(.horizontal, 14)
+        .padding(12)
+        .background(Theme.raised, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(isBusy ? Theme.accent.opacity(0.45) : Theme.hairline, lineWidth: 1)
+        }
+        .padding(.horizontal, 12)
         .padding(.top, 8)
     }
 }
 
-private struct PendingVideoUpload {
-    let video: PreparedVideo
-    let megabytes: Int
+/// Looping bar for work with no measurable progress. The linear `ProgressView`
+/// style has no indeterminate mode on iOS, so it just sits there at zero.
+private struct BusyBar: View {
+    @State private var slid = false
+
+    var body: some View {
+        GeometryReader { geo in
+            let track = geo.size.width
+            let pill = max(48, track * 0.4)
+            Capsule()
+                .fill(Theme.accent)
+                .frame(width: pill, height: 4)
+                .offset(x: slid ? track - pill : 0)
+                .animation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true), value: slid)
+        }
+        .frame(height: 4)
+        .background(Theme.accent.opacity(0.18), in: Capsule())
+        .onAppear { slid = true }
+    }
+}
+
+private struct PendingVideoTrim: Identifiable {
+    let id = UUID()
+    let sourceURL: URL
+    let durationMs: Int
+}
+
+private struct FullscreenVideoRoute: Identifiable {
+    let id = UUID()
+    let path: String
+    let durationMs: Int
 }
 
 private struct VideoBubble: View {
@@ -1479,13 +1572,9 @@ private struct VideoBubble: View {
     let width: Int?
     let height: Int?
     var isSending: Bool = false
+    var onOpenFullscreen: () -> Void = {}
 
     @State private var poster: UIImage?
-    @State private var isPreparing = false
-    @State private var activePlayURL: URL?
-    @State private var playTask: Task<Void, Never>?
-
-    private let playback = VideoPlaybackController.shared
 
     private var mediaURL: URL? {
         if path.hasPrefix("http://") || path.hasPrefix("https://") {
@@ -1500,91 +1589,48 @@ private struct VideoBubble: View {
         return LocalMediaStore.url(forRelativePath: path)
     }
 
-    private var isThisPlaying: Bool {
-        playback.isPlaying && playback.currentURL == activePlayURL
-    }
-
-    private var showBusy: Bool {
-        isPreparing || (isThisPlaying && playback.isBuffering)
-    }
-
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
+        ZStack {
             Color.black.opacity(0.35)
 
-            if isThisPlaying, let player = playback.player {
-                VideoPlayer(player: player)
-                    .disabled(true)
-            } else if let poster {
+            if let poster {
                 Image(uiImage: poster)
                     .resizable()
+                    .interpolation(.high)
                     .scaledToFill()
             }
 
             if isSending {
-                Color.black.opacity(0.45)
-                VStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.regular)
-                        .tint(.white)
-                    Text("Sending…")
-                        .font(.meta)
-                        .foregroundStyle(.white)
-                }
-            } else if showBusy {
-                VStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.regular)
-                        .tint(.white)
-                    Text(isPreparing ? "Loading…" : "Buffering…")
-                        .font(.meta)
-                        .foregroundStyle(.white.opacity(0.9))
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if !isThisPlaying {
-                Image(systemName: "play.circle.fill")
-                    .font(.system(size: 44))
-                    .foregroundStyle(.white.opacity(0.9))
-                    .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
-            }
-
-            HStack {
-                if isThisPlaying && !isSending {
-                    Button {
-                        playback.toggleMute()
-                    } label: {
-                        Image(systemName: playback.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(.black.opacity(0.55), in: Capsule())
+                Color.black.opacity(0.5)
+                Text("Sending…")
+                    .font(.meta)
+                    .foregroundStyle(.white)
+            } else {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 20, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 54, height: 54)
+                    .background(.black.opacity(0.45), in: Circle())
+                    .overlay {
+                        Circle().strokeBorder(.white.opacity(0.5), lineWidth: 1.5)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(playback.isMuted ? "Unmute" : "Mute")
-                }
-                Spacer(minLength: 0)
+                    .shadow(color: .black.opacity(0.3), radius: 8, y: 2)
+
                 Text(Self.format(durationMs))
                     .font(.meta)
                     .foregroundStyle(.white)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(.black.opacity(0.55), in: Capsule())
+                    .padding(8)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
             }
-            .padding(8)
         }
         .frame(width: displayWidth, height: displayHeight)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .onTapGesture { if !isSending { toggle() } }
+        .onTapGesture { if !isSending { onOpenFullscreen() } }
         .task(id: path) { await loadPoster() }
-        .onDisappear {
-            playTask?.cancel()
-            playTask = nil
-            if playback.currentURL == activePlayURL {
-                playback.pause()
-            }
-        }
         .accessibilityLabel(isSending ? "Sending video" : "Video, \(Self.format(durationMs))")
         .accessibilityAddTraits(isSending ? [] : .isButton)
     }
@@ -1600,35 +1646,13 @@ private struct VideoBubble: View {
         let asset = AVURLAsset(url: url)
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: 440, height: 440)
+        // Bubbles are 220pt wide, so a 3x screen needs ~660px on the short edge
+        // after scaledToFill crops. Uploads are capped at 720p, so this keeps
+        // the frame at its native size instead of downsampling it.
+        generator.maximumSize = CGSize(width: 1280, height: 1280)
         let time = CMTime(seconds: 0.05, preferredTimescale: 600)
         guard let cg = try? await generator.image(at: time).image else { return }
         poster = UIImage(cgImage: cg)
-    }
-
-    private func toggle() {
-        if isThisPlaying {
-            playback.pause()
-            return
-        }
-
-        guard let url = mediaURL else { return }
-        playTask?.cancel()
-        playTask = Task {
-            isPreparing = true
-            defer { isPreparing = false }
-
-            let playURL: URL
-            if let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" {
-                playURL = await VideoCache.localURL(for: url)
-            } else {
-                playURL = url
-            }
-            guard !Task.isCancelled else { return }
-
-            activePlayURL = playURL
-            playback.play(url: playURL)
-        }
     }
 
     private static func format(_ ms: Int) -> String {

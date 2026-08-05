@@ -1,9 +1,12 @@
 package app.maptalk.ui.map
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
@@ -16,6 +19,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import app.maptalk.core.LiveNow
 import app.maptalk.data.model.ChatThread
 import app.maptalk.geo.GeoCluster
 import app.maptalk.ui.relativeTime
@@ -61,12 +65,17 @@ fun ThreadBubbleMarker(
 
 @Composable
 private fun ThreadBubble(thread: ChatThread) {
+    val live = LiveNow.isLive(thread.lastMessageAt)
     Surface(
         shape = BubbleShape,
         color = MapTalkColors.Surface,
         contentColor = MapTalkColors.Text,
         shadowElevation = 6.dp,
-        modifier = Modifier.border(1.dp, MapTalkColors.Hairline, BubbleShape),
+        modifier = Modifier.border(
+            1.dp,
+            if (live) MapTalkColors.Accent.copy(alpha = 0.55f) else MapTalkColors.Hairline,
+            BubbleShape,
+        ),
     ) {
         Row(
             modifier = Modifier
@@ -75,6 +84,13 @@ private fun ThreadBubble(thread: ChatThread) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(7.dp),
         ) {
+            if (live) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .background(MapTalkColors.Accent, CircleShape),
+                )
+            }
             Text(text = thread.kind.glyph, style = MaterialTheme.typography.labelSmall)
             Text(
                 text = thread.title,
@@ -94,9 +110,9 @@ private fun ThreadBubble(thread: ChatThread) {
                 }
             }
             Text(
-                text = relativeTime(thread.lastMessageAt),
+                text = if (live) "Live" else relativeTime(thread.lastMessageAt),
                 style = MaterialTheme.typography.labelSmall,
-                color = MapTalkColors.Faint,
+                color = if (live) MapTalkColors.Accent else MapTalkColors.Faint,
             )
         }
     }

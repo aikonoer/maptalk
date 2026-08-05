@@ -71,9 +71,8 @@ Target for both platforms before upload:
   - [ ] Portrait clip encode + play
   - [ ] Landscape clip encode + play
   - [ ] HEVC camera roll → H.264 upload envelope
-  - [ ] Short (~3s) and near-limit (~28s) clips
+  - [ ] Short (~3s) and near-limit (~14s) clips
   - [ ] Offline / airplane during upload → clear error + retry
-  - [ ] Cellular / ≥5 MB confirm dialog
   - [ ] Pause-others when a second bubble plays
   - [ ] Mute / unmute on a playing bubble
   - [ ] Optimistic “Sending…” bubble + composer thumbnail while uploading

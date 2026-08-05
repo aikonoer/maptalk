@@ -297,15 +297,15 @@ final class ThreadRepository {
         let raw = error.localizedDescription
         let message: String
         if raw.contains("413") || raw.contains("bad_size") {
-            message = "Video is too large to upload"
+            message = "That one’s a bit big — try a shorter clip"
         } else if raw.contains("bad_duration") || raw.contains("duration_mismatch") {
-            message = "Keep videos under 30 seconds"
+            message = "Pick up to 15 seconds of your video"
         } else if raw.contains("415") || raw.contains("bad_magic") || raw.contains("unsupported_type") {
-            message = "That video format is not supported"
+            message = "Hmm, that video type won’t work. Try another?"
         } else if raw.contains("429") || raw.contains("rate_limited") {
-            message = "Slow down — try again in a minute"
+            message = "Whoa, slow down — try again in a minute"
         } else if raw.contains("401") || raw.contains("invalid_token") {
-            message = "Sign in again to send video"
+            message = "Sign in again to send your video"
         } else {
             return error
         }

@@ -57,6 +57,9 @@ struct MapTalkApp: App {
             RootView(environment: environment)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
+                .onOpenURL { url in
+                    DeepLinkBus.shared.offer(ThreadLink.threadId(from: url))
+                }
         }
     }
 }

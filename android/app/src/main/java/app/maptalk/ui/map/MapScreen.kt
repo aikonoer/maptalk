@@ -4,6 +4,15 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
+import kotlin.math.roundToInt
+import app.maptalk.data.model.Message
+import app.maptalk.data.model.ChatThread
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -52,6 +61,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.maptalk.R
 import app.maptalk.appContainer
+import app.maptalk.core.DeepLinkBus
 import app.maptalk.data.LocalDemoStore
 import app.maptalk.data.model.Author
 import app.maptalk.geo.GeoPoint
@@ -75,7 +85,7 @@ private const val WORLD_ZOOM = 2.2f
 private const val NEARBY_ZOOM = 14f
 private const val CLUSTER_ZOOM_STEP = 3f
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun MapScreen(
     author: Author,
@@ -148,9 +158,19 @@ fun MapScreen(
     var showNewThreadSheet by remember { mutableStateOf(false) }
     var openThreadId by remember { mutableStateOf<String?>(null) }
     var showSettings by remember { mutableStateOf(false) }
+    var previewThread by remember { mutableStateOf<ChatThread?>(null) }
+    var previewLatest by remember { mutableStateOf<Message?>(null) }
+    var previewLoading by remember { mutableStateOf(false) }
+    var previewCluster by remember { mutableStateOf<List<ChatThread>?>(null) }
     val newThreadSheetState = rememberModalBottomSheetState()
     val threadSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val settingsSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val pendingDeepLink by DeepLinkBus.pendingThreadId.collectAsStateWithLifecycle()
+
+    LaunchedEffect(pendingDeepLink) {
+        val id = DeepLinkBus.consume() ?: return@LaunchedEffect
+        openThreadId = id
+    }
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -193,6 +213,7 @@ fun MapScreen(
                             onClick = {
                                 val single = bubble.single
                                 if (single != null) {
+                                    // Fallback if the Compose hit overlay misses the bitmap.
                                     openThreadId = single.id
                                 } else {
                                     scope.launch {
@@ -207,6 +228,67 @@ fun MapScreen(
                             },
                         )
                     }
+                }
+            }
+
+            // Invisible hit targets over bubbles — MarkerComposable is a bitmap, so
+            // long-press has to live in Compose, not the Maps SDK.
+            val projection = cameraPositionState.projection
+            val density = LocalDensity.current
+            // Recompose hit targets when the camera moves.
+            @Suppress("UNUSED_VARIABLE")
+            val cameraTick = cameraPositionState.position
+            if (projection != null) {
+                state.bubbles.forEach { bubble ->
+                    val screen = projection.toScreenLocation(
+                        LatLng(bubble.position.lat, bubble.position.lng),
+                    )
+                    val single = bubble.single
+                    val hitW = with(density) { if (single != null) 176.dp.toPx() else 108.dp.toPx() }
+                    val hitH = with(density) { 52.dp.toPx() }
+                    Box(
+                        modifier = Modifier
+                            .offset {
+                                IntOffset(
+                                    (screen.x - hitW / 2f).roundToInt(),
+                                    (screen.y - hitH).roundToInt(),
+                                )
+                            }
+                            .size(if (single != null) 176.dp else 108.dp, 52.dp)
+                            .combinedClickable(
+                                onClick = {
+                                    if (single != null) {
+                                        openThreadId = single.id
+                                    } else {
+                                        scope.launch {
+                                            cameraPositionState.animate(
+                                                CameraUpdateFactory.newLatLngZoom(
+                                                    LatLng(bubble.position.lat, bubble.position.lng),
+                                                    cameraPositionState.position.zoom + CLUSTER_ZOOM_STEP,
+                                                ),
+                                            )
+                                        }
+                                    }
+                                },
+                                onLongClick = {
+                                    if (single != null) {
+                                        previewCluster = null
+                                        previewThread = single
+                                        previewLatest = null
+                                        previewLoading = true
+                                        scope.launch {
+                                            previewLatest = viewModel.peekMessages(single.id).lastOrNull()
+                                            previewLoading = false
+                                        }
+                                    } else {
+                                        previewThread = null
+                                        previewLatest = null
+                                        previewLoading = false
+                                        previewCluster = bubble.items
+                                    }
+                                },
+                            ),
+                    )
                 }
             }
 
@@ -253,6 +335,62 @@ fun MapScreen(
                     .align(Alignment.BottomStart)
                     .padding(start = 16.dp, bottom = padding.calculateBottomPadding() + 20.dp),
             )
+
+            if (previewThread != null || previewCluster != null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.4f))
+                        .clickable {
+                            previewThread = null
+                            previewLatest = null
+                            previewCluster = null
+                        },
+                )
+                val thread = previewThread
+                val cluster = previewCluster
+                when {
+                    thread != null -> {
+                        BubblePreviewCard(
+                            thread = thread,
+                            latest = previewLatest,
+                            isLoading = previewLoading,
+                            onOpen = {
+                                // Clear peek before the sheet so it doesn't float during transition.
+                                previewThread = null
+                                previewLatest = null
+                                previewCluster = null
+                                openThreadId = thread.id
+                            },
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(
+                                    start = 14.dp,
+                                    end = 14.dp,
+                                    bottom = padding.calculateBottomPadding() + 16.dp,
+                                ),
+                        )
+                    }
+                    cluster != null -> {
+                        ClusterPreviewCard(
+                            threads = cluster,
+                            onOpen = { opened ->
+                                previewThread = null
+                                previewLatest = null
+                                previewCluster = null
+                                openThreadId = opened.id
+                            },
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(
+                                    start = 14.dp,
+                                    end = 14.dp,
+                                    bottom = padding.calculateBottomPadding() + 16.dp,
+                                ),
+                        )
+                    }
+                }
+            }
         }
     }
 

@@ -39,5 +39,16 @@
 	<!-- Expanded from the MAPTALK_MODE build setting (local / live). -->
 	<key>MapTalkMode</key>
 	<string>$(MAPTALK_MODE)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>app.maptalk</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>maptalk</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

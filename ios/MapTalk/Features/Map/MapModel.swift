@@ -99,4 +99,12 @@ final class MapModel {
     func createThread(title: String, kind: ThreadKind, position: GeoPoint, author: Author) -> String {
         repository.createThread(title: title, kind: kind, position: position, author: author)
     }
+
+    /// Latest messages for the long-press bubble peek (caller uses `.last`).
+    func peekMessages(threadId: String) async -> [Message] {
+        for await messages in repository.messages(threadId: threadId) {
+            return Array(messages.suffix(1))
+        }
+        return []
+    }
 }

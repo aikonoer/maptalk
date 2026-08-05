@@ -1,5 +1,6 @@
 import MapKit
 import SwiftUI
+import UIKit
 
 private let worldRegion = MKCoordinateRegion(
     center: CLLocationCoordinate2D(latitude: 20, longitude: 10),
@@ -25,6 +26,11 @@ struct MapScreen: View {
     @State private var openThreadId: String?
     @State private var showSettings = false
     @State private var isComposing = false
+    @State private var previewThread: ChatThread?
+    @State private var previewLatest: Message?
+    @State private var previewLoading = false
+    @State private var previewCluster: [ChatThread]?
+    @State private var previewTask: Task<Void, Never>?
     /// Consumed by the next fix that arrives, so the map centres on you once at launch and again
     /// whenever you ask, but a late fix never yanks the camera away while you are panning.
     @State private var wantsToCenterOnUser = !Self.startsInDemo
@@ -62,11 +68,41 @@ struct MapScreen: View {
     private var location: LocationProvider { environment.locationProvider }
 
     var body: some View {
-        ZStack {
+        let pendingDeepLink = DeepLinkBus.shared.pendingThreadId
+        return ZStack {
             map
             crosshair
             overlay
+            if previewThread != nil || previewCluster != nil {
+                Color.black.opacity(0.4)
+                    .ignoresSafeArea()
+                    .onTapGesture { dismissPreview() }
+                    .transition(.opacity)
+
+                VStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    Group {
+                        if let thread = previewThread {
+                            BubblePreviewCard(
+                                thread: thread,
+                                latest: previewLatest,
+                                isLoading: previewLoading,
+                                onOpen: { openFromPreview(thread.id) }
+                            )
+                        } else if let cluster = previewCluster {
+                            ClusterPreviewCard(threads: cluster) { thread in
+                                openFromPreview(thread.id)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 14)
+                }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
+        .animation(.spring(duration: 0.34, bounce: 0.12), value: previewThread?.id)
+        .animation(.spring(duration: 0.34, bounce: 0.12), value: previewCluster?.count)
         .sheet(item: openThreadBinding) { route in
             ThreadScreen(
                 environment: environment,
@@ -124,9 +160,24 @@ struct MapScreen: View {
                 location.locateMe()
             }
             centerOnUserIfWanted()
+            openPendingDeepLink()
         }
         .onDisappear { model.stop() }
         .onChange(of: location.lastLocation) { _, _ in centerOnUserIfWanted() }
+        .onChange(of: pendingDeepLink) { _, _ in
+            openPendingDeepLink()
+        }
+    }
+
+    private func openPendingDeepLink() {
+        if let pushId = PushTokenBridge.shared.pendingThreadId {
+            PushTokenBridge.shared.pendingThreadId = nil
+            openThreadId = pushId
+            return
+        }
+        if let id = DeepLinkBus.shared.consume() {
+            openThreadId = id
+        }
     }
 
     private var map: some View {
@@ -135,7 +186,18 @@ struct MapScreen: View {
             ForEach(model.bubbles) { bubble in
                 Annotation("", coordinate: bubble.position.coordinate, anchor: .bottom) {
                     BubbleMarker(bubble: bubble)
-                        .onTapGesture { open(bubble) }
+                        .modifier(
+                            BubblePressModifier(
+                                onTap: { open(bubble) },
+                                onLongPress: {
+                                    if let thread = bubble.single {
+                                        presentPreview(thread)
+                                    } else {
+                                        presentClusterPreview(bubble.items)
+                                    }
+                                }
+                            )
+                        )
                 }
             }
         }
@@ -320,16 +382,131 @@ struct MapScreen: View {
             )
         }
     }
+
+    private func presentPreview(_ thread: ChatThread) {
+        previewCluster = nil
+        previewLatest = nil
+        previewLoading = true
+        previewTask?.cancel()
+        withAnimation(.spring(duration: 0.34, bounce: 0.12)) {
+            previewThread = thread
+        }
+        previewTask = Task {
+            let messages = await model.peekMessages(threadId: thread.id)
+            guard !Task.isCancelled else { return }
+            previewLatest = messages.last
+            previewLoading = false
+        }
+    }
+
+    private func presentClusterPreview(_ threads: [ChatThread]) {
+        previewTask?.cancel()
+        previewTask = nil
+        previewLatest = nil
+        previewLoading = false
+        previewThread = nil
+        withAnimation(.spring(duration: 0.34, bounce: 0.12)) {
+            previewCluster = threads
+        }
+    }
+
+    /// Clear the peek first so it doesn't float over the opening thread sheet.
+    private func openFromPreview(_ threadId: String) {
+        var instant = Transaction()
+        instant.disablesAnimations = true
+        withTransaction(instant) {
+            previewTask?.cancel()
+            previewTask = nil
+            previewThread = nil
+            previewCluster = nil
+            previewLatest = nil
+            previewLoading = false
+        }
+        openThreadId = threadId
+    }
+
+    private func dismissPreview() {
+        previewTask?.cancel()
+        previewTask = nil
+        withAnimation(.easeOut(duration: 0.2)) {
+            previewThread = nil
+            previewCluster = nil
+        }
+        previewLatest = nil
+        previewLoading = false
+    }
+}
+
+/// MapKit eats SwiftUI `LongPressGesture` on annotations. A zero-distance drag that
+/// times out into a long-press still receives touches on the bubble view itself.
+private struct BubblePressModifier: ViewModifier {
+    let onTap: () -> Void
+    let onLongPress: () -> Void
+
+    @State private var holdTask: Task<Void, Never>?
+    @State private var didFireLongPress = false
+
+    func body(content: Content) -> some View {
+        content
+            .contentShape(Rectangle())
+            .scaleEffect(holdTask != nil && !didFireLongPress ? 0.96 : 1)
+            .animation(.easeOut(duration: 0.12), value: holdTask != nil)
+            .gesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                    .onChanged { value in
+                        if holdTask == nil && !didFireLongPress {
+                            holdTask = Task { @MainActor in
+                                try? await Task.sleep(for: .milliseconds(380))
+                                guard !Task.isCancelled else { return }
+                                didFireLongPress = true
+                                holdTask = nil
+                                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                                onLongPress()
+                            }
+                        }
+                        let moved = hypot(value.translation.width, value.translation.height) > 12
+                        if moved {
+                            holdTask?.cancel()
+                            holdTask = nil
+                        }
+                    }
+                    .onEnded { value in
+                        let moved = hypot(value.translation.width, value.translation.height) > 12
+                        let wasHolding = holdTask != nil
+                        holdTask?.cancel()
+                        holdTask = nil
+                        if !didFireLongPress && !moved && wasHolding {
+                            onTap()
+                        }
+                        didFireLongPress = false
+                    }
+            )
+    }
 }
 
 /// A marker drawn as a chat bubble: the thread's title when it stands alone, a count when
 /// several threads share a geohash cell at this zoom.
 private struct BubbleMarker: View {
     let bubble: GeoCluster<ChatThread>
+    @State private var pulse = false
 
     var body: some View {
         if let thread = bubble.single {
+            let live = LiveNow.isLive(thread.lastMessageAt)
             HStack(spacing: 7) {
+                if live {
+                    Circle()
+                        .fill(Theme.accent)
+                        .frame(width: 8, height: 8)
+                        .scaleEffect(pulse ? 1.35 : 1)
+                        .opacity(pulse ? 0.55 : 1)
+                        .animation(
+                            .easeInOut(duration: 0.9).repeatForever(autoreverses: true),
+                            value: pulse
+                        )
+                        .onAppear { pulse = true }
+                }
+
                 Text(thread.kind.glyph)
                     .font(.system(size: 13))
 
@@ -347,9 +524,9 @@ private struct BubbleMarker: View {
                         .background(thread.kind.tint.opacity(0.16), in: Capsule())
                 }
 
-                Text(relativeTime(thread.lastMessageAt))
+                Text(live ? "Live" : relativeTime(thread.lastMessageAt))
                     .font(.meta)
-                    .foregroundStyle(Theme.faint)
+                    .foregroundStyle(live ? Theme.accent : Theme.faint)
             }
             .padding(.leading, 10)
             .padding(.trailing, 9)
@@ -357,7 +534,10 @@ private struct BubbleMarker: View {
             .frame(maxWidth: 200)
             .background(Theme.surface, in: Theme.bubble(radius: 14))
             .overlay {
-                Theme.bubble(radius: 14).strokeBorder(Theme.hairline, lineWidth: 1)
+                Theme.bubble(radius: 14).strokeBorder(
+                    live ? Theme.accent.opacity(0.55) : Theme.hairline,
+                    lineWidth: 1
+                )
             }
             .shadow(color: .black.opacity(0.45), radius: 8, y: 3)
         } else {

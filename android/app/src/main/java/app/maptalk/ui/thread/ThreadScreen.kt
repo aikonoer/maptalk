@@ -1,6 +1,7 @@
 package app.maptalk.ui.thread
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.media.MediaPlayer
@@ -23,6 +24,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -51,6 +53,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -76,8 +80,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import app.maptalk.core.ThreadLink
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
@@ -139,16 +145,22 @@ fun ThreadScreen(
     val isPreparingImage by viewModel.isPreparingImage.collectAsStateWithLifecycle()
     val isPreparingVideo by viewModel.isPreparingVideo.collectAsStateWithLifecycle()
     val videoSend by viewModel.videoSend.collectAsStateWithLifecycle()
-    val videoConfirmMb by viewModel.videoConfirmMb.collectAsStateWithLifecycle()
+    val videoTrim by viewModel.videoTrim.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
     var pendingImage by remember { mutableStateOf<PreparedImage?>(null) }
     var fullscreenPath by remember { mutableStateOf<String?>(null) }
+    var fullscreenVideoPath by remember { mutableStateOf<String?>(null) }
     var showStickers by remember { mutableStateOf(false) }
     var longPressTarget by remember { mutableStateOf<Message?>(null) }
     var reportTarget by remember { mutableStateOf<ReportTarget?>(null) }
     var blockConfirm by remember { mutableStateOf<Pair<String, String>?>(null) }
     var reportThanks by remember { mutableStateOf(false) }
+    var showBackgroundPicker by remember { mutableStateOf(false) }
+    var showThreadMenu by remember { mutableStateOf(false) }
+    var chatBackground by remember {
+        mutableStateOf(ChatBackgroundStore.current(context))
+    }
     var isRecording by remember { mutableStateOf(false) }
     var recordElapsedMs by remember { mutableIntStateOf(0) }
     var recorder by remember { mutableStateOf<MediaRecorder?>(null) }
@@ -255,6 +267,22 @@ fun ThreadScreen(
         )
     }
 
+    fullscreenVideoPath?.let { path ->
+        FullscreenVideoPlayer(
+            path = path,
+            onDismiss = { fullscreenVideoPath = null },
+        )
+    }
+
+    videoTrim?.let { trim ->
+        VideoTrimSheet(
+            uri = trim.uri,
+            durationMs = trim.durationMs,
+            onConfirm = viewModel::confirmVideoTrim,
+            onDismiss = viewModel::declineVideoTrim,
+        )
+    }
+
     longPressTarget?.let { message ->
         MessageLongPressDialog(
             message = message,
@@ -347,31 +375,6 @@ fun ThreadScreen(
         )
     }
 
-    if (videoSend.phase == VideoSendPhase.ConfirmUpload) {
-        val mb = videoConfirmMb ?: videoSend.megabytes ?: 1
-        AlertDialog(
-            onDismissRequest = { viewModel.declineVideoUpload() },
-            containerColor = MapTalkColors.Surface,
-            title = { Text("Send this video?", color = MapTalkColors.Text) },
-            text = {
-                Text(
-                    "About $mb MB · up to 30 seconds. On cellular this uses mobile data.",
-                    color = MapTalkColors.Subtle,
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = { viewModel.confirmVideoUpload() }) {
-                    Text("Send", color = MapTalkColors.Accent)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { viewModel.declineVideoUpload() }) {
-                    Text("Cancel", color = MapTalkColors.Subtle)
-                }
-            },
-        )
-    }
-
     if (reportThanks) {
         AlertDialog(
             onDismissRequest = { reportThanks = false },
@@ -388,6 +391,18 @@ fun ThreadScreen(
                     Text("OK", color = MapTalkColors.Accent)
                 }
             },
+        )
+    }
+
+    if (showBackgroundPicker) {
+        ChatBackgroundPickerSheet(
+            selected = chatBackground,
+            onSelect = { style ->
+                chatBackground = style
+                ChatBackgroundStore.set(context, style)
+                showBackgroundPicker = false
+            },
+            onDismiss = { showBackgroundPicker = false },
         )
     }
 
@@ -447,8 +462,7 @@ fun ThreadScreen(
                                     maxLines = 1,
                                 )
                                 Text(
-                                    text = "\u00b7 ${thread.authorName} \u00b7 " +
-                                        relativeTime(thread.createdAt),
+                                    text = "\u00b7 ${thread.authorName}",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MapTalkColors.Faint,
                                     maxLines = 1,
@@ -456,21 +470,76 @@ fun ThreadScreen(
                             }
                         }
                     }
-                    val thread = state.thread
-                    if (thread != null && thread.authorId != author.uid) {
-                        IconButton(
-                            onClick = {
-                                reportTarget = ReportTarget.Thread(thread)
-                            },
-                        ) {
-                            Text("⚑", color = MapTalkColors.Subtle, fontSize = 16.sp)
+                    Box {
+                        IconButton(onClick = { showThreadMenu = true }) {
+                            Icon(
+                                painterResource(R.drawable.ic_more),
+                                contentDescription = "Chat options",
+                                tint = MapTalkColors.Subtle,
+                            )
                         }
-                        IconButton(
-                            onClick = {
-                                blockConfirm = thread.authorId to thread.authorName
-                            },
+                        DropdownMenu(
+                            expanded = showThreadMenu,
+                            onDismissRequest = { showThreadMenu = false },
+                            containerColor = MapTalkColors.Surface,
                         ) {
-                            Text("⊘", color = MapTalkColors.Subtle, fontSize = 16.sp)
+                            DropdownMenuItem(
+                                text = { Text("Share chat", color = MapTalkColors.Text) },
+                                leadingIcon = {
+                                    Icon(
+                                        painterResource(R.drawable.ic_share),
+                                        contentDescription = null,
+                                        tint = MapTalkColors.Subtle,
+                                    )
+                                },
+                                onClick = {
+                                    showThreadMenu = false
+                                    val send = Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(Intent.EXTRA_TEXT, ThreadLink.url(threadId))
+                                    }
+                                    context.startActivity(
+                                        Intent.createChooser(send, "Share chat"),
+                                    )
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Background", color = MapTalkColors.Text) },
+                                leadingIcon = {
+                                    Icon(
+                                        painterResource(R.drawable.ic_wallpaper),
+                                        contentDescription = null,
+                                        tint = MapTalkColors.Subtle,
+                                    )
+                                },
+                                onClick = {
+                                    showThreadMenu = false
+                                    showBackgroundPicker = true
+                                },
+                            )
+                            val thread = state.thread
+                            if (thread != null && thread.authorId != author.uid) {
+                                HorizontalDivider(color = MapTalkColors.Hairline)
+                                DropdownMenuItem(
+                                    text = { Text("Report chat", color = MapTalkColors.Text) },
+                                    onClick = {
+                                        showThreadMenu = false
+                                        reportTarget = ReportTarget.Thread(thread)
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            "Block ${thread.authorName}",
+                                            color = MapTalkColors.Danger,
+                                        )
+                                    },
+                                    onClick = {
+                                        showThreadMenu = false
+                                        blockConfirm = thread.authorId to thread.authorName
+                                    },
+                                )
+                            }
                         }
                     }
                 }
@@ -485,6 +554,10 @@ fun ThreadScreen(
                 .imePadding(),
         ) {
             Box(modifier = Modifier.weight(1f)) {
+                ChatBackgroundLayer(
+                    style = chatBackground,
+                    modifier = Modifier.fillMaxSize(),
+                )
                 when {
                     state.isLoading -> CircularProgressIndicator(
                         color = MapTalkColors.Subtle,
@@ -515,6 +588,7 @@ fun ThreadScreen(
                                 isLifted = longPressTarget?.id == message.id,
                                 resolveMedia = viewModel::mediaFile,
                                 onImageClick = { path -> fullscreenPath = path },
+                                onOpenVideo = { path -> fullscreenVideoPath = path },
                                 onReply = { viewModel.setReply(message) },
                                 onLongPress = { longPressTarget = message },
                                 onToggleReaction = { emoji ->
@@ -645,6 +719,7 @@ private fun MessageRow(
     isLifted: Boolean = false,
     resolveMedia: (String) -> File?,
     onImageClick: (String) -> Unit,
+    onOpenVideo: (String) -> Unit = {},
     onReply: () -> Unit,
     onLongPress: () -> Unit,
     onToggleReaction: (String) -> Unit,
@@ -772,6 +847,10 @@ private fun MessageRow(
 
                         if (message.hasVideo) {
                             message.videoPath?.let { path ->
+                                val playUri = when {
+                                    path.startsWith("http://") || path.startsWith("https://") -> path
+                                    else -> resolveMedia(path)?.let { Uri.fromFile(it).toString() } ?: path
+                                }
                                 VideoBubble(
                                     path = path,
                                     file = resolveMedia(path),
@@ -779,6 +858,7 @@ private fun MessageRow(
                                     width = message.videoWidth,
                                     height = message.videoHeight,
                                     isSending = message.isLocalPending,
+                                    onOpenFullscreen = { onOpenVideo(playUri) },
                                 )
                             }
                         }
@@ -887,6 +967,7 @@ private fun VideoBubble(
     width: Int?,
     height: Int?,
     isSending: Boolean = false,
+    onOpenFullscreen: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val displayWidth = 220.dp
@@ -911,41 +992,8 @@ private fun VideoBubble(
             else -> null
         }
     }
-    var isPlaying by remember(path) { mutableStateOf(false) }
-    var isBuffering by remember(path) { mutableStateOf(false) }
-    var muted by remember { mutableStateOf(ThreadVideoPlayer.isMuted) }
     val poster = remember(path, absoluteFile?.absolutePath) {
         loadVideoPoster(context, path, absoluteFile)
-    }
-
-    DisposableEffect(path) {
-        if (isSending) {
-            onDispose { }
-        } else {
-            val exo = ThreadVideoPlayer.player(context)
-            val listener = object : Player.Listener {
-                override fun onIsPlayingChanged(playing: Boolean) {
-                    if (ThreadVideoPlayer.activePath == playUri) {
-                        isPlaying = playing
-                    } else if (playing.not() && ThreadVideoPlayer.activePath != playUri) {
-                        isPlaying = false
-                    }
-                }
-
-                override fun onPlaybackStateChanged(playbackState: Int) {
-                    if (ThreadVideoPlayer.activePath != playUri) return
-                    isBuffering = playbackState == Player.STATE_BUFFERING
-                    if (playbackState == Player.STATE_ENDED) {
-                        isPlaying = false
-                    }
-                }
-            }
-            exo.addListener(listener)
-            onDispose {
-                exo.removeListener(listener)
-                playUri?.let { ThreadVideoPlayer.pauseIfPlaying(it) }
-            }
-        }
     }
 
     Box(
@@ -955,118 +1003,54 @@ private fun VideoBubble(
             .clip(RoundedCornerShape(14.dp))
             .background(Color.Black.copy(alpha = 0.35f))
             .then(
-                if (isSending) Modifier else Modifier.clickable {
-                    val uri = playUri ?: return@clickable
-                    ThreadVideoPlayer.play(context, uri)
-                    muted = ThreadVideoPlayer.isMuted
-                    isPlaying = ThreadVideoPlayer.activePath == uri
+                if (isSending) {
+                    Modifier
+                } else {
+                    Modifier.clickable {
+                        playUri?.let(onOpenFullscreen)
+                    }
                 },
             ),
         contentAlignment = Alignment.Center,
     ) {
-        if (poster != null && (!isPlaying || isBuffering || isSending)) {
+        if (poster != null) {
             Image(
                 bitmap = poster.asImageBitmap(),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
+                filterQuality = FilterQuality.High,
                 modifier = Modifier.fillMaxSize(),
             )
         }
-        if (isPlaying && playUri != null && !isSending) {
-            AndroidView(
-                factory = { ctx ->
-                    FrameLayout(ctx).apply {
-                        val texture = TextureView(ctx)
-                        addView(
-                            texture,
-                            FrameLayout.LayoutParams(
-                                FrameLayout.LayoutParams.MATCH_PARENT,
-                                FrameLayout.LayoutParams.MATCH_PARENT,
-                            ),
-                        )
-                        ThreadVideoPlayer.player(ctx).setVideoTextureView(texture)
-                    }
-                },
-                update = { frame ->
-                    val texture = frame.getChildAt(0) as? TextureView
-                    if (texture != null && ThreadVideoPlayer.activePath == playUri) {
-                        ThreadVideoPlayer.player(frame.context).setVideoTextureView(texture)
-                    }
-                },
-                modifier = Modifier.fillMaxSize(),
+        if (isSending) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.5f)),
             )
-        }
-        when {
-            isSending -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                CircularProgressIndicator(
-                    color = Color.White,
-                    strokeWidth = 2.dp,
-                    modifier = Modifier.size(28.dp),
-                )
-                Text(
-                    text = "Sending…",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color.White,
-                    modifier = Modifier.padding(top = 8.dp),
-                )
-            }
-            isBuffering && isPlaying -> {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircularProgressIndicator(
-                        color = Color.White,
-                        strokeWidth = 2.dp,
-                        modifier = Modifier.size(28.dp),
-                    )
-                    Text(
-                        text = "Loading…",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color.White.copy(alpha = 0.9f),
-                        modifier = Modifier.padding(top = 8.dp),
-                    )
-                }
-            }
-            !isPlaying -> Icon(
+            Text(
+                text = "Sending…",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.White,
+            )
+        } else {
+            Icon(
                 painter = painterResource(R.drawable.ic_play),
                 contentDescription = "Play video, ${formatDuration(durationMs)}",
                 tint = Color.White,
                 modifier = Modifier
-                    .size(44.dp)
-                    .background(Color.Black.copy(alpha = 0.35f), CircleShape)
-                    .padding(12.dp),
+                    .size(54.dp)
+                    .background(Color.Black.copy(alpha = 0.45f), CircleShape)
+                    .border(1.5.dp, Color.White.copy(alpha = 0.5f), CircleShape)
+                    .padding(15.dp),
             )
-        }
-        Row(
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .fillMaxWidth()
-                .padding(8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (isPlaying && !isSending) {
-                Icon(
-                    painter = painterResource(
-                        if (muted) R.drawable.ic_volume_off else R.drawable.ic_volume,
-                    ),
-                    contentDescription = if (muted) "Unmute" else "Mute",
-                    tint = Color.White,
-                    modifier = Modifier
-                        .size(28.dp)
-                        .background(Color.Black.copy(alpha = 0.55f), CircleShape)
-                        .clickable {
-                            ThreadVideoPlayer.toggleMute(context)
-                            muted = ThreadVideoPlayer.isMuted
-                        }
-                        .padding(6.dp),
-                )
-            } else {
-                Box(modifier = Modifier.size(28.dp))
-            }
             Text(
                 text = formatDuration(durationMs),
                 style = MaterialTheme.typography.labelSmall,
                 color = Color.White,
                 modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(8.dp)
                     .background(Color.Black.copy(alpha = 0.55f), CircleShape)
                     .padding(horizontal = 8.dp, vertical = 4.dp),
             )
@@ -1324,28 +1308,39 @@ private fun Composer(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                    .background(MapTalkColors.Raised, RoundedCornerShape(16.dp))
+                    .border(
+                        width = 1.dp,
+                        color = if (videoSend.isBusy) {
+                            MapTalkColors.Accent.copy(alpha = 0.45f)
+                        } else {
+                            MapTalkColors.Hairline
+                        },
+                        shape = RoundedCornerShape(16.dp),
+                    )
+                    .padding(12.dp),
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    videoSend.preview?.let { bmp ->
-                        Image(
-                            bitmap = bmp.asImageBitmap(),
-                            contentDescription = null,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .size(44.dp)
-                                .clip(RoundedCornerShape(8.dp)),
-                        )
-                    }
-                    if (videoSend.isBusy) {
-                        CircularProgressIndicator(
-                            color = MapTalkColors.Accent,
-                            strokeWidth = 2.dp,
-                            modifier = Modifier.size(16.dp),
-                        )
+                    Box(
+                        modifier = Modifier
+                            .size(52.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(MapTalkColors.Surface),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        videoSend.preview?.let { bmp ->
+                            Image(
+                                bitmap = bmp.asImageBitmap(),
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                filterQuality = FilterQuality.High,
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        }
                     }
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
@@ -1371,7 +1366,7 @@ private fun Composer(
                         }
                     } else if (videoSend.phase == VideoSendPhase.Failed) {
                         TextButton(onClick = onRetryVideo) {
-                            Text("Retry", color = MapTalkColors.Accent)
+                            Text("Try again", color = MapTalkColors.Accent)
                         }
                         TextButton(onClick = onCancelVideo) {
                             Text("Dismiss", color = MapTalkColors.Subtle)
@@ -1382,9 +1377,9 @@ private fun Composer(
                     LinearProgressIndicator(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(top = 8.dp),
+                            .padding(top = 10.dp),
                         color = MapTalkColors.Accent,
-                        trackColor = MapTalkColors.Raised,
+                        trackColor = MapTalkColors.Surface,
                     )
                 }
             }
@@ -1544,19 +1539,15 @@ private fun Composer(
                     enabled = !isPreparingImage && !isPreparingVideo,
                     modifier = Modifier.size(40.dp),
                 ) {
-                    if (isPreparingVideo) {
-                        CircularProgressIndicator(
-                            strokeWidth = 2.dp,
-                            color = MapTalkColors.Subtle,
-                            modifier = Modifier.size(18.dp),
-                        )
-                    } else {
-                        Icon(
-                            painter = painterResource(R.drawable.ic_video),
-                            contentDescription = "Add a video",
-                            tint = MapTalkColors.Subtle,
-                        )
-                    }
+                    Icon(
+                        painter = painterResource(R.drawable.ic_video),
+                        contentDescription = "Add a video",
+                        tint = if (isPreparingVideo) {
+                            MapTalkColors.Faint
+                        } else {
+                            MapTalkColors.Subtle
+                        },
+                    )
                 }
 
                 OutlinedTextField(

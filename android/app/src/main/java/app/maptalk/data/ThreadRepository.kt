@@ -351,13 +351,13 @@ class ThreadRepository private constructor(
     private fun mapMediaUploadError(error: Throwable): Throwable {
         val raw = error.message.orEmpty()
         val message = when {
-            "413" in raw || "bad_size" in raw -> "Video is too large to upload"
-            "bad_duration" in raw || "duration_mismatch" in raw -> "Keep videos under 30 seconds"
+            "413" in raw || "bad_size" in raw -> "That one’s a bit big — try a shorter clip"
+            "bad_duration" in raw || "duration_mismatch" in raw -> "Pick up to 15 seconds of your video"
             "415" in raw || "bad_magic" in raw || "unsupported_type" in raw ->
-                "That video format is not supported"
-            "429" in raw || "rate_limited" in raw -> "Slow down — try again in a minute"
-            "401" in raw || "invalid_token" in raw -> "Sign in again to send video"
-            else -> error.message ?: "Video could not be sent"
+                "Hmm, that video type won’t work. Try another?"
+            "429" in raw || "rate_limited" in raw -> "Whoa, slow down — try again in a minute"
+            "401" in raw || "invalid_token" in raw -> "Sign in again to send your video"
+            else -> error.message ?: "Couldn’t send that video"
         }
         return IllegalStateException(message, error)
     }
