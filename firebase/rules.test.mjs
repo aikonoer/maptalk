@@ -511,3 +511,69 @@ describe('users', () => {
     );
   });
 });
+
+describe('devices and subscribers', () => {
+  it('lets a user register and refresh their own device token', async () => {
+    const db = testEnv.authenticatedContext(ALICE).firestore();
+    await assertSucceeds(
+      setDoc(doc(db, 'users', ALICE, 'devices', 'phone-1'), {
+        token: 'fcm-token-abcdef',
+        platform: 'ios',
+        updatedAt: serverTimestamp(),
+      }),
+    );
+    await assertSucceeds(
+      setDoc(doc(db, 'users', ALICE, 'devices', 'phone-1'), {
+        token: 'fcm-token-rotated',
+        platform: 'ios',
+        updatedAt: serverTimestamp(),
+      }),
+    );
+  });
+
+  it('rejects writing another user\'s device or a bad platform', async () => {
+    const db = testEnv.authenticatedContext(ALICE).firestore();
+    await assertFails(
+      setDoc(doc(db, 'users', BOB, 'devices', 'phone-1'), {
+        token: 'fcm-token-abcdef',
+        platform: 'ios',
+        updatedAt: serverTimestamp(),
+      }),
+    );
+    await assertFails(
+      setDoc(doc(db, 'users', ALICE, 'devices', 'phone-1'), {
+        token: 'fcm-token-abcdef',
+        platform: 'web',
+        updatedAt: serverTimestamp(),
+      }),
+    );
+  });
+
+  it('lets a user subscribe themselves to a thread and not someone else', async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), 'threads', 't1'), {
+        title: 'Hello',
+        kind: 'general',
+        lat: 0,
+        lng: 0,
+        geohash: 's000000000',
+        authorId: ALICE,
+        authorName: 'Alice',
+        createdAt: new Date(),
+        lastMessageAt: new Date(),
+        messageCount: 0,
+      });
+    });
+    const db = testEnv.authenticatedContext(ALICE).firestore();
+    await assertSucceeds(
+      setDoc(doc(db, 'threads', 't1', 'subscribers', ALICE), {
+        subscribedAt: serverTimestamp(),
+      }),
+    );
+    await assertFails(
+      setDoc(doc(db, 'threads', 't1', 'subscribers', BOB), {
+        subscribedAt: serverTimestamp(),
+      }),
+    );
+  });
+});

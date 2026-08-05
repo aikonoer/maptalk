@@ -14,8 +14,9 @@ Two native phone apps share one Firebase backend:
 | `docs/`     | [Data model and query strategy](docs/data-model.md)          |
 | `scripts/`  | The cross-device check, run against the Firebase emulators   |
 
-There is no server code. Both apps talk to Firestore directly and the security rules keep
-the data honest, so the backend runs on Firebase's free Spark plan.
+There is no server code in v1 beyond optional Cloud Functions for push. Both apps talk to
+Firestore directly and the security rules keep the data honest; Spark works until you enable
+push (Functions need Blaze).
 
 ## What v1 does
 
@@ -25,9 +26,11 @@ the data honest, so the backend runs on Firebase's free Spark plan.
 - Bubbles cluster by geohash prefix as you zoom out.
 - Create a thread at the map centre with a title and a kind (event, notice, traffic, general).
 - Open a thread and post replies; everyone watching sees them immediately.
+- Push notifications for new replies (opt-in; needs Blaze + APNs key — see
+  [`firebase/functions/README.md`](firebase/functions/README.md)).
 
 Deliberately not in v1: real accounts, profiles, thread expiry,
-Cloud Functions–backed moderation queues, push notifications, search.
+Cloud Functions–backed moderation queues, search.
 
 Reporting and blocking are in-app (viewer-private blocks; append-only reports).
 

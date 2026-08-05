@@ -12,6 +12,7 @@ final class AppEnvironment {
     let authRepository: AuthRepository
     let threadRepository: ThreadRepository
     let safetyRepository: SafetyRepository
+    let pushRepository: PushRepository
     let locationProvider: LocationProvider
 
     /// Only set for Firebase-backed environments; local demo has nothing to flush.
@@ -29,6 +30,9 @@ final class AppEnvironment {
         safetyRepository = SafetyRepository(firestore: firestore) { [authRepository] in
             authRepository.currentUid
         }
+        pushRepository = PushRepository(firestore: firestore) { [authRepository] in
+            authRepository.currentUid
+        }
         locationProvider = LocationProvider()
     }
 
@@ -39,6 +43,9 @@ final class AppEnvironment {
         safetyRepository = SafetyRepository(firestore: firestore) { [authRepository] in
             authRepository.currentUid
         }
+        pushRepository = PushRepository(firestore: firestore) { [authRepository] in
+            authRepository.currentUid
+        }
         locationProvider = LocationProvider()
     }
 
@@ -47,6 +54,7 @@ final class AppEnvironment {
         authRepository = AuthRepository(local: store)
         threadRepository = ThreadRepository(local: store)
         safetyRepository = SafetyRepository(local: store)
+        pushRepository = PushRepository(local: store)
         locationProvider = LocationProvider()
     }
 

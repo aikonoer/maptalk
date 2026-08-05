@@ -51,6 +51,13 @@ object Fs {
     const val TARGET_AUTHOR_ID = "targetAuthorId"
     const val REASON = "reason"
 
+    const val DEVICES = "devices"
+    const val TOKEN = "token"
+    const val PLATFORM = "platform"
+    const val UPDATED_AT = "updatedAt"
+    const val SUBSCRIBERS = "subscribers"
+    const val SUBSCRIBED_AT = "subscribedAt"
+
     /** Precision used for the stored hash; the query bounds use their own precision. */
     const val GEOHASH_PRECISION = 10
 }

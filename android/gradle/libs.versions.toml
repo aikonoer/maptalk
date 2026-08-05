@@ -40,6 +40,7 @@ firebase-bom = { module = "com.google.firebase:firebase-bom", version.ref = "fir
 firebase-auth = { module = "com.google.firebase:firebase-auth" }
 firebase-firestore = { module = "com.google.firebase:firebase-firestore" }
 firebase-storage = { module = "com.google.firebase:firebase-storage" }
+firebase-messaging = { module = "com.google.firebase:firebase-messaging" }
 coil-compose = { module = "io.coil-kt:coil-compose", version = "2.7.0" }
 
 geofire-common = { module = "com.firebase:geofire-android-common", version.ref = "geofire" }

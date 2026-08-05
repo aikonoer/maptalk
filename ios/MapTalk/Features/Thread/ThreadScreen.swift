@@ -30,6 +30,7 @@ struct ThreadScreen: View {
             initialValue: ThreadModel(
                 repository: environment.threadRepository,
                 safety: environment.safetyRepository,
+                push: environment.pushRepository,
                 threadId: threadId
             )
         )

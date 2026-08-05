@@ -17,13 +17,20 @@ final class ThreadModel {
 
     private let repository: ThreadRepository
     private let safety: SafetyRepository
+    private let push: PushRepository
     private let threadId: String
     private var allMessages: [Message] = []
     private var tasks: [Task<Void, Never>] = []
 
-    init(repository: ThreadRepository, safety: SafetyRepository, threadId: String) {
+    init(
+        repository: ThreadRepository,
+        safety: SafetyRepository,
+        push: PushRepository,
+        threadId: String
+    ) {
         self.repository = repository
         self.safety = safety
+        self.push = push
         self.threadId = threadId
         repository.onError = { [weak self] error in
             self?.errorMessage = error.localizedDescription
@@ -35,6 +42,7 @@ final class ThreadModel {
 
     func start() {
         guard tasks.isEmpty else { return }
+        push.subscribe(toThreadId: threadId)
         tasks.append(
             Task { [repository, threadId] in
                 for await thread in repository.thread(id: threadId) {

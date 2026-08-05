@@ -85,6 +85,26 @@ Append-only reports owned by the reporter. Admin can query as a collection group
 | `reason`         | string    | `spam`, `harassment`, `inappropriate`, or `other`.            |
 | `createdAt`      | timestamp | Server timestamp.                                             |
 
+### `users/{uid}/devices/{deviceId}`
+
+FCM registration tokens for push. Doc id is a stable per-install device id.
+
+| Field       | Type      | Notes                                      |
+| ----------- | --------- | ------------------------------------------ |
+| `token`     | string    | FCM registration token (8–4096 chars).     |
+| `platform`  | string    | `ios` or `android`.                        |
+| `updatedAt` | timestamp | Server timestamp on every refresh.         |
+
+### `threads/{threadId}/subscribers/{uid}`
+
+Who should get notified about new messages in this thread. Clients upsert when the user
+opens the thread or posts. Cloud Functions fan out FCM to these uids (excluding the
+message author).
+
+| Field          | Type      | Notes                          |
+| -------------- | --------- | ------------------------------ |
+| `subscribedAt` | timestamp | Server timestamp.              |
+
 ## Writes
 
 Creating a thread is a single `set` on a new document with `messageCount = 0` and both
@@ -97,11 +117,14 @@ Posting a message is a single atomic batch of two writes:
    `messageCount = increment(1)`.
 
 The security rules only let an update touch `lastMessageAt` and `messageCount`, and only
-when the count goes up by exactly one, so there are no Cloud Functions and the whole
-backend runs on the free Spark plan.
+when the count goes up by exactly one.
 
 Message documents may also be updated solely to change the `reactions` map (emoji → uids).
 All other message fields are immutable after create.
+
+Push uses Cloud Functions (`firebase/functions`) on Blaze: a message create trigger fans out
+FCM to `threads/{id}/subscribers` (excluding the author), using tokens in
+`users/{uid}/devices`.
 
 ## Reading the map
 

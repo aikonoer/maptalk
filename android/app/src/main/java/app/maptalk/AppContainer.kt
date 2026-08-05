@@ -5,6 +5,7 @@ import android.content.Context
 import app.maptalk.data.AuthRepository
 import app.maptalk.data.LocalDemoStore
 import app.maptalk.data.MediaUploader
+import app.maptalk.data.PushRepository
 import app.maptalk.data.SafetyRepository
 import app.maptalk.data.ThreadRepository
 import app.maptalk.location.LocationProvider
@@ -74,6 +75,14 @@ class AppContainer(context: Context) {
     val safetyRepository: SafetyRepository by lazy {
         localStore?.let { SafetyRepository(it) }
             ?: SafetyRepository(
+                firestore = firebase.firestore,
+                currentUid = { firebase.auth.currentUser?.uid },
+            )
+    }
+
+    val pushRepository: PushRepository by lazy {
+        localStore?.let { PushRepository(it) }
+            ?: PushRepository(
                 firestore = firebase.firestore,
                 currentUid = { firebase.auth.currentUser?.uid },
             )

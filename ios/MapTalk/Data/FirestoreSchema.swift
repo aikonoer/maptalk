@@ -40,6 +40,13 @@ enum Fs {
     static let threadId = "threadId"
     static let targetAuthorId = "targetAuthorId"
     static let reason = "reason"
+
+    static let devices = "devices"
+    static let token = "token"
+    static let platform = "platform"
+    static let updatedAt = "updatedAt"
+    static let subscribers = "subscribers"
+    static let subscribedAt = "subscribedAt"
 }
 
 extension DocumentSnapshot {

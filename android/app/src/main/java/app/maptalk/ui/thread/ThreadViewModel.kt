@@ -8,6 +8,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import app.maptalk.AppContainer
 import app.maptalk.data.ImageCompressor
+import app.maptalk.data.PushRepository
 import app.maptalk.data.SafetyRepository
 import app.maptalk.data.ThreadRepository
 import app.maptalk.data.model.Author
@@ -44,6 +45,7 @@ class ThreadViewModel(
     private val threadId: String,
     private val threadRepository: ThreadRepository,
     private val safetyRepository: SafetyRepository,
+    private val pushRepository: PushRepository,
     private val readBytes: suspend (Uri) -> ByteArray?,
     private val resolveMedia: (String) -> File?,
 ) : ViewModel() {
@@ -79,6 +81,10 @@ class ThreadViewModel(
             shouldDismiss = dismiss || authorBlocked,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ThreadUiState())
+
+    init {
+        pushRepository.subscribe(toThreadId = threadId)
+    }
 
     fun mediaFile(relativePath: String): File? = resolveMedia(relativePath)
 
@@ -176,6 +182,7 @@ class ThreadViewModel(
                         threadId = threadId,
                         threadRepository = container.threadRepository,
                         safetyRepository = container.safetyRepository,
+                        pushRepository = container.pushRepository,
                         readBytes = { uri ->
                             app.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                         },

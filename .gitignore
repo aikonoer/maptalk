@@ -33,6 +33,8 @@ ui-debug.log
 
 # --- Node (rules tests / workers) ---
 node_modules/
+firebase/functions/node_modules/
+firebase/functions/lib/
 workers/media/node_modules/
 workers/media/.wrangler/
 

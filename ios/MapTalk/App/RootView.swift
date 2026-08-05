@@ -28,6 +28,9 @@ struct RootView: View {
             }
         case let .ready(author):
             MapScreen(environment: environment, author: author)
+                .task {
+                    await PushRegistrar.start(push: environment.pushRepository)
+                }
         }
     }
 }

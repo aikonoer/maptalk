@@ -185,6 +185,20 @@ service cloud.firestore {
           );
         allow update, delete: if false;
       }
+
+      // FCM device tokens for this user (doc id = stable device id).
+      match /devices/{deviceId} {
+        allow read: if signedIn() && request.auth.uid == userId;
+        allow create, update: if signedIn()
+          && request.auth.uid == userId
+          && request.resource.data.keys().hasOnly(['token', 'platform', 'updatedAt'])
+          && request.resource.data.token is string
+          && request.resource.data.token.size() >= 8
+          && request.resource.data.token.size() <= 4096
+          && request.resource.data.platform in ['ios', 'android']
+          && request.resource.data.updatedAt == request.time;
+        allow delete: if signedIn() && request.auth.uid == userId;
+      }
     }
 
     match /threads/{threadId} {
@@ -233,6 +247,16 @@ service cloud.firestore {
 
         allow update: if signedIn() && isReactionUpdate();
         allow delete: if false;
+      }
+
+      // Auto-subscribed when the user opens or posts in a thread.
+      match /subscribers/{uid} {
+        allow read: if signedIn() && request.auth.uid == uid;
+        allow create, update: if signedIn()
+          && request.auth.uid == uid
+          && request.resource.data.keys().hasOnly(['subscribedAt'])
+          && request.resource.data.subscribedAt == request.time;
+        allow delete: if signedIn() && request.auth.uid == uid;
       }
     }
   }
