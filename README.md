@@ -31,25 +31,27 @@ push notifications, photos, search.
 
 ## One-time setup
 
+> **Current project:** `maptalk-app` — see [docs/FIREBASE_SETUP.md](docs/FIREBASE_SETUP.md)
+> for what is already provisioned and the few console clicks still needed (Anonymous Auth,
+> Blaze/Storage, optional Cloudflare R2).
+
 ### 1. Firebase project
 
-1. Create a project in the [Firebase console](https://console.firebase.google.com).
-2. **Build > Authentication > Sign-in method**: enable **Anonymous**.
-3. **Build > Firestore Database**: create a database in production mode.
+SDK configs for `maptalk-app` should already be in place locally (gitignored). If you are
+on a new machine, download them from the Firebase console into:
 
-### 2. Register both apps
+- Android: `android/app/google-services.json`
+- iOS: `ios/MapTalk/GoogleService-Info.plist`
 
-Add an Android app with package name `app.maptalk` and download `google-services.json`
-into `android/app/`.
+Then enable **Anonymous** under Authentication, and (for live cloud photos) upgrade to
+**Blaze** and click **Get started** on Storage. Deploy rules:
 
-Add an iOS app with bundle id `app.maptalk` and download `GoogleService-Info.plist` into
-`ios/MapTalk/`.
+```bash
+cd firebase
+firebase deploy --only firestore:rules,firestore:indexes,storage
+```
 
-Both files are gitignored. The committed `*.example` files next to them show the expected
-shape and are placeholders only — the apps will not connect to Firebase until you drop the
-real files in.
-
-### 3. Google Maps key (Android only)
+Firestore rules are already deployed to `maptalk-app`.
 
 iOS uses MapKit, which needs no key. Android needs a Maps SDK key:
 
