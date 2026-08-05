@@ -56,10 +56,10 @@ final class ThreadModel {
         )
         tasks.append(
             Task { [safety] in
-                for await blocked in safety.blockedUids() {
-                    blockedUids = blocked
+                for await people in safety.blockedPeople() {
+                    blockedUids = Set(people.map(\.uid))
                     applyMessageFilter()
-                    if let thread, blocked.contains(thread.authorId) {
+                    if let thread, blockedUids.contains(thread.authorId) {
                         shouldDismiss = true
                     }
                 }
@@ -117,8 +117,8 @@ final class ThreadModel {
         )
     }
 
-    func block(uid: String, as author: Author) {
-        safety.block(uid: uid, as: author)
+    func block(uid: String, displayName: String, as author: Author) {
+        safety.block(uid: uid, displayName: displayName, as: author)
         shouldDismiss = true
     }
 

@@ -301,13 +301,13 @@ fun ThreadScreen(
             title = { Text("Block $name?", color = MapTalkColors.Text) },
             text = {
                 Text(
-                    "Their chats and messages will disappear for you.",
+                    "Their chats and messages will disappear for you. Unblock anytime from Settings.",
                     color = MapTalkColors.Subtle,
                 )
             },
             confirmButton = {
                 TextButton(onClick = {
-                    viewModel.block(uid, author)
+                    viewModel.block(uid, name, author)
                     blockConfirm = null
                 }) {
                     Text("Block", color = MapTalkColors.Danger)

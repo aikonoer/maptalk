@@ -146,10 +146,11 @@ service cloud.firestore {
           && request.auth.uid == userId
           && blockedUid == request.resource.data.blockedUid
           && blockedUid != request.auth.uid
-          && request.resource.data.keys().hasOnly(['blockedUid', 'createdAt'])
+          && request.resource.data.keys().hasOnly(['blockedUid', 'displayName', 'createdAt'])
           && request.resource.data.blockedUid is string
           && request.resource.data.blockedUid.size() >= 1
           && request.resource.data.blockedUid.size() <= 128
+          && validName(request.resource.data.displayName)
           && request.resource.data.createdAt == request.time;
         allow update: if false;
         allow delete: if signedIn() && request.auth.uid == userId;

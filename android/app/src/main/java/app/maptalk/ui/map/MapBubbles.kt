@@ -18,6 +18,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.maptalk.data.model.ChatThread
 import app.maptalk.geo.GeoCluster
+import app.maptalk.ui.relativeTime
 import app.maptalk.ui.theme.MapTalkColors
 import app.maptalk.ui.theme.MapTalkShapes
 import app.maptalk.ui.theme.tint
@@ -92,6 +93,11 @@ private fun ThreadBubble(thread: ChatThread) {
                     )
                 }
             }
+            Text(
+                text = relativeTime(thread.lastMessageAt),
+                style = MaterialTheme.typography.labelSmall,
+                color = MapTalkColors.Faint,
+            )
         }
     }
 }

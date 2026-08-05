@@ -69,6 +69,7 @@ Viewer-private. Clients hide that author's threads and messages.
 | Field         | Type      | Notes                                      |
 | ------------- | --------- | ------------------------------------------ |
 | `blockedUid`  | string    | Must equal the document id; not yourself.  |
+| `displayName` | string    | Snapshot of their name when blocked.       |
 | `createdAt`   | timestamp | Server timestamp.                          |
 
 ### `users/{uid}/reports/{reportId}`

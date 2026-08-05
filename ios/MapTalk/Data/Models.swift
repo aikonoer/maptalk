@@ -142,6 +142,13 @@ struct Author: Equatable, Sendable {
     let displayName: String
 }
 
+/// Someone this viewer has blocked.
+struct BlockedPerson: Identifiable, Equatable, Sendable {
+    var id: String { uid }
+    let uid: String
+    let displayName: String
+}
+
 enum ReportTargetType: String, Sendable {
     case message
     case thread

@@ -1,11 +1,11 @@
 package app.maptalk.data
 
 import app.maptalk.data.model.Author
+import app.maptalk.data.model.BlockedPerson
 import app.maptalk.data.model.ReportReason
 import app.maptalk.data.model.ReportTargetType
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.ListenerRegistration
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -38,11 +38,11 @@ class SafetyRepository private constructor(
 
     constructor(local: LocalDemoStore) : this(Backend.Local(local))
 
-    fun blockedUids(): Flow<Set<String>> = when (val backend = backend) {
+    fun blockedPeople(): Flow<List<BlockedPerson>> = when (val backend = backend) {
         is Backend.Firestore -> callbackFlow {
             val uid = backend.currentUid()
             if (uid == null) {
-                trySend(emptySet())
+                trySend(emptyList())
                 awaitClose { }
                 return@callbackFlow
             }
@@ -53,15 +53,25 @@ class SafetyRepository private constructor(
                         _errors.tryEmit(error)
                         return@addSnapshotListener
                     }
-                    trySend(snapshot?.documents?.map { it.id }?.toSet().orEmpty())
+                    val people = snapshot?.documents
+                        ?.map { doc ->
+                            BlockedPerson(
+                                uid = doc.id,
+                                displayName = doc.getString(Fs.DISPLAY_NAME) ?: "Blocked user",
+                            )
+                        }
+                        ?.sortedBy { it.displayName.lowercase() }
+                        .orEmpty()
+                    trySend(people)
                 }
             awaitClose { registration.remove() }
         }
-        is Backend.Local -> backend.store.blockedUids()
+        is Backend.Local -> backend.store.blockedPeople()
     }
 
-    fun block(blockedUid: String, author: Author) {
+    fun block(blockedUid: String, displayName: String, author: Author) {
         if (blockedUid.isEmpty() || blockedUid == author.uid) return
+        val safeName = displayName.trim().ifEmpty { "Blocked user" }.take(24)
         when (val backend = backend) {
             is Backend.Firestore -> {
                 backend.db.collection(Fs.USERS).document(author.uid)
@@ -69,12 +79,13 @@ class SafetyRepository private constructor(
                     .set(
                         mapOf(
                             Fs.BLOCKED_UID to blockedUid,
+                            Fs.DISPLAY_NAME to safeName,
                             Fs.CREATED_AT to FieldValue.serverTimestamp(),
                         ),
                     )
                     .addOnFailureListener { _errors.tryEmit(it) }
             }
-            is Backend.Local -> backend.store.block(blockedUid)
+            is Backend.Local -> backend.store.block(blockedUid, safeName)
         }
     }
 

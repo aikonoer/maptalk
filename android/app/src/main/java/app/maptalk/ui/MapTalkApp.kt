@@ -36,6 +36,7 @@ import app.maptalk.ui.theme.MapTalkShapes
 import app.maptalk.ui.thread.ThreadScreen
 
 private const val ROUTE_MAP = "map"
+private const val ROUTE_SETTINGS = "settings"
 private const val ARG_THREAD_ID = "threadId"
 private const val ROUTE_THREAD = "thread/{$ARG_THREAD_ID}"
 
@@ -61,6 +62,13 @@ fun MapTalkApp() {
                     MapScreen(
                         author = current.author,
                         onOpenThread = { threadId -> navController.navigate("thread/$threadId") },
+                        onOpenSettings = { navController.navigate(ROUTE_SETTINGS) },
+                    )
+                }
+                composable(ROUTE_SETTINGS) {
+                    app.maptalk.ui.settings.SettingsScreen(
+                        author = current.author,
+                        onBack = navController::popBackStack,
                     )
                 }
                 composable(

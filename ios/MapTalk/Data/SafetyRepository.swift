@@ -22,8 +22,8 @@ final class SafetyRepository {
         backend = .local(local)
     }
 
-    /// Live set of blocked author uids for the signed-in viewer.
-    func blockedUids() -> AsyncStream<Set<String>> {
+    /// Live list of people this viewer has blocked (uid + display name).
+    func blockedPeople() -> AsyncStream<[BlockedPerson]> {
         switch backend {
         case let .firestore(firestore, uidProvider):
             let listeners = ListenerBag()
@@ -40,32 +40,42 @@ final class SafetyRepository {
                             report?(error)
                             return
                         }
-                        let ids = Set(snapshot?.documents.map(\.documentID) ?? [])
-                        continuation.yield(ids)
+                        let people = (snapshot?.documents ?? []).map { doc in
+                            BlockedPerson(
+                                uid: doc.documentID,
+                                displayName: (doc.data()[Fs.displayName] as? String)
+                                    ?? "Blocked user"
+                            )
+                        }
+                        .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+                        continuation.yield(people)
                     }
                 listeners.add(registration)
                 continuation.onTermination = { _ in listeners.removeAll() }
             }
         case let .local(store):
-            return store.blockedUids()
+            return store.blockedPeople()
         }
     }
 
-    func block(uid blockedUid: String, as author: Author) {
+    func block(uid blockedUid: String, displayName: String, as author: Author) {
         guard blockedUid != author.uid, !blockedUid.isEmpty else { return }
+        let name = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let safeName = name.isEmpty ? "Blocked user" : String(name.prefix(24))
         switch backend {
         case let .firestore(firestore, _):
             let ref = firestore.collection(Fs.users).document(author.uid)
                 .collection(Fs.blocks).document(blockedUid)
             ref.setData([
                 Fs.blockedUid: blockedUid,
+                Fs.displayName: safeName,
                 Fs.createdAt: FieldValue.serverTimestamp(),
             ]) { [weak self] error in
                 guard let error else { return }
                 MainActor.assumeIsolated { self?.onError?(error) }
             }
         case let .local(store):
-            store.block(uid: blockedUid)
+            store.block(uid: blockedUid, displayName: safeName)
         }
     }
 

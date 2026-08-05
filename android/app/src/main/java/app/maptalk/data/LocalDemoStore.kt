@@ -2,6 +2,7 @@ package app.maptalk.data
 
 import android.content.Context
 import app.maptalk.data.model.Author
+import app.maptalk.data.model.BlockedPerson
 import app.maptalk.data.model.ChatThread
 import app.maptalk.data.model.Message
 import app.maptalk.data.model.MessageKind
@@ -46,8 +47,23 @@ class LocalDemoStore(context: Context) {
 
     private val threads = linkedMapOf<String, ChatThread>()
     private val messages = linkedMapOf<String, MutableList<Message>>()
-    private val blocked = mutableSetOf<String>().also {
-        it.addAll(prefs.getStringSet(KEY_BLOCKS, emptySet()) ?: emptySet())
+    /** uid → display name */
+    private val blocked = linkedMapOf<String, String>().also { map ->
+        val stored = prefs.all
+            .filterKeys { it.startsWith(KEY_BLOCK_PREFIX) }
+            .mapNotNull { (key, value) ->
+                val uid = key.removePrefix(KEY_BLOCK_PREFIX)
+                val name = value as? String ?: return@mapNotNull null
+                uid to name
+            }
+        if (stored.isNotEmpty()) {
+            map.putAll(stored)
+        } else {
+            // Migrate legacy uid-only set.
+            (prefs.getStringSet(KEY_BLOCKS, emptySet()) ?: emptySet()).forEach { uid ->
+                map[uid] = "Blocked user"
+            }
+        }
     }
 
     private val threadPulse = MutableSharedFlow<Unit>(
@@ -73,19 +89,22 @@ class LocalDemoStore(context: Context) {
         _displayName.value = trimmed
     }
 
-    fun blockedUids(): Flow<Set<String>> =
-        blockPulse.map { blocked.toSet() }.onStart { emit(blocked.toSet()) }
+    fun blockedPeople(): Flow<List<BlockedPerson>> =
+        blockPulse.map { peopleSnapshot() }.onStart { emit(peopleSnapshot()) }
 
-    fun block(blockedUid: String) {
+    fun block(blockedUid: String, displayName: String) {
         if (blockedUid == uid || blockedUid.isEmpty()) return
-        blocked.add(blockedUid)
-        prefs.edit().putStringSet(KEY_BLOCKS, blocked.toSet()).apply()
+        blocked[blockedUid] = displayName
+        prefs.edit()
+            .putString("$KEY_BLOCK_PREFIX$blockedUid", displayName)
+            .remove(KEY_BLOCKS)
+            .apply()
         blockPulse.tryEmit(Unit)
     }
 
     fun unblock(blockedUid: String) {
         blocked.remove(blockedUid)
-        prefs.edit().putStringSet(KEY_BLOCKS, blocked.toSet()).apply()
+        prefs.edit().remove("$KEY_BLOCK_PREFIX$blockedUid").apply()
         blockPulse.tryEmit(Unit)
     }
 
@@ -99,6 +118,10 @@ class LocalDemoStore(context: Context) {
         // Local demo: accept and forget.
         Unit
     }
+
+    private fun peopleSnapshot(): List<BlockedPerson> =
+        blocked.map { (uid, name) -> BlockedPerson(uid, name) }
+            .sortedBy { it.displayName.lowercase() }
 
     fun threads(query: ViewportQuery): Flow<List<ChatThread>> =
         threadPulse.map { snapshot(query) }.onStart { emit(snapshot(query)) }
@@ -394,5 +417,6 @@ class LocalDemoStore(context: Context) {
         private const val PREFS = "maptalk.localDemo"
         private const val KEY_DISPLAY_NAME = "displayName"
         private const val KEY_BLOCKS = "blocks"
+        private const val KEY_BLOCK_PREFIX = "block."
     }
 }

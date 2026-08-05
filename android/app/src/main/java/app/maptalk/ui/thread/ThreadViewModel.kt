@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -56,7 +57,8 @@ class ThreadViewModel(
     private val _replyTarget = MutableStateFlow<Message?>(null)
     private val _shouldDismiss = MutableStateFlow(false)
 
-    private val blockedUids: StateFlow<Set<String>> = safetyRepository.blockedUids()
+    private val blockedUids: StateFlow<Set<String>> = safetyRepository.blockedPeople()
+        .map { people -> people.map { it.uid }.toSet() }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
 
     val state: StateFlow<ThreadUiState> = combine(
@@ -125,8 +127,8 @@ class ThreadViewModel(
         threadRepository.toggleReaction(threadId, message.id, emoji, author)
     }
 
-    fun block(blockedUid: String, author: Author) {
-        safetyRepository.block(blockedUid, author)
+    fun block(blockedUid: String, displayName: String, author: Author) {
+        safetyRepository.block(blockedUid, displayName, author)
         _shouldDismiss.value = true
     }
 

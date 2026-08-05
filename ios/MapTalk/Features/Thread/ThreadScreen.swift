@@ -155,13 +155,17 @@ struct ThreadScreen: View {
             ) {
                 Button("Block", role: .destructive) {
                     if let blockConfirm {
-                        model.block(uid: blockConfirm.uid, as: author)
+                        model.block(
+                            uid: blockConfirm.uid,
+                            displayName: blockConfirm.name,
+                            as: author
+                        )
                     }
                     blockConfirm = nil
                 }
                 Button("Cancel", role: .cancel) { blockConfirm = nil }
             } message: {
-                Text("Their chats and messages will disappear for you. You can unblock later from a future settings screen.")
+                Text("Their chats and messages will disappear for you. Unblock anytime from Settings.")
             }
     }
 

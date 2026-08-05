@@ -5,15 +5,21 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
@@ -67,6 +73,7 @@ private const val CLUSTER_ZOOM_STEP = 3f
 fun MapScreen(
     author: Author,
     onOpenThread: (String) -> Unit,
+    onOpenSettings: () -> Unit,
 ) {
     val context = LocalContext.current
     val container = context.appContainer
@@ -207,10 +214,21 @@ fun MapScreen(
                         else -> "$count chats nearby"
                     }
                 },
+                onOpenSettings = onOpenSettings,
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .padding(top = padding.calculateTopPadding() + 12.dp),
             )
+
+            val nearbyEmpty = !state.isLoading && !state.isGlobalView && state.bubbles.isEmpty()
+            if (nearbyEmpty) {
+                EmptyNearbyCard(
+                    onStartChat = { showNewThreadSheet = true },
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = padding.calculateTopPadding() + 64.dp),
+                )
+            }
 
             LocateButton(
                 onClick = {
@@ -252,38 +270,99 @@ private fun StatusPill(
     isLoading: Boolean,
     isGlobalView: Boolean,
     text: String,
+    onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Surface(
+    Row(
         modifier = modifier,
-        shape = CircleShape,
-        color = MapTalkColors.Surface.copy(alpha = 0.92f),
-        contentColor = MapTalkColors.Text,
-        border = BorderStroke(1.dp, MapTalkColors.Hairline),
-        shadowElevation = 8.dp,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(7.dp),
+        Surface(
+            shape = CircleShape,
+            color = MapTalkColors.Surface.copy(alpha = 0.92f),
+            contentColor = MapTalkColors.Text,
+            border = BorderStroke(1.dp, MapTalkColors.Hairline),
+            shadowElevation = 8.dp,
         ) {
-            if (isLoading) {
-                CircularProgressIndicator(
-                    strokeWidth = 1.5.dp,
-                    color = MapTalkColors.Subtle,
-                    modifier = Modifier.size(12.dp),
-                )
-            } else {
+            Row(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
+                if (isLoading) {
+                    CircularProgressIndicator(
+                        strokeWidth = 1.5.dp,
+                        color = MapTalkColors.Subtle,
+                        modifier = Modifier.size(12.dp),
+                    )
+                } else {
+                    Icon(
+                        painter = painterResource(
+                            if (isGlobalView) R.drawable.ic_globe else R.drawable.ic_nearby,
+                        ),
+                        contentDescription = null,
+                        tint = MapTalkColors.Accent,
+                        modifier = Modifier.size(13.dp),
+                    )
+                }
+                Text(text = text, style = MaterialTheme.typography.labelLarge)
+            }
+        }
+
+        Surface(
+            onClick = onOpenSettings,
+            modifier = Modifier.size(36.dp),
+            shape = CircleShape,
+            color = MapTalkColors.Surface.copy(alpha = 0.92f),
+            contentColor = MapTalkColors.Text,
+            border = BorderStroke(1.dp, MapTalkColors.Hairline),
+            shadowElevation = 8.dp,
+        ) {
+            Box(contentAlignment = Alignment.Center) {
                 Icon(
-                    painter = painterResource(
-                        if (isGlobalView) R.drawable.ic_globe else R.drawable.ic_nearby,
-                    ),
-                    contentDescription = null,
-                    tint = MapTalkColors.Accent,
-                    modifier = Modifier.size(13.dp),
+                    painter = painterResource(R.drawable.ic_settings),
+                    contentDescription = "Settings",
+                    modifier = Modifier.size(18.dp),
                 )
             }
-            Text(text = text, style = MaterialTheme.typography.labelLarge)
+        }
+    }
+}
+
+@Composable
+private fun EmptyNearbyCard(onStartChat: () -> Unit, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier.widthIn(max = 300.dp),
+        shape = RoundedCornerShape(18.dp),
+        color = MapTalkColors.Surface.copy(alpha = 0.94f),
+        contentColor = MapTalkColors.Text,
+        border = BorderStroke(1.dp, MapTalkColors.Hairline),
+        shadowElevation = 12.dp,
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(
+                text = "Nothing pinned near here",
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Text(
+                text = "Be the first — drop a chat at the crosshair.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MapTalkColors.Subtle,
+            )
+            Button(
+                onClick = onStartChat,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MapTalkColors.Accent,
+                    contentColor = Color.White,
+                ),
+            ) {
+                Text("Start a chat here")
+            }
         }
     }
 }

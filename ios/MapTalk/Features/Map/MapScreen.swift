@@ -23,6 +23,7 @@ struct MapScreen: View {
         ? .region(cebuRegion)
         : .region(worldRegion)
     @State private var openThreadId: String?
+    @State private var showSettings = false
     @State private var isComposing = false
     /// Consumed by the next fix that arrives, so the map centres on you once at launch and again
     /// whenever you ask, but a late fix never yanks the camera away while you are panning.
@@ -67,6 +68,14 @@ struct MapScreen: View {
                     author: author,
                     threadId: threadId
                 )
+            }
+            .sheet(isPresented: $showSettings) {
+                NavigationStack {
+                    SettingsScreen(environment: environment, author: author)
+                }
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                .presentationBackground(Theme.base)
             }
             .sheet(isPresented: $isComposing) {
                 NewThreadSheet(position: model.visibleCenter) { title, kind in
@@ -145,26 +154,73 @@ struct MapScreen: View {
 
     private var overlay: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 7) {
-                if model.isLoading {
-                    ProgressView().controlSize(.mini).tint(Theme.subtle)
-                } else {
-                    Image(systemName: model.isGlobalView ? "globe" : "dot.radiowaves.left.and.right")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(Theme.accent)
+            HStack(spacing: 10) {
+                HStack(spacing: 7) {
+                    if model.isLoading {
+                        ProgressView().controlSize(.mini).tint(Theme.subtle)
+                    } else {
+                        Image(systemName: model.isGlobalView ? "globe" : "dot.radiowaves.left.and.right")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(Theme.accent)
+                    }
+                    Text(statusText)
+                        .font(.control)
+                        .foregroundStyle(Theme.text)
+                        .contentTransition(.numericText())
                 }
-                Text(statusText)
-                    .font(.control)
-                    .foregroundStyle(Theme.text)
-                    .contentTransition(.numericText())
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .background(Theme.surface.opacity(0.92), in: Capsule())
+                .overlay { Capsule().strokeBorder(Theme.hairline, lineWidth: 1) }
+
+                Button {
+                    showSettings = true
+                } label: {
+                    Image(systemName: "gearshape.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Theme.text)
+                        .frame(width: 36, height: 36)
+                        .background(Theme.surface.opacity(0.92), in: Circle())
+                        .overlay { Circle().strokeBorder(Theme.hairline, lineWidth: 1) }
+                }
+                .accessibilityLabel("Settings")
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 9)
-            .background(Theme.surface.opacity(0.92), in: Capsule())
-            .overlay { Capsule().strokeBorder(Theme.hairline, lineWidth: 1) }
             .shadow(color: .black.opacity(0.35), radius: 10, y: 3)
             .animation(.spring(duration: 0.3), value: statusText)
             .padding(.top, 10)
+
+            if showEmptyNearbyCTA {
+                VStack(spacing: 10) {
+                    Text("Nothing pinned near here")
+                        .font(.cardTitle)
+                        .foregroundStyle(Theme.text)
+                    Text("Be the first — drop a chat at the crosshair.")
+                        .font(.subheadline)
+                        .foregroundStyle(Theme.subtle)
+                        .multilineTextAlignment(.center)
+                    Button {
+                        isComposing = true
+                    } label: {
+                        Text("Start a chat here")
+                            .font(.control)
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 12)
+                            .background(Theme.accent, in: Capsule())
+                    }
+                    .buttonStyle(.pressable)
+                }
+                .padding(20)
+                .frame(maxWidth: 300)
+                .background(Theme.surface.opacity(0.94), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(Theme.hairline, lineWidth: 1)
+                }
+                .shadow(color: .black.opacity(0.4), radius: 16, y: 8)
+                .padding(.top, 28)
+                .transition(.opacity.combined(with: .scale(scale: 0.96)))
+            }
 
             Spacer()
 
@@ -201,6 +257,11 @@ struct MapScreen: View {
             .padding(.horizontal, 16)
             .padding(.bottom, 14)
         }
+        .animation(.spring(duration: 0.35), value: showEmptyNearbyCTA)
+    }
+
+    private var showEmptyNearbyCTA: Bool {
+        !model.isLoading && !model.isGlobalView && model.bubbles.isEmpty
     }
 
     private var statusText: String {
@@ -266,6 +327,10 @@ private struct BubbleMarker: View {
                         .padding(.vertical, 2)
                         .background(thread.kind.tint.opacity(0.16), in: Capsule())
                 }
+
+                Text(relativeTime(thread.lastMessageAt))
+                    .font(.meta)
+                    .foregroundStyle(Theme.faint)
             }
             .padding(.leading, 10)
             .padding(.trailing, 9)

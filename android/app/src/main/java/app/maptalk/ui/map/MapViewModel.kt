@@ -58,7 +58,8 @@ class MapViewModel(
 
     val errors = merge(threadRepository.errors, safetyRepository.errors)
 
-    private val blockedUids: StateFlow<Set<String>> = safetyRepository.blockedUids()
+    private val blockedUids: StateFlow<Set<String>> = safetyRepository.blockedPeople()
+        .map { people -> people.map { it.uid }.toSet() }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
 
     @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)

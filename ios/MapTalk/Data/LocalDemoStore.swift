@@ -15,20 +15,25 @@ final class LocalDemoStore {
 
     private var threads: [String: ChatThread] = [:]
     private var messages: [String: [Message]] = [:]
-    private var blocked: Set<String> = []
+    /// uid → display name
+    private var blocked: [String: String] = [:]
 
     private var threadListeners: [UUID: ThreadListener] = [:]
     private var singleThreadListeners: [UUID: SingleThreadListener] = [:]
     private var messageListeners: [UUID: MessageListener] = [:]
     private var displayNameListeners: [UUID: AsyncStream<String?>.Continuation] = [:]
-    private var blockListeners: [UUID: AsyncStream<Set<String>>.Continuation] = [:]
+    private var blockListeners: [UUID: AsyncStream<[BlockedPerson]>.Continuation] = [:]
 
     private static let displayNameKey = "maptalk.localDemo.displayName"
     private static let blocksKey = "maptalk.localDemo.blocks"
 
     init(seedCebu: Bool = true) {
         displayName = UserDefaults.standard.string(forKey: Self.displayNameKey)
-        blocked = Set(UserDefaults.standard.stringArray(forKey: Self.blocksKey) ?? [])
+        if let stored = UserDefaults.standard.dictionary(forKey: Self.blocksKey) as? [String: String] {
+            blocked = stored
+        } else if let legacy = UserDefaults.standard.stringArray(forKey: Self.blocksKey) {
+            blocked = Dictionary(uniqueKeysWithValues: legacy.map { ($0, "Blocked user") })
+        }
         if seedCebu {
             for pack in Self.cebuSeed() {
                 threads[pack.thread.id] = pack.thread
@@ -63,27 +68,27 @@ final class LocalDemoStore {
 
     // MARK: - Safety
 
-    func blockedUids() -> AsyncStream<Set<String>> {
+    func blockedPeople() -> AsyncStream<[BlockedPerson]> {
         let id = UUID()
         return AsyncStream { continuation in
             blockListeners[id] = continuation
-            continuation.yield(blocked)
+            continuation.yield(peopleSnapshot())
             continuation.onTermination = { [weak self] _ in
                 Task { @MainActor in self?.blockListeners[id] = nil }
             }
         }
     }
 
-    func block(uid blockedUid: String) {
+    func block(uid blockedUid: String, displayName: String) {
         guard blockedUid != uid else { return }
-        blocked.insert(blockedUid)
-        UserDefaults.standard.set(Array(blocked), forKey: Self.blocksKey)
+        blocked[blockedUid] = displayName
+        UserDefaults.standard.set(blocked, forKey: Self.blocksKey)
         publishBlocks()
     }
 
     func unblock(uid blockedUid: String) {
-        blocked.remove(blockedUid)
-        UserDefaults.standard.set(Array(blocked), forKey: Self.blocksKey)
+        blocked.removeValue(forKey: blockedUid)
+        UserDefaults.standard.set(blocked, forKey: Self.blocksKey)
         publishBlocks()
     }
 
@@ -98,9 +103,15 @@ final class LocalDemoStore {
         _ = (type, targetId, threadId, targetAuthorId, reason)
     }
 
+    private func peopleSnapshot() -> [BlockedPerson] {
+        blocked.map { BlockedPerson(uid: $0.key, displayName: $0.value) }
+            .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+    }
+
     private func publishBlocks() {
+        let people = peopleSnapshot()
         for continuation in blockListeners.values {
-            continuation.yield(blocked)
+            continuation.yield(people)
         }
     }
 

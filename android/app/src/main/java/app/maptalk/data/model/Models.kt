@@ -110,6 +110,9 @@ data class PreparedAudio(
 /** Who is writing, denormalised onto every thread and message. */
 data class Author(val uid: String, val displayName: String)
 
+/** Someone this viewer has blocked. */
+data class BlockedPerson(val uid: String, val displayName: String)
+
 enum class ReportTargetType(val id: String) {
     MESSAGE("message"),
     THREAD("thread"),

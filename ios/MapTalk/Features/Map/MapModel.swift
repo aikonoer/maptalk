@@ -35,8 +35,8 @@ final class MapModel {
     func start() {
         guard blockTask == nil else { return }
         blockTask = Task { [safety] in
-            for await blocked in safety.blockedUids() {
-                blockedUids = blocked
+            for await people in safety.blockedPeople() {
+                blockedUids = Set(people.map(\.uid))
                 if let queried {
                     // Re-apply filter on the current stream by re-subscribing.
                     subscribe(center: queried.center, radiusKm: queried.radiusKm)

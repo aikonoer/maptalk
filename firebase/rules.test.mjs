@@ -405,6 +405,7 @@ describe('blocks and reports', () => {
     await assertSucceeds(
       setDoc(doc(db, 'users', ALICE, 'blocks', BOB), {
         blockedUid: BOB,
+        displayName: 'Bob',
         createdAt: serverTimestamp(),
       }),
     );
@@ -416,12 +417,14 @@ describe('blocks and reports', () => {
     await assertFails(
       setDoc(doc(db, 'users', ALICE, 'blocks', ALICE), {
         blockedUid: ALICE,
+        displayName: 'Alice',
         createdAt: serverTimestamp(),
       }),
     );
     await assertFails(
       setDoc(doc(db, 'users', BOB, 'blocks', ALICE), {
         blockedUid: ALICE,
+        displayName: 'Alice',
         createdAt: serverTimestamp(),
       }),
     );
