@@ -11,6 +11,7 @@ final class AppEnvironment {
 
     let authRepository: AuthRepository
     let threadRepository: ThreadRepository
+    let safetyRepository: SafetyRepository
     let locationProvider: LocationProvider
 
     /// Only set for Firebase-backed environments; local demo has nothing to flush.
@@ -25,6 +26,9 @@ final class AppEnvironment {
             firestore: firestore,
             mediaUploader: R2MediaUploader(auth: auth, endpoint: endpoint)
         )
+        safetyRepository = SafetyRepository(firestore: firestore) { [authRepository] in
+            authRepository.currentUid
+        }
         locationProvider = LocationProvider()
     }
 
@@ -32,6 +36,9 @@ final class AppEnvironment {
         self.firestore = firestore
         authRepository = AuthRepository(auth: auth, firestore: firestore)
         threadRepository = ThreadRepository(firestore: firestore, mediaUploader: mediaUploader)
+        safetyRepository = SafetyRepository(firestore: firestore) { [authRepository] in
+            authRepository.currentUid
+        }
         locationProvider = LocationProvider()
     }
 
@@ -39,6 +46,7 @@ final class AppEnvironment {
         firestore = nil
         authRepository = AuthRepository(local: store)
         threadRepository = ThreadRepository(local: store)
+        safetyRepository = SafetyRepository(local: store)
         locationProvider = LocationProvider()
     }
 

@@ -138,6 +138,52 @@ service cloud.firestore {
         && request.resource.data.keys().hasOnly(['displayName', 'createdAt'])
         && validName(request.resource.data.displayName);
       allow delete: if false;
+
+      // Private block list — hides that author's threads and messages for this viewer.
+      match /blocks/{blockedUid} {
+        allow read: if signedIn() && request.auth.uid == userId;
+        allow create: if signedIn()
+          && request.auth.uid == userId
+          && blockedUid == request.resource.data.blockedUid
+          && blockedUid != request.auth.uid
+          && request.resource.data.keys().hasOnly(['blockedUid', 'createdAt'])
+          && request.resource.data.blockedUid is string
+          && request.resource.data.blockedUid.size() >= 1
+          && request.resource.data.blockedUid.size() <= 128
+          && request.resource.data.createdAt == request.time;
+        allow update: if false;
+        allow delete: if signedIn() && request.auth.uid == userId;
+      }
+
+      // Append-only reports owned by the reporter (admin can query collection-group later).
+      match /reports/{reportId} {
+        allow read: if signedIn() && request.auth.uid == userId;
+        allow create: if signedIn()
+          && request.auth.uid == userId
+          && request.resource.data.keys().hasOnly([
+               'targetType', 'targetId', 'threadId', 'targetAuthorId', 'reason', 'createdAt'
+             ])
+          && request.resource.data.targetType in ['message', 'thread', 'user']
+          && request.resource.data.targetId is string
+          && request.resource.data.targetId.size() >= 1
+          && request.resource.data.targetId.size() <= 128
+          && request.resource.data.threadId is string
+          && request.resource.data.threadId.size() <= 128
+          && request.resource.data.targetAuthorId is string
+          && request.resource.data.targetAuthorId.size() >= 1
+          && request.resource.data.targetAuthorId.size() <= 128
+          && request.resource.data.targetAuthorId != request.auth.uid
+          && request.resource.data.reason is string
+          && request.resource.data.reason in ['spam', 'harassment', 'inappropriate', 'other']
+          && request.resource.data.createdAt == request.time
+          && (
+            (request.resource.data.targetType == 'message'
+              && request.resource.data.threadId.size() >= 1)
+            || (request.resource.data.targetType != 'message'
+              && request.resource.data.threadId.size() == 0)
+          );
+        allow update, delete: if false;
+      }
     }
 
     match /threads/{threadId} {

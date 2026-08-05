@@ -5,6 +5,7 @@ import android.content.Context
 import app.maptalk.data.AuthRepository
 import app.maptalk.data.LocalDemoStore
 import app.maptalk.data.MediaUploader
+import app.maptalk.data.SafetyRepository
 import app.maptalk.data.ThreadRepository
 import app.maptalk.location.LocationProvider
 import com.google.firebase.Firebase
@@ -67,6 +68,14 @@ class AppContainer(context: Context) {
                         imageEndpoint = BuildConfig.MAPTALK_MEDIA_UPLOAD_URL,
                     )
                 },
+            )
+    }
+
+    val safetyRepository: SafetyRepository by lazy {
+        localStore?.let { SafetyRepository(it) }
+            ?: SafetyRepository(
+                firestore = firebase.firestore,
+                currentUid = { firebase.auth.currentUser?.uid },
             )
     }
 

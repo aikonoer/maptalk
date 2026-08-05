@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import app.maptalk.AppContainer
+import app.maptalk.data.SafetyRepository
 import app.maptalk.data.ThreadRepository
 import app.maptalk.data.model.Author
 import app.maptalk.data.model.ChatThread
@@ -23,11 +24,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -42,6 +45,7 @@ data class MapUiState(
 
 class MapViewModel(
     private val threadRepository: ThreadRepository,
+    private val safetyRepository: SafetyRepository,
     private val locationProvider: LocationProvider,
 ) : ViewModel() {
 
@@ -52,7 +56,10 @@ class MapViewModel(
     /** Where to point the camera on first load, once we know it. */
     val startLocation: StateFlow<GeoPoint?> = _startLocation.asStateFlow()
 
-    val errors = threadRepository.errors
+    val errors = merge(threadRepository.errors, safetyRepository.errors)
+
+    private val blockedUids: StateFlow<Set<String>> = safetyRepository.blockedUids()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
 
     @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
     val state: StateFlow<MapUiState> = camera
@@ -61,10 +68,14 @@ class MapViewModel(
         .onlyMeaningfulMoves()
         .flatMapLatest { snapshot ->
             val query = Viewport.queryFor(snapshot.center, snapshot.radiusKm)
-            threadRepository.threads(query).map { threads ->
+            combine(
+                threadRepository.threads(query),
+                blockedUids,
+            ) { threads, blocked ->
+                val visible = threads.filter { it.authorId !in blocked }
                 MapUiState(
                     bubbles = clusterByGeohash(
-                        items = threads,
+                        items = visible,
                         prefixLength = Viewport.clusterPrefixLength(snapshot.radiusKm),
                         geohashOf = ChatThread::geohash,
                         positionOf = ChatThread::position,
@@ -121,10 +132,17 @@ class MapViewModel(
     }
 
     companion object {
-        private const val CAMERA_DEBOUNCE_MS = 300L
+        private const val CAMERA_DEBOUNCE_MS = 250L
 
-        fun factory(container: AppContainer): ViewModelProvider.Factory = viewModelFactory {
-            initializer { MapViewModel(container.threadRepository, container.locationProvider) }
-        }
+        fun factory(container: AppContainer): ViewModelProvider.Factory =
+            viewModelFactory {
+                initializer {
+                    MapViewModel(
+                        threadRepository = container.threadRepository,
+                        safetyRepository = container.safetyRepository,
+                        locationProvider = container.locationProvider,
+                    )
+                }
+            }
     }
 }

@@ -109,3 +109,21 @@ data class PreparedAudio(
 
 /** Who is writing, denormalised onto every thread and message. */
 data class Author(val uid: String, val displayName: String)
+
+enum class ReportTargetType(val id: String) {
+    MESSAGE("message"),
+    THREAD("thread"),
+    USER("user"),
+}
+
+enum class ReportReason(val id: String, val label: String) {
+    SPAM("spam", "Spam"),
+    HARASSMENT("harassment", "Harassment"),
+    INAPPROPRIATE("inappropriate", "Inappropriate"),
+    OTHER("other", "Something else"),
+    ;
+
+    companion object {
+        val ALL = entries
+    }
+}

@@ -8,6 +8,8 @@ import app.maptalk.data.model.MessageKind
 import app.maptalk.data.model.MessageReply
 import app.maptalk.data.model.PreparedAudio
 import app.maptalk.data.model.PreparedImage
+import app.maptalk.data.model.ReportReason
+import app.maptalk.data.model.ReportTargetType
 import app.maptalk.data.model.ThreadKind
 import app.maptalk.geo.GeoPoint
 import app.maptalk.geo.Viewport
@@ -44,8 +46,16 @@ class LocalDemoStore(context: Context) {
 
     private val threads = linkedMapOf<String, ChatThread>()
     private val messages = linkedMapOf<String, MutableList<Message>>()
+    private val blocked = mutableSetOf<String>().also {
+        it.addAll(prefs.getStringSet(KEY_BLOCKS, emptySet()) ?: emptySet())
+    }
 
     private val threadPulse = MutableSharedFlow<Unit>(
+        replay = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    ).also { it.tryEmit(Unit) }
+
+    private val blockPulse = MutableSharedFlow<Unit>(
         replay = 1,
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     ).also { it.tryEmit(Unit) }
@@ -61,6 +71,33 @@ class LocalDemoStore(context: Context) {
         val trimmed = name.trim()
         prefs.edit().putString(KEY_DISPLAY_NAME, trimmed).apply()
         _displayName.value = trimmed
+    }
+
+    fun blockedUids(): Flow<Set<String>> =
+        blockPulse.map { blocked.toSet() }.onStart { emit(blocked.toSet()) }
+
+    fun block(blockedUid: String) {
+        if (blockedUid == uid || blockedUid.isEmpty()) return
+        blocked.add(blockedUid)
+        prefs.edit().putStringSet(KEY_BLOCKS, blocked.toSet()).apply()
+        blockPulse.tryEmit(Unit)
+    }
+
+    fun unblock(blockedUid: String) {
+        blocked.remove(blockedUid)
+        prefs.edit().putStringSet(KEY_BLOCKS, blocked.toSet()).apply()
+        blockPulse.tryEmit(Unit)
+    }
+
+    fun report(
+        type: ReportTargetType,
+        targetId: String,
+        threadId: String,
+        targetAuthorId: String,
+        reason: ReportReason,
+    ) {
+        // Local demo: accept and forget.
+        Unit
     }
 
     fun threads(query: ViewportQuery): Flow<List<ChatThread>> =
@@ -352,9 +389,10 @@ class LocalDemoStore(context: Context) {
         )
     }
 
-    companion object {
+        companion object {
         val CEBU = GeoPoint(10.3157, 123.8854)
         private const val PREFS = "maptalk.localDemo"
         private const val KEY_DISPLAY_NAME = "displayName"
+        private const val KEY_BLOCKS = "blocks"
     }
 }

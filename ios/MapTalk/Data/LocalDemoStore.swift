@@ -15,16 +15,20 @@ final class LocalDemoStore {
 
     private var threads: [String: ChatThread] = [:]
     private var messages: [String: [Message]] = [:]
+    private var blocked: Set<String> = []
 
     private var threadListeners: [UUID: ThreadListener] = [:]
     private var singleThreadListeners: [UUID: SingleThreadListener] = [:]
     private var messageListeners: [UUID: MessageListener] = [:]
     private var displayNameListeners: [UUID: AsyncStream<String?>.Continuation] = [:]
+    private var blockListeners: [UUID: AsyncStream<Set<String>>.Continuation] = [:]
 
     private static let displayNameKey = "maptalk.localDemo.displayName"
+    private static let blocksKey = "maptalk.localDemo.blocks"
 
     init(seedCebu: Bool = true) {
         displayName = UserDefaults.standard.string(forKey: Self.displayNameKey)
+        blocked = Set(UserDefaults.standard.stringArray(forKey: Self.blocksKey) ?? [])
         if seedCebu {
             for pack in Self.cebuSeed() {
                 threads[pack.thread.id] = pack.thread
@@ -54,6 +58,49 @@ final class LocalDemoStore {
         UserDefaults.standard.set(trimmed, forKey: Self.displayNameKey)
         for continuation in displayNameListeners.values {
             continuation.yield(displayName)
+        }
+    }
+
+    // MARK: - Safety
+
+    func blockedUids() -> AsyncStream<Set<String>> {
+        let id = UUID()
+        return AsyncStream { continuation in
+            blockListeners[id] = continuation
+            continuation.yield(blocked)
+            continuation.onTermination = { [weak self] _ in
+                Task { @MainActor in self?.blockListeners[id] = nil }
+            }
+        }
+    }
+
+    func block(uid blockedUid: String) {
+        guard blockedUid != uid else { return }
+        blocked.insert(blockedUid)
+        UserDefaults.standard.set(Array(blocked), forKey: Self.blocksKey)
+        publishBlocks()
+    }
+
+    func unblock(uid blockedUid: String) {
+        blocked.remove(blockedUid)
+        UserDefaults.standard.set(Array(blocked), forKey: Self.blocksKey)
+        publishBlocks()
+    }
+
+    func report(
+        type: ReportTargetType,
+        targetId: String,
+        threadId: String,
+        targetAuthorId: String,
+        reason: ReportReason
+    ) {
+        // Local demo: accept and forget — nothing to review offline.
+        _ = (type, targetId, threadId, targetAuthorId, reason)
+    }
+
+    private func publishBlocks() {
+        for continuation in blockListeners.values {
+            continuation.yield(blocked)
         }
     }
 

@@ -399,6 +399,87 @@ describe('messages', () => {
   });
 });
 
+describe('blocks and reports', () => {
+  it('lets a user block someone else and read their own blocks', async () => {
+    const db = testEnv.authenticatedContext(ALICE).firestore();
+    await assertSucceeds(
+      setDoc(doc(db, 'users', ALICE, 'blocks', BOB), {
+        blockedUid: BOB,
+        createdAt: serverTimestamp(),
+      }),
+    );
+    await assertSucceeds(getDoc(doc(db, 'users', ALICE, 'blocks', BOB)));
+  });
+
+  it('rejects blocking yourself or writing another user\'s block list', async () => {
+    const db = testEnv.authenticatedContext(ALICE).firestore();
+    await assertFails(
+      setDoc(doc(db, 'users', ALICE, 'blocks', ALICE), {
+        blockedUid: ALICE,
+        createdAt: serverTimestamp(),
+      }),
+    );
+    await assertFails(
+      setDoc(doc(db, 'users', BOB, 'blocks', ALICE), {
+        blockedUid: ALICE,
+        createdAt: serverTimestamp(),
+      }),
+    );
+  });
+
+  it('accepts a message report and rejects incomplete ones', async () => {
+    const db = testEnv.authenticatedContext(ALICE).firestore();
+    await assertSucceeds(
+      setDoc(doc(db, 'users', ALICE, 'reports', 'r1'), {
+        targetType: 'message',
+        targetId: 'msg-1',
+        threadId: 'thread-1',
+        targetAuthorId: BOB,
+        reason: 'spam',
+        createdAt: serverTimestamp(),
+      }),
+    );
+    await assertFails(
+      setDoc(doc(db, 'users', ALICE, 'reports', 'r2'), {
+        targetType: 'message',
+        targetId: 'msg-1',
+        threadId: '',
+        targetAuthorId: BOB,
+        reason: 'spam',
+        createdAt: serverTimestamp(),
+      }),
+    );
+    await assertFails(
+      setDoc(doc(db, 'users', ALICE, 'reports', 'r3'), {
+        targetType: 'thread',
+        targetId: 'thread-1',
+        threadId: '',
+        targetAuthorId: ALICE,
+        reason: 'spam',
+        createdAt: serverTimestamp(),
+      }),
+    );
+  });
+
+  it('rejects editing or deleting a report', async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), 'users', ALICE, 'reports', 'r1'), {
+        targetType: 'user',
+        targetId: BOB,
+        threadId: '',
+        targetAuthorId: BOB,
+        reason: 'harassment',
+        createdAt: new Date(),
+      });
+    });
+    const db = testEnv.authenticatedContext(ALICE).firestore();
+    await assertFails(
+      updateDoc(doc(db, 'users', ALICE, 'reports', 'r1'), { reason: 'other' }),
+    );
+    await assertFails(deleteDoc(doc(db, 'users', ALICE, 'reports', 'r1')));
+  });
+});
+
 describe('users', () => {
   it('lets a user write their own profile', async () => {
     const db = testEnv.authenticatedContext(ALICE).firestore();

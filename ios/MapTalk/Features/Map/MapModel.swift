@@ -15,14 +15,41 @@ final class MapModel {
     var errorMessage: String?
 
     private let repository: ThreadRepository
+    private let safety: SafetyRepository
+    private var blockedUids: Set<String> = []
     private var queried: (center: GeoPoint, radiusKm: Double)?
     private var streamTask: Task<Void, Never>?
+    private var blockTask: Task<Void, Never>?
 
-    init(repository: ThreadRepository) {
+    init(repository: ThreadRepository, safety: SafetyRepository) {
         self.repository = repository
+        self.safety = safety
         repository.onError = { [weak self] error in
             self?.errorMessage = error.localizedDescription
         }
+        safety.onError = { [weak self] error in
+            self?.errorMessage = error.localizedDescription
+        }
+    }
+
+    func start() {
+        guard blockTask == nil else { return }
+        blockTask = Task { [safety] in
+            for await blocked in safety.blockedUids() {
+                blockedUids = blocked
+                if let queried {
+                    // Re-apply filter on the current stream by re-subscribing.
+                    subscribe(center: queried.center, radiusKm: queried.radiusKm)
+                }
+            }
+        }
+    }
+
+    func stop() {
+        streamTask?.cancel()
+        streamTask = nil
+        blockTask?.cancel()
+        blockTask = nil
     }
 
     func cameraChanged(center: GeoPoint, radiusKm: Double) {
@@ -42,8 +69,9 @@ final class MapModel {
         streamTask = Task { [repository] in
             for await threads in repository.threads(for: query) {
                 if Task.isCancelled { return }
+                let visible = threads.filter { !blockedUids.contains($0.authorId) }
                 bubbles = clusterByGeohash(
-                    threads,
+                    visible,
                     prefixLength: prefixLength,
                     geohash: \.geohash,
                     position: \.position,

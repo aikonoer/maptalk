@@ -8,6 +8,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import app.maptalk.AppContainer
 import app.maptalk.data.ImageCompressor
+import app.maptalk.data.SafetyRepository
 import app.maptalk.data.ThreadRepository
 import app.maptalk.data.model.Author
 import app.maptalk.data.model.ChatThread
@@ -15,15 +16,17 @@ import app.maptalk.data.model.Message
 import app.maptalk.data.model.MessageReply
 import app.maptalk.data.model.PreparedAudio
 import app.maptalk.data.model.PreparedImage
+import app.maptalk.data.model.ReportReason
+import app.maptalk.data.model.ReportTargetType
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -33,41 +36,47 @@ data class ThreadUiState(
     val messages: List<Message> = emptyList(),
     val isLoading: Boolean = true,
     val replyTarget: Message? = null,
+    val shouldDismiss: Boolean = false,
 )
 
 class ThreadViewModel(
     private val threadId: String,
     private val threadRepository: ThreadRepository,
+    private val safetyRepository: SafetyRepository,
     private val readBytes: suspend (Uri) -> ByteArray?,
     private val resolveMedia: (String) -> File?,
 ) : ViewModel() {
 
     private val _errors = MutableSharedFlow<Throwable>(extraBufferCapacity = 1)
-    val errors = _errors.asSharedFlow()
+    val errors = merge(_errors, threadRepository.errors, safetyRepository.errors)
 
     private val _isPreparingImage = MutableStateFlow(false)
     val isPreparingImage: StateFlow<Boolean> = _isPreparingImage.asStateFlow()
 
     private val _replyTarget = MutableStateFlow<Message?>(null)
+    private val _shouldDismiss = MutableStateFlow(false)
+
+    private val blockedUids: StateFlow<Set<String>> = safetyRepository.blockedUids()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
 
     val state: StateFlow<ThreadUiState> = combine(
         threadRepository.thread(threadId),
         threadRepository.messages(threadId),
         _replyTarget,
-    ) { thread, messages, reply ->
+        blockedUids,
+        _shouldDismiss,
+    ) { thread, messages, reply, blocked, dismiss ->
+        val filtered = messages.filter { it.authorId !in blocked }
+        val replyVisible = reply?.takeUnless { it.authorId in blocked }
+        val authorBlocked = thread != null && thread.authorId in blocked
         ThreadUiState(
             thread = thread,
-            messages = messages,
+            messages = filtered,
             isLoading = false,
-            replyTarget = reply,
+            replyTarget = replyVisible,
+            shouldDismiss = dismiss || authorBlocked,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ThreadUiState())
-
-    init {
-        viewModelScope.launch {
-            threadRepository.errors.collect { _errors.emit(it) }
-        }
-    }
 
     fun mediaFile(relativePath: String): File? = resolveMedia(relativePath)
 
@@ -116,6 +125,28 @@ class ThreadViewModel(
         threadRepository.toggleReaction(threadId, message.id, emoji, author)
     }
 
+    fun block(blockedUid: String, author: Author) {
+        safetyRepository.block(blockedUid, author)
+        _shouldDismiss.value = true
+    }
+
+    fun report(
+        type: ReportTargetType,
+        targetId: String,
+        targetAuthorId: String,
+        reason: ReportReason,
+        author: Author,
+    ) {
+        safetyRepository.report(
+            type = type,
+            targetId = targetId,
+            threadId = threadId,
+            targetAuthorId = targetAuthorId,
+            reason = reason,
+            author = author,
+        )
+    }
+
     fun prepareImage(uri: Uri, onReady: (PreparedImage) -> Unit) {
         viewModelScope.launch {
             _isPreparingImage.value = true
@@ -142,6 +173,7 @@ class ThreadViewModel(
                     ThreadViewModel(
                         threadId = threadId,
                         threadRepository = container.threadRepository,
+                        safetyRepository = container.safetyRepository,
                         readBytes = { uri ->
                             app.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                         },

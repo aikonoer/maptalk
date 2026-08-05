@@ -31,6 +31,15 @@ enum Fs {
     static let replyToText = "replyToText"
     static let replyToAuthorName = "replyToAuthorName"
     static let reactions = "reactions"
+
+    static let blocks = "blocks"
+    static let blockedUid = "blockedUid"
+    static let reports = "reports"
+    static let targetType = "targetType"
+    static let targetId = "targetId"
+    static let threadId = "threadId"
+    static let targetAuthorId = "targetAuthorId"
+    static let reason = "reason"
 }
 
 extension DocumentSnapshot {

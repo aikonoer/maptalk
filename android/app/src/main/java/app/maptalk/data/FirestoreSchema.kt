@@ -42,6 +42,15 @@ object Fs {
     const val REPLY_TO_AUTHOR_NAME = "replyToAuthorName"
     const val REACTIONS = "reactions"
 
+    const val BLOCKS = "blocks"
+    const val BLOCKED_UID = "blockedUid"
+    const val REPORTS = "reports"
+    const val TARGET_TYPE = "targetType"
+    const val TARGET_ID = "targetId"
+    const val THREAD_ID = "threadId"
+    const val TARGET_AUTHOR_ID = "targetAuthorId"
+    const val REASON = "reason"
+
     /** Precision used for the stored hash; the query bounds use their own precision. */
     const val GEOHASH_PRECISION = 10
 }

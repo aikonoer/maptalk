@@ -62,6 +62,28 @@ Firebase Storage rules in `firebase/storage.rules` remain for the emulator path.
 | `displayName` | string    | 1-24 chars, chosen at first launch.      |
 | `createdAt`   | timestamp | Server timestamp.                        |
 
+### `users/{uid}/blocks/{blockedUid}`
+
+Viewer-private. Clients hide that author's threads and messages.
+
+| Field         | Type      | Notes                                      |
+| ------------- | --------- | ------------------------------------------ |
+| `blockedUid`  | string    | Must equal the document id; not yourself.  |
+| `createdAt`   | timestamp | Server timestamp.                          |
+
+### `users/{uid}/reports/{reportId}`
+
+Append-only reports owned by the reporter. Admin can query as a collection group later.
+
+| Field            | Type      | Notes                                                         |
+| ---------------- | --------- | ------------------------------------------------------------- |
+| `targetType`     | string    | `message`, `thread`, or `user`.                               |
+| `targetId`       | string    | Message id, thread id, or uid.                                |
+| `threadId`       | string    | Required (non-empty) for `message`; empty otherwise.          |
+| `targetAuthorId` | string    | Author being reported; must not be the reporter.              |
+| `reason`         | string    | `spam`, `harassment`, `inappropriate`, or `other`.            |
+| `createdAt`      | timestamp | Server timestamp.                                             |
+
 ## Writes
 
 Creating a thread is a single `set` on a new document with `messageCount = 0` and both

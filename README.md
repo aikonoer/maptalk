@@ -26,8 +26,10 @@ the data honest, so the backend runs on Firebase's free Spark plan.
 - Create a thread at the map centre with a title and a kind (event, notice, traffic, general).
 - Open a thread and post replies; everyone watching sees them immediately.
 
-Deliberately not in v1: real accounts, profiles, thread expiry, moderation and reporting,
-push notifications, photos, search.
+Deliberately not in v1: real accounts, profiles, thread expiry,
+Cloud Functions–backed moderation queues, push notifications, search.
+
+Reporting and blocking are in-app (viewer-private blocks; append-only reports).
 
 ## One-time setup
 

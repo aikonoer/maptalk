@@ -43,7 +43,12 @@ struct MapScreen: View {
     init(environment: AppEnvironment, author: Author) {
         self.environment = environment
         self.author = author
-        _model = State(initialValue: MapModel(repository: environment.threadRepository))
+        _model = State(
+            initialValue: MapModel(
+                repository: environment.threadRepository,
+                safety: environment.safetyRepository
+            )
+        )
     }
 
     private var location: LocationProvider { environment.locationProvider }
@@ -89,6 +94,7 @@ struct MapScreen: View {
                 Text(model.errorMessage ?? "")
             }
             .onAppear {
+                model.start()
                 if Self.startsInDemo {
                     // Don't wait for MapKit's first camera callback — pin the query on Cebu now.
                     let center = GeoPoint(lat: 10.3157, lng: 123.8854)
@@ -98,6 +104,7 @@ struct MapScreen: View {
                 }
                 centerOnUserIfWanted()
             }
+            .onDisappear { model.stop() }
             .onChange(of: location.lastLocation) { _, _ in centerOnUserIfWanted() }
         }
     }

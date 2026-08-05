@@ -88,7 +88,10 @@ import app.maptalk.data.model.Message
 import app.maptalk.data.model.PreparedAudio
 import app.maptalk.data.model.PreparedImage
 import app.maptalk.data.model.ReactionEmoji
+import app.maptalk.data.model.ReportReason
+import app.maptalk.data.model.ReportTargetType
 import app.maptalk.data.model.StickerPack
+import app.maptalk.data.model.ChatThread
 import app.maptalk.ui.relativeTime
 import app.maptalk.ui.theme.MapTalkColors
 import app.maptalk.ui.theme.MapTalkShapes
@@ -122,6 +125,10 @@ fun ThreadScreen(
     var fullscreenPath by remember { mutableStateOf<String?>(null) }
     var showStickers by remember { mutableStateOf(false) }
     var reactionTarget by remember { mutableStateOf<Message?>(null) }
+    var messageActions by remember { mutableStateOf<Message?>(null) }
+    var reportTarget by remember { mutableStateOf<ReportTarget?>(null) }
+    var blockConfirm by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var reportThanks by remember { mutableStateOf(false) }
     var isRecording by remember { mutableStateOf(false) }
     var recordElapsedMs by remember { mutableIntStateOf(0) }
     var recorder by remember { mutableStateOf<MediaRecorder?>(null) }
@@ -202,6 +209,10 @@ fun ThreadScreen(
         }
     }
 
+    LaunchedEffect(state.shouldDismiss) {
+        if (state.shouldDismiss) onBack()
+    }
+
     LaunchedEffect(state.messages.size) {
         if (state.messages.isNotEmpty()) {
             listState.animateScrollToItem(state.messages.lastIndex)
@@ -245,6 +256,130 @@ fun ThreadScreen(
             confirmButton = {
                 TextButton(onClick = { reactionTarget = null }) {
                     Text("Close", color = MapTalkColors.Subtle)
+                }
+            },
+        )
+    }
+
+    messageActions?.let { message ->
+        AlertDialog(
+            onDismissRequest = { messageActions = null },
+            containerColor = MapTalkColors.Surface,
+            title = { Text("Message", color = MapTalkColors.Text) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = {
+                        viewModel.setReply(message)
+                        messageActions = null
+                    }) { Text("Reply", color = MapTalkColors.Text) }
+                    TextButton(onClick = {
+                        reactionTarget = message
+                        messageActions = null
+                    }) { Text("React", color = MapTalkColors.Text) }
+                    if (message.authorId != author.uid) {
+                        TextButton(onClick = {
+                            reportTarget = ReportTarget.Message(message)
+                            messageActions = null
+                        }) { Text("Report", color = MapTalkColors.Text) }
+                        TextButton(onClick = {
+                            blockConfirm = message.authorId to message.authorName
+                            messageActions = null
+                        }) { Text("Block ${message.authorName}", color = MapTalkColors.Danger) }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { messageActions = null }) {
+                    Text("Close", color = MapTalkColors.Subtle)
+                }
+            },
+        )
+    }
+
+    reportTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { reportTarget = null },
+            containerColor = MapTalkColors.Surface,
+            title = { Text("Why are you reporting this?", color = MapTalkColors.Text) },
+            text = {
+                Column {
+                    ReportReason.ALL.forEach { reason ->
+                        TextButton(
+                            onClick = {
+                                when (target) {
+                                    is ReportTarget.Message -> viewModel.report(
+                                        type = ReportTargetType.MESSAGE,
+                                        targetId = target.message.id,
+                                        targetAuthorId = target.message.authorId,
+                                        reason = reason,
+                                        author = author,
+                                    )
+                                    is ReportTarget.Thread -> viewModel.report(
+                                        type = ReportTargetType.THREAD,
+                                        targetId = target.thread.id,
+                                        targetAuthorId = target.thread.authorId,
+                                        reason = reason,
+                                        author = author,
+                                    )
+                                }
+                                reportTarget = null
+                                reportThanks = true
+                            },
+                        ) {
+                            Text(reason.label, color = MapTalkColors.Text)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { reportTarget = null }) {
+                    Text("Cancel", color = MapTalkColors.Subtle)
+                }
+            },
+        )
+    }
+
+    blockConfirm?.let { (uid, name) ->
+        AlertDialog(
+            onDismissRequest = { blockConfirm = null },
+            containerColor = MapTalkColors.Surface,
+            title = { Text("Block $name?", color = MapTalkColors.Text) },
+            text = {
+                Text(
+                    "Their chats and messages will disappear for you.",
+                    color = MapTalkColors.Subtle,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.block(uid, author)
+                    blockConfirm = null
+                }) {
+                    Text("Block", color = MapTalkColors.Danger)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { blockConfirm = null }) {
+                    Text("Cancel", color = MapTalkColors.Subtle)
+                }
+            },
+        )
+    }
+
+    if (reportThanks) {
+        AlertDialog(
+            onDismissRequest = { reportThanks = false },
+            containerColor = MapTalkColors.Surface,
+            title = { Text("Thanks — we’ll take a look", color = MapTalkColors.Text) },
+            text = {
+                Text(
+                    "Your report was sent. You can also block the person if you don’t want to see them.",
+                    color = MapTalkColors.Subtle,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { reportThanks = false }) {
+                    Text("OK", color = MapTalkColors.Accent)
                 }
             },
         )
@@ -295,6 +430,25 @@ fun ThreadScreen(
                         Icon(painterResource(R.drawable.ic_arrow_back), contentDescription = "Back")
                     }
                 },
+                actions = {
+                    val thread = state.thread
+                    if (thread != null && thread.authorId != author.uid) {
+                        IconButton(
+                            onClick = {
+                                reportTarget = ReportTarget.Thread(thread)
+                            },
+                        ) {
+                            Text("⚑", color = MapTalkColors.Subtle, fontSize = 16.sp)
+                        }
+                        IconButton(
+                            onClick = {
+                                blockConfirm = thread.authorId to thread.authorName
+                            },
+                        ) {
+                            Text("⊘", color = MapTalkColors.Subtle, fontSize = 16.sp)
+                        }
+                    }
+                },
             )
         },
     ) { padding ->
@@ -335,7 +489,7 @@ fun ThreadScreen(
                                 resolveMedia = viewModel::mediaFile,
                                 onImageClick = { path -> fullscreenPath = path },
                                 onReply = { viewModel.setReply(message) },
-                                onReact = { reactionTarget = message },
+                                onLongPress = { messageActions = message },
                                 onToggleReaction = { emoji ->
                                     viewModel.toggleReaction(emoji, message, author)
                                 },
@@ -455,7 +609,7 @@ private fun MessageRow(
     resolveMedia: (String) -> File?,
     onImageClick: (String) -> Unit,
     onReply: () -> Unit,
-    onReact: () -> Unit,
+    onLongPress: () -> Unit,
     onToggleReaction: (String) -> Unit,
 ) {
     val imageOnly = message.hasImage && message.text.isEmpty() && message.reply == null
@@ -493,7 +647,7 @@ private fun MessageRow(
                     fontSize = 48.sp,
                     modifier = Modifier.combinedClickable(
                         onClick = {},
-                        onLongClick = onReact,
+                        onLongClick = onLongPress,
                     ),
                 )
             } else {
@@ -510,7 +664,7 @@ private fun MessageRow(
                     contentColor = if (isMine) Color.White else MapTalkColors.Text,
                     modifier = Modifier.combinedClickable(
                         onClick = {},
-                        onLongClick = onReact,
+                        onLongClick = onLongPress,
                     ),
                 ) {
                     Column(
@@ -1114,4 +1268,9 @@ private fun Message.follows(previous: Message): Boolean {
     val mine = createdAt ?: return true
     val theirs = previous.createdAt ?: return true
     return Duration.between(theirs, mine) < RUN_GAP
+}
+
+private sealed interface ReportTarget {
+    data class Message(val message: app.maptalk.data.model.Message) : ReportTarget
+    data class Thread(val thread: ChatThread) : ReportTarget
 }

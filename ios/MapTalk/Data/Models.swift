@@ -142,6 +142,28 @@ struct Author: Equatable, Sendable {
     let displayName: String
 }
 
+enum ReportTargetType: String, Sendable {
+    case message
+    case thread
+    case user
+}
+
+enum ReportReason: String, CaseIterable, Sendable {
+    case spam
+    case harassment
+    case inappropriate
+    case other
+
+    var label: String {
+        switch self {
+        case .spam: "Spam"
+        case .harassment: "Harassment"
+        case .inappropriate: "Inappropriate"
+        case .other: "Something else"
+        }
+    }
+}
+
 struct PreparedImage: Sendable {
     let jpegData: Data
     let width: Int

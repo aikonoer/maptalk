@@ -6,6 +6,7 @@ import UIKit
 struct ThreadScreen: View {
 
     private let author: Author
+    private let threadId: String
     @State private var model: ThreadModel
     @State private var draft = ""
     @State private var pickerItem: PhotosPickerItem?
@@ -13,13 +14,22 @@ struct ThreadScreen: View {
     @State private var isPreparingImage = false
     @State private var showStickers = false
     @State private var reactionTarget: Message?
+    @State private var reportTarget: ReportSheetTarget?
+    @State private var blockConfirm: BlockConfirm?
+    @State private var reportThanks = false
     @State private var recorder = VoiceRecorder()
     @FocusState private var isComposing: Bool
+    @Environment(\.dismiss) private var dismiss
 
     init(environment: AppEnvironment, author: Author, threadId: String) {
         self.author = author
+        self.threadId = threadId
         _model = State(
-            initialValue: ThreadModel(repository: environment.threadRepository, threadId: threadId)
+            initialValue: ThreadModel(
+                repository: environment.threadRepository,
+                safety: environment.safetyRepository,
+                threadId: threadId
+            )
         )
     }
 
@@ -39,11 +49,33 @@ struct ThreadScreen: View {
             .toolbarBackground(Theme.surface, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .principal) { header }
+                ToolbarItem(placement: .topBarTrailing) {
+                    if let thread = model.thread, thread.authorId != author.uid {
+                        Menu {
+                            Button("Report chat", systemImage: "flag") {
+                                reportTarget = .thread(thread)
+                            }
+                            Button("Block \(thread.authorName)", systemImage: "hand.raised", role: .destructive) {
+                                blockConfirm = BlockConfirm(
+                                    uid: thread.authorId,
+                                    name: thread.authorName
+                                )
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis")
+                                .foregroundStyle(Theme.subtle)
+                        }
+                        .accessibilityLabel("Chat options")
+                    }
+                }
             }
             .onAppear { model.start() }
             .onDisappear {
                 model.stop()
                 recorder.cancel()
+            }
+            .onChange(of: model.shouldDismiss) { _, dismissNow in
+                if dismissNow { dismiss() }
             }
             .onChange(of: pickerItem) { _, item in
                 guard let item else { return }
@@ -61,6 +93,56 @@ struct ThreadScreen: View {
                 .presentationDetents([.height(120)])
                 .presentationDragIndicator(.visible)
                 .presentationBackground(Theme.surface)
+            }
+            .sheet(item: $reportTarget) { target in
+                ReportReasonSheet { reason in
+                    switch target {
+                    case let .message(message):
+                        model.report(
+                            type: .message,
+                            targetId: message.id,
+                            targetAuthorId: message.authorId,
+                            reason: reason,
+                            as: author
+                        )
+                    case let .thread(thread):
+                        model.report(
+                            type: .thread,
+                            targetId: thread.id,
+                            targetAuthorId: thread.authorId,
+                            reason: reason,
+                            as: author
+                        )
+                    }
+                    reportTarget = nil
+                    reportThanks = true
+                }
+                .presentationDetents([.height(280)])
+                .presentationDragIndicator(.visible)
+                .presentationBackground(Theme.surface)
+            }
+            .alert("Thanks — we’ll take a look", isPresented: $reportThanks) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Your report was sent. You can also block the person if you don’t want to see them.")
+            }
+            .confirmationDialog(
+                blockConfirm.map { "Block \($0.name)?" } ?? "Block?",
+                isPresented: Binding(
+                    get: { blockConfirm != nil },
+                    set: { if !$0 { blockConfirm = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Block", role: .destructive) {
+                    if let blockConfirm {
+                        model.block(uid: blockConfirm.uid, as: author)
+                    }
+                    blockConfirm = nil
+                }
+                Button("Cancel", role: .cancel) { blockConfirm = nil }
+            } message: {
+                Text("Their chats and messages will disappear for you. You can unblock later from a future settings screen.")
             }
     }
 
@@ -121,6 +203,15 @@ struct ThreadScreen: View {
                                 onReact: { reactionTarget = message },
                                 onToggleReaction: { emoji in
                                     model.toggleReaction(emoji, on: message, as: author)
+                                },
+                                onReport: {
+                                    reportTarget = .message(message)
+                                },
+                                onBlock: {
+                                    blockConfirm = BlockConfirm(
+                                        uid: message.authorId,
+                                        name: message.authorName
+                                    )
                                 }
                             )
                             .id(message.id)
@@ -371,6 +462,54 @@ private extension Message {
     }
 }
 
+private enum ReportSheetTarget: Identifiable {
+    case message(Message)
+    case thread(ChatThread)
+
+    var id: String {
+        switch self {
+        case let .message(message): "m-\(message.id)"
+        case let .thread(thread): "t-\(thread.id)"
+        }
+    }
+}
+
+private struct BlockConfirm: Identifiable {
+    let uid: String
+    let name: String
+    var id: String { uid }
+}
+
+private struct ReportReasonSheet: View {
+    let onPick: (ReportReason) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Why are you reporting this?")
+                .font(.cardTitle)
+                .foregroundStyle(Theme.text)
+                .padding(.horizontal, 20)
+                .padding(.top, 8)
+
+            ForEach(ReportReason.allCases, id: \.rawValue) { reason in
+                Button {
+                    onPick(reason)
+                } label: {
+                    Text(reason.label)
+                        .font(.body)
+                        .foregroundStyle(Theme.text)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 12)
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
 // MARK: - Rows
 
 private struct MessageRow: View {
@@ -382,6 +521,8 @@ private struct MessageRow: View {
     let onReply: () -> Void
     let onReact: () -> Void
     let onToggleReaction: (String) -> Void
+    let onReport: () -> Void
+    let onBlock: () -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -405,6 +546,13 @@ private struct MessageRow: View {
                     .contextMenu {
                         Button("Reply", systemImage: "arrowshape.turn.up.left") { onReply() }
                         Button("React", systemImage: "face.smiling") { onReact() }
+                        if !isMine {
+                            Divider()
+                            Button("Report", systemImage: "flag") { onReport() }
+                            Button("Block \(message.authorName)", systemImage: "hand.raised", role: .destructive) {
+                                onBlock()
+                            }
+                        }
                     }
 
                 if !message.reactions.isEmpty {
