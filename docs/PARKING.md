@@ -10,7 +10,7 @@ Deferred work — pick up when ready, not blocking the next ship step
 ## iOS → Android sync
 
 Working **iOS-first**; do not port until this stretch is done. Apply these to
-Android `ThreadScreen` (and related) in one pass later.
+Android in one pass later.
 
 - [ ] **Chat title** — capped at compose (~100); header is plain 2-line
       `lineLimit` + tail truncate. No expand/overlay. Live stays on the subtitle
@@ -22,22 +22,45 @@ Android `ThreadScreen` (and related) in one pass later.
       + `MapModel.createThread(openingText:)`. Port Android `NewThreadSheet` /
       `MapViewModel.createThread` the same way.
 
-- [ ] **Account page** — map person icon → `AccountScreen` (photo, display name,
-      Apple link, posting Soon, blocked, sign-out/delete Soon). Spec:
+- [ ] **Account page** — map opens `AccountScreen` (photo, display name, Apple
+      link, posting Soon, blocked, sign-out/delete Soon). Spec:
       `docs/ACCOUNT.md`. Port Android. Deploy updated `firestore.rules` +
       `storage.rules` for `photoURL` / avatar path.
 
-- [ ] **Cluster markers — custom kind icons** — stacked layout is live (glyphs +
-      “+N”). Replace emoji glyphs with a custom vector set per `ThreadKind`
-      (event / notice / traffic / general): monochrome-friendly on dark map.
-      iOS `ClusterBubbleMarker` + Android `ClusterBubble`.
+- [ ] **Map account avatar** — status-row button shows profile photo (or
+      initials) via profile stream, quiet pad styling. iOS: `MapAccountAvatar` +
+      `auth.profile` listener on `MapScreen`. Port Android map chrome.
 
-- [ ] **Map kind filters** — stacked emoji filter under the status pill; spreads
-      on tap. iOS: `MapModel.kindFilter` + `KindFilterStack`. Port Android.
+- [ ] **Cluster markers — stacked kinds** — stacked glyphs (hottest first) +
+      “+N” (live on both already for layout). Custom vector icon set still
+      parked below.
 
-- [ ] **Place-to-pin crosshair** — center dot only while placing/composing a new
-      chat (Start → pin appears → Pin chat here → sheet). iOS: `isPlacingPin` in
-      `MapScreen.swift`. Port Android map crosshair the same way.
+- [ ] **Cluster markers — custom kind icons** — replace emoji glyphs with a
+      custom vector set per `ThreadKind` (event / notice / traffic / general):
+      monochrome-friendly on dark map. iOS `ClusterBubbleMarker` + Android
+      `ClusterBubble`.
+
+- [ ] **Map kind filters** — stacked emoji filter under the status pill; tap
+      spreads to toggle kinds (client-side only). iOS: `MapModel.kindFilter` +
+      `KindFilterStack`. Port Android `MapViewModel` / `MapScreen`.
+
+- [ ] **Place-to-pin crosshair** — center crosshair only while placing /
+      composing (Start → pin → “Pin chat here” → sheet; × cancels). iOS:
+      `isPlacingPin` in `MapScreen.swift`. Port Android map crosshair.
+
+- [ ] **Map bubble anchor** — speech-bubble shape with sharper bottom-leading
+      corner; annotation anchor is that corner (`.bottomLeading`). No separate
+      pin/dot/caret. iOS: `Theme.bubble(tailRadius:)` + `Annotation` anchor.
+      Port Android marker anchor + shape.
+
+- [ ] **Bubble gestures vs map pinch** — tap / long-press must not steal
+      multi-touch; yield when a second finger lands. iOS:
+      `BubbleGestureCatcher`. Port Android marker touch handling.
+
+- [ ] **Peek preview** — load latest message *before* sliding the card in so
+      the Latest block rides with the peek (original slide transition). iOS:
+      `presentPreview` in `MapScreen`. Port Android peek if it pops content
+      late.
 
 ---
 
@@ -46,6 +69,9 @@ Android `ThreadScreen` (and related) in one pass later.
 Keep **exactly one required main kind** (`ThreadKind`). Optional later: ≤2–3
 curated secondary tags (closed list, not free-form) on compose + optional map
 refine. Skip unlimited custom tags until density / abuse model is clearer.
+
+---
+
 ## Push — APNs key (iOS)
 
 Function `onThreadMessageCreated` is live on Blaze. Android can receive pushes.
