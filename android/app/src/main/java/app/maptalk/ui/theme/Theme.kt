@@ -11,6 +11,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
@@ -44,15 +45,19 @@ object MapTalkShapes {
     /**
      * A rounded rectangle with one corner pulled in, so whatever wears it reads as something
      * being said. A `null` tail gives a plain rounded rectangle, which is what the middle of a
-     * run of messages from one person wants.
+     * run of messages from one person wants. A smaller [tailRadius] gives a sharper point, which
+     * is what the map markers want because that corner is the annotation anchor.
      */
-    fun bubble(radius: androidx.compose.ui.unit.Dp = Card, tail: Tail? = Tail.BottomStart) =
-        RoundedCornerShape(
-            topStart = radius,
-            topEnd = radius,
-            bottomEnd = if (tail == Tail.BottomEnd) PINCHED else radius,
-            bottomStart = if (tail == Tail.BottomStart) PINCHED else radius,
-        )
+    fun bubble(
+        radius: Dp = Card,
+        tail: Tail? = Tail.BottomStart,
+        tailRadius: Dp = PINCHED,
+    ) = RoundedCornerShape(
+        topStart = radius,
+        topEnd = radius,
+        bottomEnd = if (tail == Tail.BottomEnd) tailRadius else radius,
+        bottomStart = if (tail == Tail.BottomStart) tailRadius else radius,
+    )
 
     enum class Tail { BottomStart, BottomEnd }
 

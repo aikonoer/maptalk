@@ -8,6 +8,8 @@ struct ThreadScreen: View {
 
     private let author: Author
     private let threadId: String
+    /// Dismiss the sheet and show this pin’s area on the map (place-search style).
+    private let onShowOnMap: ((GeoPoint, String?) -> Void)?
     @State private var model: ThreadModel
     @State private var draft = ""
     @State private var pickerItem: PhotosPickerItem?
@@ -50,9 +52,15 @@ struct ThreadScreen: View {
         )
     }
 
-    init(environment: AppEnvironment, author: Author, threadId: String) {
+    init(
+        environment: AppEnvironment,
+        author: Author,
+        threadId: String,
+        onShowOnMap: ((GeoPoint, String?) -> Void)? = nil
+    ) {
         self.author = author
         self.threadId = threadId
+        self.onShowOnMap = onShowOnMap
         _model = State(
             initialValue: ThreadModel(
                 repository: environment.threadRepository,
@@ -265,8 +273,12 @@ struct ThreadScreen: View {
                 .font(.meta)
                 .lineLimit(1)
 
-                PlaceLabelLine(point: thread.position)
-                    .padding(.top, 2)
+                PlaceLabelLine(point: thread.position) { placeName in
+                    if let onShowOnMap {
+                        onShowOnMap(thread.position, placeName)
+                    }
+                }
+                .padding(.top, 2)
             }
         }
     }

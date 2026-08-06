@@ -23,30 +23,32 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import app.maptalk.ui.theme.MapTalkColors
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
-private const val OpenFlingVelocity = -1200f
+private const val FlingVelocity = 1200f
 
-/** Vertical drag that fires [onOpen] when the user swipes the peek upward. */
+/**
+ * Vertical drag on the peek: up opens the chat, down throws the card away. Mirrors the
+ * `verticalSwipe` gesture on `BubblePreviewCard.swift`.
+ */
 @Composable
-fun Modifier.swipeUpToOpen(onOpen: () -> Unit): Modifier {
+fun Modifier.verticalSwipe(onOpen: () -> Unit, onDismiss: () -> Unit): Modifier {
     val density = LocalDensity.current
     val pullThreshold = with(density) { 64.dp.toPx() }
     var offsetY by remember { mutableFloatStateOf(0f) }
-    val state = rememberDraggableState { delta ->
-        offsetY = (offsetY + delta).coerceAtMost(0f)
-    }
+    val state = rememberDraggableState { delta -> offsetY += delta }
     return this
         .offset { IntOffset(0, offsetY.roundToInt()) }
-        .alpha((1f + offsetY / 280f).coerceIn(0.55f, 1f))
+        .alpha((1f - abs(offsetY) / 280f).coerceIn(0.55f, 1f))
         .draggable(
             state = state,
             orientation = Orientation.Vertical,
             onDragStopped = { velocity ->
-                if (offsetY < -pullThreshold || velocity < OpenFlingVelocity) {
-                    onOpen()
-                } else {
-                    offsetY = 0f
+                when {
+                    offsetY < -pullThreshold || velocity < -FlingVelocity -> onOpen()
+                    offsetY > pullThreshold || velocity > FlingVelocity -> onDismiss()
+                    else -> offsetY = 0f
                 }
             },
         )

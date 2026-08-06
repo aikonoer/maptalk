@@ -27,20 +27,24 @@ import app.maptalk.data.model.Message
 import app.maptalk.ui.relativeTime
 import app.maptalk.ui.theme.MapTalkColors
 
-/** Peek card for a single map bubble: stats + latest. Tap or swipe up to open. */
+/**
+ * Peek card for a single map bubble: stats + latest.
+ * Tap or swipe up to open · swipe down to dismiss.
+ */
 @Composable
 fun BubblePreviewCard(
     thread: ChatThread,
     latest: Message?,
     isLoading: Boolean,
     onOpen: () -> Unit,
+    onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val live = LiveNow.isLive(thread.lastMessageAt)
     Surface(
         modifier = modifier
             .fillMaxWidth()
-            .swipeUpToOpen(onOpen)
+            .verticalSwipe(onOpen = onOpen, onDismiss = onDismiss)
             .clip(RoundedCornerShape(22.dp)),
         shape = RoundedCornerShape(22.dp),
         color = MapTalkColors.Surface,

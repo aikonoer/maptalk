@@ -7,69 +7,30 @@ Deferred work — pick up when ready, not blocking the next ship step
 
 ---
 
-## iOS → Android sync
+## Map markers — custom kind icons
 
-Working **iOS-first**; do not port until this stretch is done. Apply these to
-Android in one pass later.
+The iOS → Android map stretch is ported, so the two apps are level again: title
+cap and 2-line header, the optional opening post, the account page and map
+avatar, kind filters, the placing crosshair, the bottom-leading bubble anchor,
+gestures that yield to a pinch, the peek preload and swipe dismiss, place labels,
+and place search.
 
-- [ ] **Chat title** — capped at compose (~100); header is plain 2-line
-      `lineLimit` + tail truncate. No expand/overlay. Live stays on the subtitle
-      row. iOS: `ThreadScreen.swift` header + `NewThreadSheet` title cap.
-      Android: match (drop any expand/fold/overlay title experiments).
+Still parked here: replace the emoji glyphs with a custom vector set per
+`ThreadKind` (event / notice / traffic / general), monochrome-friendly on a dark
+map. Touches `LiveThreadBubble` / `ClusterBubbleMarker` / `KindFilterStack` on
+iOS and `ThreadBubble` / `ClusterBubble` / `KindFilterStack` on Android.
 
-- [ ] **Reddit-style new thread** — title capped (~100) for map/header; optional
-      longer body (~1000) posts as the first message. iOS: `NewThreadSheet.swift`
-      + `MapModel.createThread(openingText:)`. Port Android `NewThreadSheet` /
-      `MapViewModel.createThread` the same way.
+---
 
-- [ ] **Account page** — map opens `AccountScreen` (photo, display name, Apple
-      link, posting Soon, blocked, sign-out/delete Soon). Spec:
-      `docs/ACCOUNT.md`. Port Android. Deploy updated `firestore.rules` +
-      `storage.rules` for `photoURL` / avatar path.
+## Place labels — persist on the thread doc (later)
 
-- [ ] **Map account avatar** — status-row button shows profile photo (or
-      initials) via profile stream, quiet pad styling. iOS: `MapAccountAvatar` +
-      `auth.profile` listener on `MapScreen`. Port Android map chrome.
+Both apps reverse-geocode a thread's position on demand and cache it in memory.
+Writing a `placeLabel` onto the thread document would save the lookup and let the
+map show an area name before the geocoder answers.
 
-- [ ] **Cluster markers — stacked kinds** — stacked glyphs (hottest first) +
-      “+N” (live on both already for layout). Custom vector icon set still
-      parked below.
-
-- [ ] **Cluster markers — custom kind icons** — replace emoji glyphs with a
-      custom vector set per `ThreadKind` (event / notice / traffic / general):
-      monochrome-friendly on dark map. iOS `ClusterBubbleMarker` + Android
-      `ClusterBubble`.
-
-- [ ] **Map kind filters** — stacked emoji filter under the status pill; tap
-      spreads to toggle kinds (client-side only). iOS: `MapModel.kindFilter` +
-      `KindFilterStack`. Port Android `MapViewModel` / `MapScreen`.
-
-- [ ] **Place-to-pin crosshair** — center crosshair only while placing /
-      composing (Start → pin → “Pin chat here” → sheet; × cancels). iOS:
-      `isPlacingPin` in `MapScreen.swift`. Port Android map crosshair.
-
-- [ ] **Map bubble anchor** — speech-bubble shape with sharper bottom-leading
-      corner; annotation anchor is that corner (`.bottomLeading`). No separate
-      pin/dot/caret. iOS: `Theme.bubble(tailRadius:)` + `Annotation` anchor.
-      Port Android marker anchor + shape.
-
-- [ ] **Bubble gestures vs map pinch** — tap / long-press must not steal
-      multi-touch; yield when a second finger lands. iOS:
-      `BubbleGestureCatcher`. Port Android marker touch handling.
-
-- [ ] **Peek preview** — load latest message *before* sliding the card in so
-      the Latest block rides with the peek (original slide transition). iOS:
-      `presentPreview` in `MapScreen`. Port Android peek if it pops content
-      late.
-
-- [ ] **Place labels** — area/neighborhood name (not full street address) on
-      new-thread sheet + thread header via reverse geocode. iOS: `PlaceLabel` /
-      `PlaceLabelLine`. Port Android `Geocoder`. Optional later: persist
-      `placeLabel` on the thread doc.
-
-- [ ] **Place search** — magnifying glass on map chrome; `MKLocalSearch` results
-      fly the camera to that area (not chat-text search). iOS: `PlaceSearch` +
-      `MapScreen` search chrome. Port Android Places / Geocoder search.
+Related known difference: Android place search goes through `Geocoder`, which is
+address-first, where iOS uses `MKLocalSearch`, which also ranks points of
+interest. The same query can order results differently on the two platforms.
 
 ---
 
@@ -145,8 +106,8 @@ is a per-write presentation choice (`authorName` / visibility), not a second
 Firebase user. Don’t invent throwaway auth for anonymous posts.
 
 Still parked: sign-out, account delete, credential merge when Apple/Google is
-already tied to another Firebase user; Android Account parity; avatar on R2
-(currently Firebase Storage for Live).
+already tied to another Firebase user; avatar on R2 (currently Firebase Storage
+for Live).
 
 ---
 

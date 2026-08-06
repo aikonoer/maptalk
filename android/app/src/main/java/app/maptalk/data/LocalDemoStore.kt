@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
 
@@ -45,6 +46,12 @@ class LocalDemoStore(context: Context) {
 
     private val _displayName = MutableStateFlow(prefs.getString(KEY_DISPLAY_NAME, null))
     val displayName: StateFlow<String?> = _displayName.asStateFlow()
+
+    private val _photoUrl = MutableStateFlow(prefs.getString(KEY_PHOTO_URL, null))
+
+    /** Name + photo for the account screen and the map avatar button. */
+    val profile: Flow<UserProfile> =
+        combine(_displayName, _photoUrl) { name, photo -> UserProfile(name, photo) }
 
     private val threads = linkedMapOf<String, ChatThread>()
     private val messages = linkedMapOf<String, MutableList<Message>>()
@@ -88,6 +95,20 @@ class LocalDemoStore(context: Context) {
         val trimmed = name.trim()
         prefs.edit().putString(KEY_DISPLAY_NAME, trimmed).apply()
         _displayName.value = trimmed
+    }
+
+    /** Avatars live beside the demo media; the relative path stands in for a photo URL. */
+    fun saveAvatarJpeg(jpeg: ByteArray): String {
+        val relative = media.save(jpeg, preferredName = "avatars/$uid.jpg")
+        prefs.edit().putString(KEY_PHOTO_URL, relative).apply()
+        _photoUrl.value = relative
+        return relative
+    }
+
+    fun removeAvatar() {
+        _photoUrl.value?.let { media.delete(it) }
+        prefs.edit().remove(KEY_PHOTO_URL).apply()
+        _photoUrl.value = null
     }
 
     fun blockedPeople(): Flow<List<BlockedPerson>> =
@@ -434,6 +455,7 @@ class LocalDemoStore(context: Context) {
         val CEBU = GeoPoint(10.3157, 123.8854)
         private const val PREFS = "maptalk.localDemo"
         private const val KEY_DISPLAY_NAME = "displayName"
+        private const val KEY_PHOTO_URL = "photoURL"
         private const val KEY_BLOCKS = "blocks"
         private const val KEY_BLOCK_PREFIX = "block."
     }

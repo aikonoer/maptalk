@@ -1,12 +1,13 @@
 import SwiftUI
 
 /// Peek card for a single map bubble: thread stats (instant) + latest message (loaded).
-/// Tap or swipe up to open the chat.
+/// Tap or swipe up to open · swipe down to dismiss.
 struct BubblePreviewCard: View {
     let thread: ChatThread
     let latest: Message?
     let isLoading: Bool
     let onOpen: () -> Void
+    let onDismiss: () -> Void
 
     @State private var dragOffset: CGFloat = 0
 
@@ -19,11 +20,6 @@ struct BubblePreviewCard: View {
             header
             stats
             latestBlock
-
-            Text("Tap or swipe up to open")
-                .font(.meta)
-                .foregroundStyle(Theme.faint)
-                .frame(maxWidth: .infinity)
         }
         .padding(.horizontal, 18)
         .padding(.top, 10)
@@ -33,25 +29,29 @@ struct BubblePreviewCard: View {
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .shadow(color: .black.opacity(0.45), radius: 16, y: 8)
         .offset(y: dragOffset)
-        .opacity(Double(1 + dragOffset / 280).clamped(to: 0.55...1))
+        .opacity(Double(1 - abs(dragOffset) / 280).clamped(to: 0.55...1))
         .contentShape(Rectangle())
         .onTapGesture(perform: onOpen)
-        .gesture(swipeUpToOpen)
-        .accessibilityHint("Swipe up or double tap to open")
+        .gesture(verticalSwipe)
+        .accessibilityHint("Swipe up or double tap to open. Swipe down to dismiss.")
     }
 
-    private var swipeUpToOpen: some Gesture {
+    private var verticalSwipe: some Gesture {
         DragGesture(minimumDistance: 8, coordinateSpace: .local)
             .onChanged { value in
-                // Only follow upward drags; ignore downward so dismiss-via-scrim stays clear.
-                dragOffset = min(0, value.translation.height)
+                dragOffset = value.translation.height
             }
             .onEnded { value in
-                let flung = value.predictedEndTranslation.height < -140
-                let pulled = value.translation.height < -64
-                if flung || pulled {
+                let predicted = value.predictedEndTranslation.height
+                let pulled = value.translation.height
+                let open = predicted < -140 || pulled < -64
+                let dismiss = predicted > 140 || pulled > 64
+                if open {
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     onOpen()
+                } else if dismiss {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    onDismiss()
                 } else {
                     withAnimation(.spring(duration: 0.28, bounce: 0.18)) {
                         dragOffset = 0

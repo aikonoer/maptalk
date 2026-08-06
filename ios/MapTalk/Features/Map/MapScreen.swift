@@ -105,12 +105,15 @@ struct MapScreen: View {
                                 thread: thread,
                                 latest: previewLatest,
                                 isLoading: previewLoading,
-                                onOpen: { openFromPreview(thread.id) }
+                                onOpen: { openFromPreview(thread.id) },
+                                onDismiss: { dismissPreview() }
                             )
                         } else if let cluster = previewCluster {
-                            ClusterPreviewCard(threads: cluster) { thread in
-                                openFromPreview(thread.id)
-                            }
+                            ClusterPreviewCard(
+                                threads: cluster,
+                                onOpen: { thread in openFromPreview(thread.id) },
+                                onDismiss: { dismissPreview() }
+                            )
                         }
                     }
                     .padding(.horizontal, 14)
@@ -126,7 +129,11 @@ struct MapScreen: View {
             ThreadScreen(
                 environment: environment,
                 author: author,
-                threadId: route.id
+                threadId: route.id,
+                onShowOnMap: { point, placeName in
+                    openThreadId = nil
+                    focusOnPlace(point, title: placeName ?? "Here")
+                }
             )
             .presentationDetents([.fraction(0.94), .large])
             .presentationDragIndicator(.hidden)
@@ -652,12 +659,26 @@ struct MapScreen: View {
 
     private func jump(to hit: PlaceSearchHit) {
         dismissSearch()
+        focusOnPlace(
+            GeoPoint(hit.coordinate),
+            title: hit.title,
+            span: hit.span
+        )
+    }
+
+    /// Fly the map to a place and briefly pulse a landing pin — used by place search
+    /// and by tapping the location line inside a chat.
+    private func focusOnPlace(
+        _ point: GeoPoint,
+        title: String,
+        span: MKCoordinateSpan = nearbySpan
+    ) {
         landTask?.cancel()
         withAnimation(.easeInOut(duration: 0.55)) {
-            camera = .region(MKCoordinateRegion(center: hit.coordinate, span: hit.span))
+            camera = .region(MKCoordinateRegion(center: point.coordinate, span: span))
         }
         withAnimation(.spring(duration: 0.35, bounce: 0.2)) {
-            searchLanding = SearchLanding(title: hit.title, coordinate: hit.coordinate)
+            searchLanding = SearchLanding(title: title, coordinate: point.coordinate)
         }
         landTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(1_800))

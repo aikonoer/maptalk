@@ -31,6 +31,8 @@ object Fs {
     const val MESSAGE_COUNT = "messageCount"
     const val TEXT = "text"
     const val DISPLAY_NAME = "displayName"
+    const val PHOTO_URL = "photoURL"
+    const val PHOTO_PATH = "photoPath"
     const val MESSAGE_KIND = "messageKind"
     const val IMAGE_PATH = "imagePath"
     const val IMAGE_WIDTH = "imageWidth"

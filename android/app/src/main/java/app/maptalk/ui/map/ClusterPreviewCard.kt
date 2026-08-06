@@ -24,11 +24,15 @@ import app.maptalk.data.model.ChatThread
 import app.maptalk.ui.relativeTime
 import app.maptalk.ui.theme.MapTalkColors
 
-/** Peek card for a clustered map bubble. Tap a row, or swipe up for the most recent. */
+/**
+ * Peek card for a clustered map bubble. Tap a row, swipe up for the most recent,
+ * or swipe down to dismiss.
+ */
 @Composable
 fun ClusterPreviewCard(
     threads: List<ChatThread>,
     onOpen: (ChatThread) -> Unit,
+    onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val sorted = threads.sortedByDescending { it.lastMessageAt }
@@ -39,8 +43,9 @@ fun ClusterPreviewCard(
     Surface(
         modifier = modifier
             .fillMaxWidth()
-            .then(
-                if (latest != null) Modifier.swipeUpToOpen { onOpen(latest) } else Modifier,
+            .verticalSwipe(
+                onOpen = { latest?.let(onOpen) },
+                onDismiss = onDismiss,
             )
             .clip(RoundedCornerShape(22.dp)),
         shape = RoundedCornerShape(22.dp),

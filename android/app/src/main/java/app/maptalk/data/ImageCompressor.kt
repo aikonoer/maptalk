@@ -20,20 +20,30 @@ object ImageCompressor {
     const val JPEG_QUALITY = 72
     const val MAX_BYTES = 1_500_000
 
-    fun prepare(bytes: ByteArray): PreparedImage? {
+    /** Avatar edge/quality, matching `AuthRepository.avatarMaxEdge` on iOS. */
+    const val AVATAR_MAX_EDGE = 512
+    const val AVATAR_JPEG_QUALITY = 82
+
+    /** Square-ish profile photo, small enough for the map chrome and chat rows. */
+    fun prepareAvatar(bytes: ByteArray): ByteArray? =
+        prepare(bytes, AVATAR_MAX_EDGE, AVATAR_JPEG_QUALITY)?.jpegBytes
+
+    fun prepare(bytes: ByteArray): PreparedImage? = prepare(bytes, MAX_EDGE, JPEG_QUALITY)
+
+    private fun prepare(bytes: ByteArray, maxEdge: Int, quality: Int): PreparedImage? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
 
-        val sample = sampleSize(bounds.outWidth, bounds.outHeight, MAX_EDGE)
+        val sample = sampleSize(bounds.outWidth, bounds.outHeight, maxEdge)
         val options = BitmapFactory.Options().apply { inSampleSize = sample }
         val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: return null
         val oriented = decoded.oriented(bytes)
         if (oriented !== decoded) decoded.recycle()
 
         val longest = max(oriented.width, oriented.height)
-        val scaled = if (longest > MAX_EDGE) {
-            val scale = MAX_EDGE.toFloat() / longest
+        val scaled = if (longest > maxEdge) {
+            val scale = maxEdge.toFloat() / longest
             val w = (oriented.width * scale).roundToInt().coerceAtLeast(1)
             val h = (oriented.height * scale).roundToInt().coerceAtLeast(1)
             Bitmap.createScaledBitmap(oriented, w, h, true).also {
@@ -44,7 +54,7 @@ object ImageCompressor {
         }
 
         val out = ByteArrayOutputStream()
-        if (!scaled.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)) {
+        if (!scaled.compress(Bitmap.CompressFormat.JPEG, quality, out)) {
             scaled.recycle()
             return null
         }

@@ -1,10 +1,11 @@
 import SwiftUI
 
 /// Peek card for a clustered map bubble — lists the chats in that cell.
-/// Tap a row to open it, or swipe up to open the most recent.
+/// Tap a row / swipe up for latest · swipe down to dismiss.
 struct ClusterPreviewCard: View {
     let threads: [ChatThread]
     let onOpen: (ChatThread) -> Void
+    let onDismiss: () -> Void
 
     @State private var dragOffset: CGFloat = 0
 
@@ -15,7 +16,6 @@ struct ClusterPreviewCard: View {
     }
 
     private var visible: [ChatThread] { Array(sorted.prefix(5)) }
-    private var overflow: Int { max(0, sorted.count - visible.count) }
     private var latest: ChatThread? { sorted.first }
 
     var body: some View {
@@ -49,16 +49,6 @@ struct ClusterPreviewCard: View {
                     .buttonStyle(.plain)
                 }
             }
-
-            if overflow > 0 {
-                Text("+\(overflow) more — tap bubble to zoom · swipe up for latest")
-                    .font(.meta)
-                    .foregroundStyle(Theme.faint)
-            } else {
-                Text("Tap a chat · swipe up for latest")
-                    .font(.meta)
-                    .foregroundStyle(Theme.faint)
-            }
         }
         .padding(.horizontal, 16)
         .padding(.top, 10)
@@ -68,21 +58,27 @@ struct ClusterPreviewCard: View {
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .shadow(color: .black.opacity(0.45), radius: 16, y: 8)
         .offset(y: dragOffset)
-        .opacity(Double(1 + dragOffset / 280).clamped(to: 0.55...1))
-        .gesture(swipeUpToOpenLatest)
+        .opacity(Double(1 - abs(dragOffset) / 280).clamped(to: 0.55...1))
+        .gesture(verticalSwipe)
+        .accessibilityHint("Swipe up to open the latest chat. Swipe down to dismiss.")
     }
 
-    private var swipeUpToOpenLatest: some Gesture {
+    private var verticalSwipe: some Gesture {
         DragGesture(minimumDistance: 12, coordinateSpace: .local)
             .onChanged { value in
-                dragOffset = min(0, value.translation.height)
+                dragOffset = value.translation.height
             }
             .onEnded { value in
-                let flung = value.predictedEndTranslation.height < -140
-                let pulled = value.translation.height < -64
-                if (flung || pulled), let latest {
+                let predicted = value.predictedEndTranslation.height
+                let pulled = value.translation.height
+                let open = predicted < -140 || pulled < -64
+                let dismiss = predicted > 140 || pulled > 64
+                if open, let latest {
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     onOpen(latest)
+                } else if dismiss {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    onDismiss()
                 } else {
                     withAnimation(.spring(duration: 0.28, bounce: 0.18)) {
                         dragOffset = 0

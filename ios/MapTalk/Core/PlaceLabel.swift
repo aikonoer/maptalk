@@ -69,28 +69,30 @@ private actor PlaceLabelCache {
     }
 }
 
-/// Pin glyph + resolved area name (or a quiet loading / fallback state).
+/// Location glyph + resolved area name (or a quiet loading / fallback state).
+/// Optional `onTap` makes the line open that place on the map (label passed when known).
 struct PlaceLabelLine: View {
     let point: GeoPoint
     var trailing: String? = nil
+    var onTap: ((String?) -> Void)? = nil
 
     @State private var label: String?
     @State private var didFail = false
 
     var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "mappin.and.ellipse")
-                .font(.system(size: 11, weight: .semibold))
-            Text(displayText)
-                .lineLimit(1)
-            if let trailing {
-                Text("\u{00b7} \(trailing)")
-                    .foregroundStyle(Theme.faint)
-                    .lineLimit(1)
+        Group {
+            if let onTap {
+                Button {
+                    onTap(label)
+                } label: {
+                    labelContent(interactive: true)
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint("Shows this place on the map")
+            } else {
+                labelContent(interactive: false)
             }
         }
-        .font(.meta)
-        .foregroundStyle(Theme.subtle)
         .task(id: PlaceLabel.cacheKey(for: point)) {
             label = nil
             didFail = false
@@ -98,6 +100,24 @@ struct PlaceLabelLine: View {
             label = resolved
             didFail = resolved == nil
         }
+    }
+
+    private func labelContent(interactive: Bool) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: "location.fill")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(interactive ? Theme.accent : Theme.subtle)
+            Text(displayText)
+                .lineLimit(1)
+                .foregroundStyle(interactive ? Theme.accent : Theme.subtle)
+            if let trailing {
+                Text("\u{00b7} \(trailing)")
+                    .foregroundStyle(Theme.faint)
+                    .lineLimit(1)
+            }
+        }
+        .font(.meta)
+        .contentShape(Rectangle())
     }
 
     private var displayText: String {

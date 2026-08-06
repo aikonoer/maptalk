@@ -6,8 +6,10 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import app.maptalk.AppContainer
+import app.maptalk.data.AuthRepository
 import app.maptalk.data.SafetyRepository
 import app.maptalk.data.ThreadRepository
+import app.maptalk.data.UserProfile
 import app.maptalk.data.model.Author
 import app.maptalk.data.model.ChatThread
 import app.maptalk.data.model.ThreadKind
@@ -30,6 +32,7 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.stateIn
@@ -43,15 +46,27 @@ data class MapUiState(
     val bubbles: List<GeoCluster<ChatThread>> = emptyList(),
     val isGlobalView: Boolean = false,
     val isLoading: Boolean = true,
+    /** True when the kind filter hid every nearby chat that would otherwise show. */
+    val isFilterHidingAll: Boolean = false,
 )
 
 class MapViewModel(
     private val threadRepository: ThreadRepository,
     private val safetyRepository: SafetyRepository,
+    private val authRepository: AuthRepository,
     private val locationProvider: LocationProvider,
 ) : ViewModel() {
 
     private val camera = MutableStateFlow<CameraSnapshot?>(null)
+
+    /** Empty = show every kind. Non-empty = only those kinds (client-side; no query change). */
+    private val _kindFilter = MutableStateFlow<Set<ThreadKind>>(emptySet())
+    val kindFilter: StateFlow<Set<ThreadKind>> = _kindFilter.asStateFlow()
+
+    /** Name + photo for the map's account button. */
+    val profile: StateFlow<UserProfile> =
+        (authRepository.currentUid?.let(authRepository::profile) ?: flowOf(UserProfile()))
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), UserProfile())
 
     private val _startLocation = MutableStateFlow<GeoPoint?>(null)
 
@@ -74,11 +89,13 @@ class MapViewModel(
             combine(
                 threadRepository.threads(query),
                 blockedUids,
-            ) { threads, blocked ->
+                _kindFilter,
+            ) { threads, blocked, filter ->
                 val visible = threads.filter { it.authorId !in blocked }
+                val shown = if (filter.isEmpty()) visible else visible.filter { it.kind in filter }
                 MapUiState(
                     bubbles = clusterByGeohash(
-                        items = visible,
+                        items = shown,
                         prefixLength = Viewport.clusterPrefixLength(snapshot.radiusKm),
                         geohashOf = ChatThread::geohash,
                         positionOf = ChatThread::position,
@@ -86,6 +103,7 @@ class MapViewModel(
                     ),
                     isGlobalView = query is ViewportQuery.GlobalRecent,
                     isLoading = false,
+                    isFilterHidingAll = filter.isNotEmpty() && shown.isEmpty() && visible.isNotEmpty(),
                 )
             }
         }
@@ -95,18 +113,45 @@ class MapViewModel(
         camera.value = CameraSnapshot(center, radiusKm)
     }
 
+    /** Selecting every kind is the same as selecting none, so it collapses back to "all". */
+    fun toggleKindFilter(kind: ThreadKind) {
+        val current = _kindFilter.value
+        val next = when {
+            current.isEmpty() -> setOf(kind)
+            kind in current -> current - kind
+            else -> current + kind
+        }
+        _kindFilter.value = if (next.size == ThreadKind.entries.size) emptySet() else next
+    }
+
+    fun clearKindFilter() {
+        _kindFilter.value = emptySet()
+    }
+
     fun locateMe() {
         viewModelScope.launch {
             locationProvider.currentLocation()?.let { _startLocation.value = it }
         }
     }
 
+    /**
+     * The title is the map headline; an optional [openingText] becomes the first message, so a
+     * chat can start with more than a one-liner.
+     */
     fun createThread(
         title: String,
         kind: ThreadKind,
         position: GeoPoint,
         author: Author,
-    ): String = threadRepository.createThread(title, kind, position, author)
+        openingText: String = "",
+    ): String {
+        val id = threadRepository.createThread(title, kind, position, author)
+        val opening = openingText.trim()
+        if (opening.isNotEmpty()) {
+            threadRepository.postMessage(threadId = id, text = opening, author = author)
+        }
+        return id
+    }
 
     /** Latest message for the long-press bubble peek. */
     suspend fun peekMessages(threadId: String): List<Message> =
@@ -147,6 +192,7 @@ class MapViewModel(
                     MapViewModel(
                         threadRepository = container.threadRepository,
                         safetyRepository = container.safetyRepository,
+                        authRepository = container.authRepository,
                         locationProvider = container.locationProvider,
                     )
                 }

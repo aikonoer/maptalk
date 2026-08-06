@@ -11,8 +11,14 @@ class LocalMediaStore(context: Context) {
 
     fun save(jpeg: ByteArray, preferredName: String? = null): String {
         val name = preferredName ?: "${UUID.randomUUID()}.jpg"
-        File(root, name).writeBytes(jpeg)
+        val file = File(root, name)
+        file.parentFile?.mkdirs()
+        file.writeBytes(jpeg)
         return name
+    }
+
+    fun delete(relativePath: String) {
+        File(root, relativePath).delete()
     }
 
     fun saveAudio(bytes: ByteArray, ext: String = "m4a"): String {

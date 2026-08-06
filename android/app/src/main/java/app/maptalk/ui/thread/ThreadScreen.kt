@@ -123,6 +123,7 @@ import app.maptalk.data.model.ReactionEmoji
 import app.maptalk.data.model.ReportReason
 import app.maptalk.data.model.ReportTargetType
 import app.maptalk.data.model.StickerPack
+import app.maptalk.ui.PlaceLabelLine
 import app.maptalk.ui.relativeTime
 import app.maptalk.ui.theme.MapTalkColors
 import app.maptalk.ui.theme.MapTalkShapes
@@ -491,6 +492,11 @@ fun ThreadScreen(
                                     maxLines = 1,
                                 )
                             }
+
+                            PlaceLabelLine(
+                                point = thread.position,
+                                modifier = Modifier.padding(top = 2.dp),
+                            )
                         }
                     }
                     Box {

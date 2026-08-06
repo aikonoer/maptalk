@@ -30,7 +30,8 @@ push (Functions need Blaze).
   [`firebase/functions/README.md`](firebase/functions/README.md)).
 - Share a chat via `maptalk://thread/{id}`; opening the link (or a push tap) opens that
   thread as a sheet on the map. Bubbles marked **Live** when active in the last ~20 minutes.
-- Optional account upgrade: link Apple (iOS) or Google (Android) from Settings (same uid).
+- Account page with a profile photo and display name; optional upgrade links Apple (iOS) or
+  Google (Android) to the same uid.
 Deliberately not in v1: full account profiles, thread expiry,
 Cloud Functions–backed moderation queues, search.
 

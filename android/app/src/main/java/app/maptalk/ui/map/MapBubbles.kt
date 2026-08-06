@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -36,13 +37,15 @@ import java.time.Instant
 
 /**
  * A marker drawn as a chat bubble: title when alone, stacked kind glyphs when clustered.
+ *
+ * Tap and long-press are handled by the Compose hit targets in `MapScreen`, because a
+ * [MarkerComposable] is rasterised to a bitmap and the Maps SDK only offers a plain click on it.
+ * Returning true from [MarkerComposable]'s own click keeps the SDK from recentring the camera if
+ * one ever slips through.
  */
 @Composable
 @GoogleMapComposable
-fun ThreadBubbleMarker(
-    bubble: GeoCluster<ChatThread>,
-    onClick: () -> Unit,
-) {
+fun ThreadBubbleMarker(bubble: GeoCluster<ChatThread>) {
     val thread = bubble.single
     MarkerComposable(
         bubble.key,
@@ -51,16 +54,54 @@ fun ThreadBubbleMarker(
         state = rememberUpdatedMarkerState(
             position = LatLng(bubble.position.lat, bubble.position.lng),
         ),
-        anchor = Offset(0.5f, 1f),
-        onClick = {
-            onClick()
-            true
-        },
+        // The sharpened bottom-start corner is the point being talked about, so that corner —
+        // not the middle of the bubble — sits on the coordinate.
+        anchor = Offset(0f, 1f),
+        onClick = { true },
     ) {
         if (thread == null) {
             ClusterBubble(threads = bubble.items)
         } else {
             ThreadBubble(thread = thread)
+        }
+    }
+}
+
+/** Where a place search landed: a labelled pin that fades out on its own after a moment. */
+@Composable
+@GoogleMapComposable
+fun SearchLandingMarker(title: String, latitude: Double, longitude: Double) {
+    MarkerComposable(
+        title,
+        state = rememberUpdatedMarkerState(position = LatLng(latitude, longitude)),
+        anchor = Offset(0.5f, 1f),
+        onClick = { true },
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Surface(
+                shape = CircleShape,
+                color = MapTalkColors.Surface,
+                contentColor = MapTalkColors.Text,
+                shadowElevation = 8.dp,
+                modifier = Modifier.border(1.dp, MapTalkColors.Hairline, CircleShape),
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.labelMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .widthIn(max = 180.dp)
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .padding(top = 4.dp)
+                    .size(16.dp)
+                    .background(MapTalkColors.Accent, CircleShape)
+                    .border(2.dp, MapTalkColors.Surface, CircleShape),
+            )
         }
     }
 }
@@ -188,4 +229,4 @@ private fun ClusterBubble(threads: List<ChatThread>) {
 
 private const val MaxClusterGlyphs = 3
 
-private val BubbleShape = MapTalkShapes.bubble(radius = 14.dp)
+private val BubbleShape = MapTalkShapes.bubble(radius = 14.dp, tailRadius = 2.dp)

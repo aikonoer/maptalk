@@ -7,6 +7,8 @@ import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
+import com.google.firebase.storage.FirebaseStorage
+import com.google.firebase.storage.StorageMetadata
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
@@ -23,6 +25,12 @@ sealed interface Session {
 }
 
 /**
+ * Profile fields the account screen and the map avatar both read. `photoURL` is an HTTPS URL
+ * live, or a local-demo relative media path.
+ */
+data class UserProfile(val displayName: String? = null, val photoURL: String? = null)
+
+/**
  * Anonymous bootstrap, then optional link to Google (Android) so the uid stays put.
  *
  * Local demo mode skips Firebase entirely and keeps the name in SharedPreferences.
@@ -32,13 +40,25 @@ class AuthRepository private constructor(
 ) {
 
     private sealed interface Backend {
-        data class Firebase(val auth: FirebaseAuth, val firestore: FirebaseFirestore) : Backend
+        data class Firebase(
+            val auth: FirebaseAuth,
+            val firestore: FirebaseFirestore,
+            val storage: FirebaseStorage,
+        ) : Backend
+
         data class Local(val store: LocalDemoStore) : Backend
     }
 
-    constructor(auth: FirebaseAuth, firestore: FirebaseFirestore) : this(Backend.Firebase(auth, firestore))
+    constructor(auth: FirebaseAuth, firestore: FirebaseFirestore, storage: FirebaseStorage) :
+        this(Backend.Firebase(auth, firestore, storage))
 
     constructor(local: LocalDemoStore) : this(Backend.Local(local))
+
+    val currentUid: String?
+        get() = when (val backend = backend) {
+            is Backend.Firebase -> backend.auth.currentUser?.uid
+            is Backend.Local -> backend.store.uid
+        }
 
     val isAnonymous: Boolean
         get() = when (val backend = backend) {
@@ -61,6 +81,43 @@ class AuthRepository private constructor(
             }
             is Backend.Local -> "Local demo"
         }
+
+    /** Providers already tied to this uid, for the account screen's sign-in section. */
+    val linkedProviderNames: List<String>
+        get() = when (val backend = backend) {
+            is Backend.Firebase -> {
+                val user = backend.auth.currentUser
+                if (user == null || user.isAnonymous) {
+                    emptyList()
+                } else {
+                    user.providerData.mapNotNull {
+                        when (it.providerId) {
+                            "google.com" -> "Google"
+                            "apple.com" -> "Apple"
+                            else -> null
+                        }
+                    }
+                }
+            }
+            is Backend.Local -> emptyList()
+        }
+
+    /** Name + photo, for the account screen and the map avatar button. */
+    fun profile(uid: String): Flow<UserProfile> = when (val backend = backend) {
+        is Backend.Firebase -> callbackFlow {
+            val registration = backend.firestore.collection(Fs.USERS).document(uid)
+                .addSnapshotListener { snapshot, _ ->
+                    trySend(
+                        UserProfile(
+                            displayName = snapshot?.getString(Fs.DISPLAY_NAME),
+                            photoURL = snapshot?.getString(Fs.PHOTO_URL),
+                        ),
+                    )
+                }
+            awaitClose { registration.remove() }
+        }
+        is Backend.Local -> backend.store.profile
+    }
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     fun session(): Flow<Session> = when (val backend = backend) {
@@ -117,6 +174,7 @@ class AuthRepository private constructor(
                     mapOf(
                         Fs.DISPLAY_NAME to name.trim(),
                         Fs.CREATED_AT to FieldValue.serverTimestamp(),
+                        Fs.UPDATED_AT to FieldValue.serverTimestamp(),
                     ),
                     SetOptions.merge(),
                 ).await()
@@ -124,6 +182,55 @@ class AuthRepository private constructor(
             is Backend.Local -> backend.store.saveDisplayName(name)
         }
     }
+
+    /** Compresses and uploads a square-ish avatar; returns the URL (or local path) to show. */
+    suspend fun saveAvatar(bytes: ByteArray): String {
+        val jpeg = ImageCompressor.prepareAvatar(bytes)
+            ?: throw LinkException.Failed("Couldn’t get that photo ready.")
+        return when (val backend = backend) {
+            is Backend.Firebase -> {
+                val uid = backend.auth.currentUser?.uid ?: throw LinkException.NotSignedIn
+                val path = avatarPath(uid)
+                val reference = backend.storage.reference.child(path)
+                reference.putBytes(
+                    jpeg,
+                    StorageMetadata.Builder().setContentType("image/jpeg").build(),
+                ).await()
+                val url = reference.downloadUrl.await().toString()
+                backend.firestore.collection(Fs.USERS).document(uid).set(
+                    mapOf(
+                        Fs.PHOTO_URL to url,
+                        Fs.PHOTO_PATH to path,
+                        Fs.UPDATED_AT to FieldValue.serverTimestamp(),
+                    ),
+                    SetOptions.merge(),
+                ).await()
+                url
+            }
+            is Backend.Local -> backend.store.saveAvatarJpeg(jpeg)
+        }
+    }
+
+    suspend fun removeAvatar() {
+        when (val backend = backend) {
+            is Backend.Firebase -> {
+                val uid = backend.auth.currentUser?.uid ?: throw LinkException.NotSignedIn
+                // The object may already be gone; the profile fields are what matter.
+                runCatching { backend.storage.reference.child(avatarPath(uid)).delete().await() }
+                backend.firestore.collection(Fs.USERS).document(uid).set(
+                    mapOf(
+                        Fs.PHOTO_URL to FieldValue.delete(),
+                        Fs.PHOTO_PATH to FieldValue.delete(),
+                        Fs.UPDATED_AT to FieldValue.serverTimestamp(),
+                    ),
+                    SetOptions.merge(),
+                ).await()
+            }
+            is Backend.Local -> backend.store.removeAvatar()
+        }
+    }
+
+    private fun avatarPath(uid: String) = "users/$uid/avatar.jpg"
 
     /** Links the current anonymous user to Google. Same uid afterwards. */
     suspend fun linkWithGoogle(idToken: String) {
