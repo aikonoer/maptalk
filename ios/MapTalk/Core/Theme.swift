@@ -28,16 +28,17 @@ enum Theme {
     /// A rounded rectangle with one corner pulled in, so whatever wears it reads as something
     /// being said: the map markers, the app mark, the chat rows.
     /// A `nil` tail gives a plain rounded rectangle, which is what the middle of a run of
-    /// messages from one person wants.
-    static func bubble(radius: CGFloat = Radius.card, tail: Tail? = .bottomLeading)
-        -> UnevenRoundedRectangle
-    {
-        let pinched: CGFloat = 4
-        return UnevenRoundedRectangle(
+    /// messages from one person wants. Smaller `tailRadius` = sharper point.
+    static func bubble(
+        radius: CGFloat = Radius.card,
+        tail: Tail? = .bottomLeading,
+        tailRadius: CGFloat = 4
+    ) -> UnevenRoundedRectangle {
+        UnevenRoundedRectangle(
             cornerRadii: RectangleCornerRadii(
                 topLeading: radius,
-                bottomLeading: tail == .bottomLeading ? pinched : radius,
-                bottomTrailing: tail == .bottomTrailing ? pinched : radius,
+                bottomLeading: tail == .bottomLeading ? tailRadius : radius,
+                bottomTrailing: tail == .bottomTrailing ? tailRadius : radius,
                 topTrailing: radius
             ),
             style: .continuous

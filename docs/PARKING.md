@@ -32,10 +32,12 @@ Android `ThreadScreen` (and related) in one pass later.
       (event / notice / traffic / general): monochrome-friendly on dark map.
       iOS `ClusterBubbleMarker` + Android `ClusterBubble`.
 
-- [ ] **Map kind filters** — client-side chips under the status pill (`All` + each
-      `ThreadKind`). Empty filter = all kinds; no Firestore query change.
-      iOS: `MapModel.kindFilter` + `MapScreen` chip row. Port Android
-      `MapViewModel` / `MapScreen`.
+- [ ] **Map kind filters** — stacked emoji filter under the status pill; spreads
+      on tap. iOS: `MapModel.kindFilter` + `KindFilterStack`. Port Android.
+
+- [ ] **Place-to-pin crosshair** — center dot only while placing/composing a new
+      chat (Start → pin appears → Pin chat here → sheet). iOS: `isPlacingPin` in
+      `MapScreen.swift`. Port Android map crosshair the same way.
 
 ---
 

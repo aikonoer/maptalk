@@ -26,6 +26,7 @@ struct MapScreen: View {
     @State private var openThreadId: String?
     @State private var showSettings = false
     @State private var isComposing = false
+    @State private var isPlacingPin = false
     @State private var previewThread: ChatThread?
     @State private var previewLatest: Message?
     @State private var previewLoading = false
@@ -37,6 +38,8 @@ struct MapScreen: View {
     @State private var nearbyCountFlash = false
     @State private var lastNearbyCount = -1
     @State private var kindFilterExpanded = false
+    @State private var profilePhotoURL: String?
+    @State private var profileTask: Task<Void, Never>?
 
     private var openThreadBinding: Binding<ThreadRoute?> {
         Binding(
@@ -74,7 +77,10 @@ struct MapScreen: View {
         let pendingDeepLink = DeepLinkBus.shared.pendingThreadId
         return ZStack {
             map
-            crosshair
+            if showCrosshair {
+                crosshair
+                    .transition(.opacity.combined(with: .scale(scale: 0.7)))
+            }
             overlay
             if previewThread != nil || previewCluster != nil {
                 Color.black.opacity(0.4)
@@ -106,6 +112,7 @@ struct MapScreen: View {
         }
         .animation(.spring(duration: 0.34, bounce: 0.12), value: previewThread?.id)
         .animation(.spring(duration: 0.34, bounce: 0.12), value: previewCluster?.count)
+        .animation(.spring(duration: 0.32, bounce: 0.2), value: showCrosshair)
         .sheet(item: openThreadBinding) { route in
             ThreadScreen(
                 environment: environment,
@@ -130,6 +137,7 @@ struct MapScreen: View {
         .sheet(isPresented: $isComposing) {
             NewThreadSheet(position: model.visibleCenter) { title, body, kind in
                 isComposing = false
+                isPlacingPin = false
                 openThreadId = model.createThread(
                     title: title,
                     kind: kind,
@@ -156,6 +164,7 @@ struct MapScreen: View {
         }
         .onAppear {
             model.start()
+            startProfileListener()
             if Self.startsInDemo {
                 // Don't wait for MapKit's first camera callback — pin the query on Cebu now.
                 let center = GeoPoint(lat: 10.3157, lng: 123.8854)
@@ -166,7 +175,11 @@ struct MapScreen: View {
             centerOnUserIfWanted()
             openPendingDeepLink()
         }
-        .onDisappear { model.stop() }
+        .onDisappear {
+            model.stop()
+            profileTask?.cancel()
+            profileTask = nil
+        }
         .onChange(of: location.lastLocation) { _, _ in centerOnUserIfWanted() }
         .onChange(of: pendingDeepLink) { _, _ in
             openPendingDeepLink()
@@ -195,6 +208,15 @@ struct MapScreen: View {
         }
     }
 
+    private func startProfileListener() {
+        guard profileTask == nil, let uid = environment.authRepository.currentUid else { return }
+        profileTask = Task {
+            for await profile in environment.authRepository.profile(uid: uid) {
+                profilePhotoURL = profile.photoURL
+            }
+        }
+    }
+
     private func openPendingDeepLink() {
         if let pushId = PushTokenBridge.shared.pendingThreadId {
             PushTokenBridge.shared.pendingThreadId = nil
@@ -210,7 +232,7 @@ struct MapScreen: View {
         Map(position: $camera) {
             UserAnnotation()
             ForEach(model.bubbles) { bubble in
-                Annotation("", coordinate: bubble.position.coordinate, anchor: .bottom) {
+                Annotation("", coordinate: bubble.position.coordinate, anchor: .bottomLeading) {
                     BubbleMarker(bubble: bubble)
                         .modifier(
                             BubblePressModifier(
@@ -286,13 +308,13 @@ struct MapScreen: View {
                 Button {
                     showSettings = true
                 } label: {
-                    Image(systemName: "person.crop.circle.fill")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(Theme.text)
-                        .frame(width: 36, height: 36)
-                        .background(Theme.surface.opacity(0.92), in: Circle())
-                        .overlay { Circle().strokeBorder(Theme.hairline, lineWidth: 1) }
+                    MapAccountAvatar(
+                        name: author.displayName,
+                        uid: author.uid,
+                        photoURL: profilePhotoURL
+                    )
                 }
+                .buttonStyle(.pressable)
                 .accessibilityLabel("Account")
             }
             .shadow(color: .black.opacity(0.35), radius: 10, y: 3)
@@ -307,12 +329,12 @@ struct MapScreen: View {
                     Text("Nothing pinned near here")
                         .font(.cardTitle)
                         .foregroundStyle(Theme.text)
-                    Text("Be the first — drop a chat at the crosshair.")
+                    Text("Be the first — pick a spot and start a chat.")
                         .font(.subheadline)
                         .foregroundStyle(Theme.subtle)
                         .multilineTextAlignment(.center)
                     Button {
-                        isComposing = true
+                        beginPlacingPin()
                     } label: {
                         Text("Start a chat here")
                             .font(.control)
@@ -384,25 +406,61 @@ struct MapScreen: View {
 
                 Spacer()
 
+                if isPlacingPin, !isComposing {
+                    Button {
+                        withAnimation(.spring(duration: 0.32, bounce: 0.2)) {
+                            isPlacingPin = false
+                        }
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(Theme.text)
+                            .frame(width: 46, height: 46)
+                            .background(Theme.surface.opacity(0.92), in: Circle())
+                            .overlay { Circle().strokeBorder(Theme.hairline, lineWidth: 1) }
+                    }
+                    .accessibilityLabel("Cancel placing chat")
+                    .transition(.scale.combined(with: .opacity))
+                }
+
                 Button {
-                    isComposing = true
+                    if isPlacingPin {
+                        isComposing = true
+                    } else {
+                        beginPlacingPin()
+                    }
                 } label: {
-                    Label("Start a chat here", systemImage: "plus")
-                        .font(.control)
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 15)
-                        .background(Theme.accent, in: Capsule())
+                    Label(
+                        isPlacingPin ? "Pin chat here" : "Start a chat here",
+                        systemImage: isPlacingPin ? "mappin.and.ellipse" : "plus"
+                    )
+                    .font(.control)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 15)
+                    .background(Theme.accent, in: Capsule())
                 }
                 .buttonStyle(.pressable)
+                .disabled(isComposing)
             }
             .shadow(color: .black.opacity(0.35), radius: 12, y: 4)
             .padding(.horizontal, 16)
             .padding(.bottom, 14)
+            .animation(.spring(duration: 0.32, bounce: 0.2), value: isPlacingPin)
         }
         .animation(.spring(duration: 0.35), value: showEmptyNearbyCTA)
         .animation(.spring(duration: 0.35), value: showFilterEmptyHint)
         .animation(.spring(duration: 0.25), value: model.kindFilter)
+    }
+
+    private var showCrosshair: Bool {
+        isPlacingPin || isComposing
+    }
+
+    private func beginPlacingPin() {
+        withAnimation(.spring(duration: 0.32, bounce: 0.2)) {
+            isPlacingPin = true
+        }
     }
 
     private var kindFilterRow: some View {
@@ -423,7 +481,8 @@ struct MapScreen: View {
     }
 
     private var showEmptyNearbyCTA: Bool {
-        !model.isLoading && !model.isGlobalView && model.bubbles.isEmpty && !model.isFilterHidingAll
+        !isPlacingPin && !isComposing && !model.isLoading && !model.isGlobalView
+            && model.bubbles.isEmpty && !model.isFilterHidingAll
     }
 
     private var showFilterEmptyHint: Bool {
@@ -472,18 +531,20 @@ struct MapScreen: View {
     }
 
     private func presentPreview(_ thread: ChatThread) {
+        previewTask?.cancel()
         previewCluster = nil
         previewLatest = nil
         previewLoading = true
-        previewTask?.cancel()
-        withAnimation(.spring(duration: 0.34, bounce: 0.12)) {
-            previewThread = thread
-        }
+        // Load the latest line first so the "Latest" card is already in the
+        // peek when it slides — it used to pop in after, looking stuck.
         previewTask = Task {
             let messages = await model.peekMessages(threadId: thread.id)
             guard !Task.isCancelled else { return }
             previewLatest = messages.last
             previewLoading = false
+            withAnimation(.spring(duration: 0.34, bounce: 0.12)) {
+                previewThread = thread
+            }
         }
     }
 
@@ -525,50 +586,173 @@ struct MapScreen: View {
     }
 }
 
-/// MapKit eats SwiftUI `LongPressGesture` on annotations. A zero-distance drag that
-/// times out into a long-press still receives touches on the bubble view itself.
+/// MapKit eats SwiftUI `LongPressGesture` on annotations, and an exclusive
+/// `DragGesture(minimumDistance: 0)` steals a finger during pinch-zoom so the
+/// map can get stuck. UIKit recognizers with simultaneous recognition + giving
+/// up when a second finger lands keep pan/zoom working.
 private struct BubblePressModifier: ViewModifier {
     let onTap: () -> Void
     let onLongPress: () -> Void
 
-    @State private var holdTask: Task<Void, Never>?
-    @State private var didFireLongPress = false
+    @State private var pressed = false
 
     func body(content: Content) -> some View {
         content
             .contentShape(Rectangle())
-            .scaleEffect(holdTask != nil && !didFireLongPress ? 0.96 : 1)
-            .animation(.easeOut(duration: 0.12), value: holdTask != nil)
-            .gesture(
-                DragGesture(minimumDistance: 0, coordinateSpace: .local)
-                    .onChanged { value in
-                        if holdTask == nil && !didFireLongPress {
-                            holdTask = Task { @MainActor in
-                                try? await Task.sleep(for: .milliseconds(380))
-                                guard !Task.isCancelled else { return }
-                                didFireLongPress = true
-                                holdTask = nil
-                                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                                onLongPress()
-                            }
-                        }
-                        let moved = hypot(value.translation.width, value.translation.height) > 12
-                        if moved {
-                            holdTask?.cancel()
-                            holdTask = nil
-                        }
-                    }
-                    .onEnded { value in
-                        let moved = hypot(value.translation.width, value.translation.height) > 12
-                        let wasHolding = holdTask != nil
-                        holdTask?.cancel()
-                        holdTask = nil
-                        if !didFireLongPress && !moved && wasHolding {
-                            onTap()
-                        }
-                        didFireLongPress = false
-                    }
-            )
+            .scaleEffect(pressed ? 0.96 : 1, anchor: .bottomLeading)
+            .animation(.easeOut(duration: 0.12), value: pressed)
+            .overlay {
+                BubbleGestureCatcher(
+                    onTap: onTap,
+                    onLongPress: {
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        onLongPress()
+                    },
+                    onPressedChanged: { pressed = $0 }
+                )
+            }
+    }
+}
+
+/// Clear hit target over a bubble. Yields to the map as soon as a second finger appears.
+private struct BubbleGestureCatcher: UIViewRepresentable {
+    var onTap: () -> Void
+    var onLongPress: () -> Void
+    var onPressedChanged: (Bool) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeUIView(context: Context) -> BubbleGestureView {
+        let view = BubbleGestureView()
+        view.coordinator = context.coordinator
+        context.coordinator.onTap = onTap
+        context.coordinator.onLongPress = onLongPress
+        context.coordinator.onPressedChanged = onPressedChanged
+        return view
+    }
+
+    func updateUIView(_ uiView: BubbleGestureView, context: Context) {
+        context.coordinator.onTap = onTap
+        context.coordinator.onLongPress = onLongPress
+        context.coordinator.onPressedChanged = onPressedChanged
+        uiView.coordinator = context.coordinator
+    }
+
+    final class Coordinator {
+        var onTap: (() -> Void)?
+        var onLongPress: (() -> Void)?
+        var onPressedChanged: ((Bool) -> Void)?
+    }
+}
+
+private final class BubbleGestureView: UIView, UIGestureRecognizerDelegate {
+    weak var coordinator: BubbleGestureCatcher.Coordinator?
+
+    private let tap = UITapGestureRecognizer()
+    private let longPress = UILongPressGestureRecognizer()
+    private let press = UILongPressGestureRecognizer()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        isAccessibilityElement = false
+        // One finger only on this view — the other finger should land on the map.
+        isMultipleTouchEnabled = false
+
+        longPress.minimumPressDuration = 0.38
+        longPress.allowableMovement = 14
+        longPress.delegate = self
+        longPress.cancelsTouchesInView = false
+        longPress.addTarget(self, action: #selector(handleLongPress))
+
+        // Short recognizer only for press scale feedback; never cancels map touches.
+        press.minimumPressDuration = 0.01
+        press.allowableMovement = 14
+        press.delegate = self
+        press.cancelsTouchesInView = false
+        press.addTarget(self, action: #selector(handlePressFeedback))
+
+        tap.delegate = self
+        tap.cancelsTouchesInView = false
+        tap.require(toFail: longPress)
+        tap.addTarget(self, action: #selector(handleTap))
+
+        addGestureRecognizer(press)
+        addGestureRecognizer(longPress)
+        addGestureRecognizer(tap)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// While a pinch/pan already has multiple fingers, don't claim the hit — let MapKit win.
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        if activeTouchCount(in: event) > 1 { return nil }
+        return super.hitTest(point, with: event)
+    }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        super.touchesBegan(touches, with: event)
+        // Second finger appeared elsewhere (or here): drop our claim so the map can zoom.
+        if activeTouchCount(in: event) > 1 {
+            cancelBubbleGestures()
+            coordinator?.onPressedChanged?(false)
+        }
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        super.touchesCancelled(touches, with: event)
+        coordinator?.onPressedChanged?(false)
+    }
+
+    private func activeTouchCount(in event: UIEvent?) -> Int {
+        event?.allTouches?.filter {
+            $0.phase == .began || $0.phase == .moved || $0.phase == .stationary
+        }.count ?? 0
+    }
+
+    private func cancelBubbleGestures() {
+        for recognizer in [tap, longPress, press] as [UIGestureRecognizer] {
+            recognizer.isEnabled = false
+            recognizer.isEnabled = true
+        }
+    }
+
+    @objc private func handleTap() {
+        coordinator?.onPressedChanged?(false)
+        coordinator?.onTap?()
+    }
+
+    @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            coordinator?.onPressedChanged?(false)
+            coordinator?.onLongPress?()
+        case .cancelled, .failed, .ended:
+            coordinator?.onPressedChanged?(false)
+        default:
+            break
+        }
+    }
+
+    @objc private func handlePressFeedback(_ gesture: UILongPressGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            coordinator?.onPressedChanged?(true)
+        case .ended, .cancelled, .failed:
+            coordinator?.onPressedChanged?(false)
+        default:
+            break
+        }
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        true
     }
 }
 
@@ -597,6 +781,23 @@ private struct NearbyStatusIcon: View {
     }
 }
 
+/// Map account button — photo/initials with a quiet pad, no neon.
+private struct MapAccountAvatar: View {
+    let name: String
+    let uid: String
+    let photoURL: String?
+
+    var body: some View {
+        InitialAvatar(name: name, seed: uid, size: 32, photoURL: photoURL)
+            .padding(2)
+            .background(Theme.surface.opacity(0.94), in: Circle())
+            .overlay {
+                Circle().strokeBorder(Theme.hairline, lineWidth: 1)
+            }
+            .frame(width: 36, height: 36)
+    }
+}
+
 /// A marker drawn as a chat bubble: title when alone, stacked kind glyphs when clustered.
 private struct BubbleMarker: View {
     let bubble: GeoCluster<ChatThread>
@@ -621,10 +822,12 @@ private struct LiveThreadBubble: View {
     @State private var seenMessageAt: Date?
 
     private var live: Bool { LiveNow.isLive(thread.lastMessageAt, now: now) }
+    /// Sharper lower-left point — that corner is the map anchor (`.bottomLeading`).
+    private var shape: UnevenRoundedRectangle { Theme.bubble(radius: 14, tailRadius: 2) }
 
     var body: some View {
         bubbleChip
-            .scaleEffect(flash ? 1.08 : 1)
+            .scaleEffect(flash ? 1.08 : 1, anchor: .bottomLeading)
             .brightness(flash ? 0.08 : 0)
             .onAppear { seenMessageAt = thread.lastMessageAt }
             .onChange(of: thread.lastMessageAt) { _, newValue in
@@ -669,16 +872,16 @@ private struct LiveThreadBubble: View {
         .padding(.trailing, 9)
         .padding(.vertical, 8)
         .frame(maxWidth: 200)
-        .background(Theme.surface, in: Theme.bubble(radius: 14))
+        .background(Theme.surface, in: shape)
         .overlay {
-            Theme.bubble(radius: 14).strokeBorder(
+            shape.strokeBorder(
                 live ? Theme.accent.opacity(flash ? 0.95 : 0.7) : Theme.hairline,
                 lineWidth: live ? (flash ? 2 : 1.5) : 1
             )
         }
         .shadow(
-            color: live ? Theme.accent.opacity(flash ? 0.6 : 0.35) : .black.opacity(0.45),
-            radius: flash ? 14 : (live ? 10 : 8),
+            color: live ? Theme.accent.opacity(flash ? 0.55 : 0.3) : .black.opacity(0.45),
+            radius: flash ? 12 : (live ? 8 : 6),
             y: 3
         )
     }
@@ -699,6 +902,7 @@ private struct ClusterBubbleMarker: View {
     let now: Date
 
     private static let maxVisible = 3
+    private var shape: UnevenRoundedRectangle { Theme.bubble(radius: 14, tailRadius: 2) }
 
     private var sorted: [ChatThread] {
         threads.sorted {
@@ -752,16 +956,16 @@ private struct ClusterBubbleMarker: View {
         .padding(.leading, 8)
         .padding(.trailing, 10)
         .padding(.vertical, 7)
-        .background(Theme.surface, in: Theme.bubble(radius: 14))
+        .background(Theme.surface, in: shape)
         .overlay {
-            Theme.bubble(radius: 14).strokeBorder(
+            shape.strokeBorder(
                 anyLive ? Theme.accent.opacity(0.7) : Theme.hairline,
                 lineWidth: anyLive ? 1.5 : 1
             )
         }
         .shadow(
-            color: anyLive ? Theme.accent.opacity(0.35) : .black.opacity(0.45),
-            radius: anyLive ? 10 : 8,
+            color: anyLive ? Theme.accent.opacity(0.3) : .black.opacity(0.45),
+            radius: anyLive ? 8 : 6,
             y: 3
         )
         .accessibilityLabel(accessibilityLabel)
