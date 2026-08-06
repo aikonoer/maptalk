@@ -36,15 +36,10 @@ struct NewThreadSheet: View {
                 .font(.screenTitle)
                 .foregroundStyle(Theme.text)
 
-            HStack(spacing: 6) {
-                Image(systemName: "mappin.and.ellipse")
-                    .font(.system(size: 11, weight: .semibold))
-                Text(String(format: "%.4f, %.4f", position.lat, position.lng))
-                Text("\u{00b7} anyone looking here can join in")
-                    .foregroundStyle(Theme.faint)
-            }
-            .font(.meta)
-            .foregroundStyle(Theme.subtle)
+            PlaceLabelLine(
+                point: position,
+                trailing: "anyone looking here can join in"
+            )
             .padding(.top, 6)
 
             TextField(

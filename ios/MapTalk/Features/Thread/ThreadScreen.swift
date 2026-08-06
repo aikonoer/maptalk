@@ -264,6 +264,9 @@ struct ThreadScreen: View {
                 }
                 .font(.meta)
                 .lineLimit(1)
+
+                PlaceLabelLine(point: thread.position)
+                    .padding(.top, 2)
             }
         }
     }

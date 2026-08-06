@@ -40,6 +40,15 @@ struct MapScreen: View {
     @State private var kindFilterExpanded = false
     @State private var profilePhotoURL: String?
     @State private var profileTask: Task<Void, Never>?
+    @State private var isSearching = false
+    @State private var searchQuery = ""
+    @State private var searchResults: [PlaceSearchHit] = []
+    @State private var isSearchLoading = false
+    @State private var searchDidComplete = false
+    @State private var searchTask: Task<Void, Never>?
+    @State private var searchLanding: SearchLanding?
+    @State private var landTask: Task<Void, Never>?
+    @FocusState private var searchFocused: Bool
 
     private var openThreadBinding: Binding<ThreadRoute?> {
         Binding(
@@ -248,6 +257,12 @@ struct MapScreen: View {
                         )
                 }
             }
+            if let landing = searchLanding {
+                Annotation("", coordinate: landing.coordinate, anchor: .bottom) {
+                    SearchLandingMarker(title: landing.title)
+                        .allowsHitTesting(false)
+                }
+            }
         }
         .mapStyle(
             .standard(
@@ -283,46 +298,69 @@ struct MapScreen: View {
 
     private var overlay: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                HStack(spacing: 7) {
-                    if model.isLoading {
-                        ProgressView().controlSize(.mini).tint(Theme.subtle)
-                    } else {
-                        NearbyStatusIcon(isGlobal: model.isGlobalView, isActive: !model.isGlobalView && !model.bubbles.isEmpty)
+            if isSearching {
+                searchChrome
+                    .padding(.top, 10)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            } else {
+                HStack(spacing: 10) {
+                    HStack(spacing: 7) {
+                        if model.isLoading {
+                            ProgressView().controlSize(.mini).tint(Theme.subtle)
+                        } else {
+                            NearbyStatusIcon(isGlobal: model.isGlobalView, isActive: !model.isGlobalView && !model.bubbles.isEmpty)
+                        }
+                        Text(statusText)
+                            .font(.control)
+                            .foregroundStyle(Theme.text)
+                            .contentTransition(.numericText())
                     }
-                    Text(statusText)
-                        .font(.control)
-                        .foregroundStyle(Theme.text)
-                        .contentTransition(.numericText())
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 9)
-                .background(Theme.surface.opacity(0.92), in: Capsule())
-                .overlay {
-                    Capsule().strokeBorder(
-                        nearbyCountFlash ? Theme.accent.opacity(0.55) : Theme.hairline,
-                        lineWidth: 1
-                    )
-                }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
+                    .background(Theme.surface.opacity(0.92), in: Capsule())
+                    .overlay {
+                        Capsule().strokeBorder(
+                            nearbyCountFlash ? Theme.accent.opacity(0.55) : Theme.hairline,
+                            lineWidth: 1
+                        )
+                    }
 
-                Button {
-                    showSettings = true
-                } label: {
-                    MapAccountAvatar(
-                        name: author.displayName,
-                        uid: author.uid,
-                        photoURL: profilePhotoURL
-                    )
-                }
-                .buttonStyle(.pressable)
-                .accessibilityLabel("Account")
-            }
-            .shadow(color: .black.opacity(0.35), radius: 10, y: 3)
-            .animation(.spring(duration: 0.3), value: statusText)
-            .padding(.top, 10)
+                    Button {
+                        withAnimation(.spring(duration: 0.3, bounce: 0.15)) {
+                            isSearching = true
+                        }
+                        searchFocused = true
+                    } label: {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(Theme.text)
+                            .frame(width: 36, height: 36)
+                            .background(Theme.surface.opacity(0.92), in: Circle())
+                            .overlay { Circle().strokeBorder(Theme.hairline, lineWidth: 1) }
+                    }
+                    .buttonStyle(.pressable)
+                    .accessibilityLabel("Search places")
 
-            kindFilterRow
+                    Button {
+                        showSettings = true
+                    } label: {
+                        MapAccountAvatar(
+                            name: author.displayName,
+                            uid: author.uid,
+                            photoURL: profilePhotoURL
+                        )
+                    }
+                    .buttonStyle(.pressable)
+                    .accessibilityLabel("Account")
+                }
+                .shadow(color: .black.opacity(0.35), radius: 10, y: 3)
+                .animation(.spring(duration: 0.3), value: statusText)
                 .padding(.top, 10)
+                .transition(.opacity)
+
+                kindFilterRow
+                    .padding(.top, 10)
+            }
 
             if showEmptyNearbyCTA {
                 VStack(spacing: 10) {
@@ -451,6 +489,116 @@ struct MapScreen: View {
         .animation(.spring(duration: 0.35), value: showEmptyNearbyCTA)
         .animation(.spring(duration: 0.35), value: showFilterEmptyHint)
         .animation(.spring(duration: 0.25), value: model.kindFilter)
+        .animation(.spring(duration: 0.3, bounce: 0.12), value: isSearching)
+    }
+
+    private var searchChrome: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Theme.subtle)
+                    TextField(
+                        "",
+                        text: $searchQuery,
+                        prompt: Text("Search a place").foregroundStyle(Theme.faint)
+                    )
+                    .font(.control)
+                    .foregroundStyle(Theme.text)
+                    .textInputAutocapitalization(.words)
+                    .autocorrectionDisabled()
+                    .focused($searchFocused)
+                    .submitLabel(.search)
+                    .onSubmit { runSearch(immediate: true) }
+
+                    if isSearchLoading {
+                        ProgressView().controlSize(.mini).tint(Theme.subtle)
+                    } else if !searchQuery.isEmpty {
+                        Button {
+                            searchQuery = ""
+                            searchResults = []
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 16))
+                                .foregroundStyle(Theme.faint)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Clear search")
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(Theme.surface.opacity(0.96), in: Capsule())
+                .overlay { Capsule().strokeBorder(Theme.hairline, lineWidth: 1) }
+
+                Button("Cancel") {
+                    dismissSearch()
+                }
+                .font(.control)
+                .foregroundStyle(Theme.accent)
+            }
+            .padding(.horizontal, 16)
+            .shadow(color: .black.opacity(0.35), radius: 10, y: 3)
+
+            if !searchResults.isEmpty {
+                VStack(spacing: 0) {
+                    ForEach(Array(searchResults.enumerated()), id: \.element.id) { index, hit in
+                        if index > 0 {
+                            Rectangle()
+                                .fill(Theme.hairline)
+                                .frame(height: 1)
+                                .padding(.leading, 44)
+                        }
+                        Button {
+                            jump(to: hit)
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: "mappin.circle.fill")
+                                    .font(.system(size: 18))
+                                    .foregroundStyle(Theme.accent)
+                                    .frame(width: 28)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(hit.title)
+                                        .font(.control)
+                                        .foregroundStyle(Theme.text)
+                                        .lineLimit(1)
+                                    if let subtitle = hit.subtitle {
+                                        Text(subtitle)
+                                            .font(.meta)
+                                            .foregroundStyle(Theme.faint)
+                                            .lineLimit(1)
+                                    }
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 11)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .background(Theme.surface.opacity(0.96), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .strokeBorder(Theme.hairline, lineWidth: 1)
+                }
+                .shadow(color: .black.opacity(0.4), radius: 12, y: 4)
+                .padding(.horizontal, 16)
+            } else if searchDidComplete,
+                      !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      !isSearchLoading {
+                Text("No places matched")
+                    .font(.meta)
+                    .foregroundStyle(Theme.faint)
+                    .padding(.horizontal, 22)
+                    .padding(.vertical, 4)
+            }
+        }
+        .onChange(of: searchQuery) { _, _ in
+            runSearch(immediate: false)
+        }
     }
 
     private var showCrosshair: Bool {
@@ -460,6 +608,63 @@ struct MapScreen: View {
     private func beginPlacingPin() {
         withAnimation(.spring(duration: 0.32, bounce: 0.2)) {
             isPlacingPin = true
+        }
+    }
+
+    private func dismissSearch() {
+        searchTask?.cancel()
+        searchTask = nil
+        searchFocused = false
+        withAnimation(.spring(duration: 0.3, bounce: 0.12)) {
+            isSearching = false
+            searchQuery = ""
+            searchResults = []
+            isSearchLoading = false
+            searchDidComplete = false
+        }
+    }
+
+    private func runSearch(immediate: Bool) {
+        searchTask?.cancel()
+        searchDidComplete = false
+        let query = searchQuery
+        let near = model.visibleCenter
+        searchTask = Task { @MainActor in
+            if !immediate {
+                try? await Task.sleep(for: .milliseconds(320))
+            }
+            guard !Task.isCancelled else { return }
+            let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.count >= 2 else {
+                searchResults = []
+                isSearchLoading = false
+                searchDidComplete = false
+                return
+            }
+            isSearchLoading = true
+            let hits = await PlaceSearch.search(trimmed, near: near)
+            guard !Task.isCancelled else { return }
+            searchResults = hits
+            isSearchLoading = false
+            searchDidComplete = true
+        }
+    }
+
+    private func jump(to hit: PlaceSearchHit) {
+        dismissSearch()
+        landTask?.cancel()
+        withAnimation(.easeInOut(duration: 0.55)) {
+            camera = .region(MKCoordinateRegion(center: hit.coordinate, span: hit.span))
+        }
+        withAnimation(.spring(duration: 0.35, bounce: 0.2)) {
+            searchLanding = SearchLanding(title: hit.title, coordinate: hit.coordinate)
+        }
+        landTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(1_800))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.35)) {
+                searchLanding = nil
+            }
         }
     }
 
@@ -1065,6 +1270,58 @@ private struct KindFilterStack: View {
             return "Filtering: \(names.joined(separator: ", "))"
         }
         return "Filter by kind"
+    }
+}
+
+private struct SearchLanding: Equatable {
+    let title: String
+    let latitude: Double
+    let longitude: Double
+
+    init(title: String, coordinate: CLLocationCoordinate2D) {
+        self.title = title
+        self.latitude = coordinate.latitude
+        self.longitude = coordinate.longitude
+    }
+
+    var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+}
+
+private struct SearchLandingMarker: View {
+    let title: String
+    @State private var pulse = false
+
+    var body: some View {
+        VStack(spacing: 6) {
+            Text(title)
+                .font(.markerTitle)
+                .foregroundStyle(Theme.text)
+                .lineLimit(1)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Theme.surface.opacity(0.94), in: Capsule())
+                .overlay { Capsule().strokeBorder(Theme.hairline, lineWidth: 1) }
+                .shadow(color: .black.opacity(0.35), radius: 8, y: 2)
+
+            ZStack {
+                Circle()
+                    .stroke(Theme.accent.opacity(0.5), lineWidth: 2)
+                    .frame(width: 34, height: 34)
+                    .scaleEffect(pulse ? 1.7 : 0.9)
+                    .opacity(pulse ? 0 : 0.75)
+                Image(systemName: "mappin.circle.fill")
+                    .font(.system(size: 28))
+                    .foregroundStyle(Theme.accent)
+                    .shadow(color: .black.opacity(0.45), radius: 6, y: 2)
+            }
+        }
+        .onAppear {
+            withAnimation(.easeOut(duration: 1.05).repeatForever(autoreverses: false)) {
+                pulse = true
+            }
+        }
     }
 }
 

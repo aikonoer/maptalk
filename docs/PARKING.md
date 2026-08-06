@@ -62,6 +62,15 @@ Android in one pass later.
       `presentPreview` in `MapScreen`. Port Android peek if it pops content
       late.
 
+- [ ] **Place labels** — area/neighborhood name (not full street address) on
+      new-thread sheet + thread header via reverse geocode. iOS: `PlaceLabel` /
+      `PlaceLabelLine`. Port Android `Geocoder`. Optional later: persist
+      `placeLabel` on the thread doc.
+
+- [ ] **Place search** — magnifying glass on map chrome; `MKLocalSearch` results
+      fly the camera to that area (not chat-text search). iOS: `PlaceSearch` +
+      `MapScreen` search chrome. Port Android Places / Geocoder search.
+
 ---
 
 ## Tags — curated secondary (later)
