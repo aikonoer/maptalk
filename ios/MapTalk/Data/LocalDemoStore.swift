@@ -22,10 +22,16 @@ final class LocalDemoStore {
     private var singleThreadListeners: [UUID: SingleThreadListener] = [:]
     private var messageListeners: [UUID: MessageListener] = [:]
     private var displayNameListeners: [UUID: AsyncStream<String?>.Continuation] = [:]
+    private var profileListeners: [UUID: AsyncStream<(displayName: String?, photoURL: String?)>.Continuation] = [:]
     private var blockListeners: [UUID: AsyncStream<[BlockedPerson]>.Continuation] = [:]
 
     private static let displayNameKey = "maptalk.localDemo.displayName"
+    private static let photoURLKey = "maptalk.localDemo.photoURL"
     private static let blocksKey = "maptalk.localDemo.blocks"
+
+    private var photoURL: String? {
+        UserDefaults.standard.string(forKey: Self.photoURLKey)
+    }
 
     init(seedCebu: Bool = true) {
         displayName = UserDefaults.standard.string(forKey: Self.displayNameKey)
@@ -63,6 +69,46 @@ final class LocalDemoStore {
         UserDefaults.standard.set(trimmed, forKey: Self.displayNameKey)
         for continuation in displayNameListeners.values {
             continuation.yield(displayName)
+        }
+        publishProfile()
+    }
+
+    func profileStream() -> AsyncStream<(displayName: String?, photoURL: String?)> {
+        let id = UUID()
+        return AsyncStream { continuation in
+            profileListeners[id] = continuation
+            continuation.yield((displayName, photoURL))
+            continuation.onTermination = { [weak self] _ in
+                Task { @MainActor in self?.profileListeners[id] = nil }
+            }
+        }
+    }
+
+    func saveAvatarJPEG(_ data: Data) throws -> String {
+        let relative = "avatars/\(uid).jpg"
+        let url = LocalMediaStore.url(forRelativePath: relative)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try data.write(to: url, options: .atomic)
+        UserDefaults.standard.set(relative, forKey: Self.photoURLKey)
+        publishProfile()
+        return relative
+    }
+
+    func removeAvatar() {
+        if let relative = photoURL {
+            try? FileManager.default.removeItem(at: LocalMediaStore.url(forRelativePath: relative))
+        }
+        UserDefaults.standard.removeObject(forKey: Self.photoURLKey)
+        publishProfile()
+    }
+
+    private func publishProfile() {
+        let snapshot = (displayName, photoURL)
+        for continuation in profileListeners.values {
+            continuation.yield(snapshot)
         }
     }
 

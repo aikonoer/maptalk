@@ -1,7 +1,8 @@
 import Foundation
 
-/// What a thread is about. Purely presentational: it picks the bubble icon and is never used
-/// to filter queries, which is why no composite index is needed.
+/// What a thread is about. One required main kind per thread (closed set). Used for
+/// marker styling and client-side map filters — never for Firestore queries, so no
+/// composite index is needed. Free-form / secondary tags stay parked.
 enum ThreadKind: String, CaseIterable, Sendable {
     case event
     case notice

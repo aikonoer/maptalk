@@ -222,7 +222,7 @@ struct ThreadScreen: View {
                 .accessibilityLabel("Close")
 
                 header
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
                 threadOptionsMenu
                     .frame(width: 32, height: 32)
@@ -235,6 +235,37 @@ struct ThreadScreen: View {
                 .frame(height: 1)
         }
         .background(Theme.surface)
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(model.thread?.title ?? "Chat")
+                .font(.cardTitle)
+                .foregroundStyle(Theme.text)
+                .lineLimit(2)
+                .truncationMode(.tail)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let thread = model.thread {
+                HStack(spacing: 5) {
+                    if LiveNow.isLive(thread.lastMessageAt) {
+                        Circle()
+                            .fill(Theme.accent)
+                            .frame(width: 6, height: 6)
+                        Text("Live")
+                            .foregroundStyle(Theme.accent)
+                    }
+                    Text(thread.kind.glyph).font(.system(size: 9))
+                    Text(thread.kind.label)
+                        .foregroundStyle(thread.kind.tint)
+                    Text("\u{00b7} \(thread.authorName)")
+                        .foregroundStyle(Theme.faint)
+                }
+                .font(.meta)
+                .lineLimit(1)
+            }
+        }
     }
 
     @ViewBuilder
@@ -323,37 +354,6 @@ struct ThreadScreen: View {
         .presentationDetents([.height(280)])
         .presentationDragIndicator(.visible)
         .presentationBackground(Theme.surface)
-    }
-
-    private var header: some View {
-        VStack(spacing: 2) {
-            HStack(spacing: 6) {
-                if LiveNow.isLive(model.thread?.lastMessageAt) {
-                    Circle()
-                        .fill(Theme.accent)
-                        .frame(width: 7, height: 7)
-                    Text("Live")
-                        .font(.meta)
-                        .foregroundStyle(Theme.accent)
-                }
-                Text(model.thread?.title ?? "Chat")
-                    .font(.cardTitle)
-                    .foregroundStyle(Theme.text)
-                    .lineLimit(1)
-            }
-
-            if let thread = model.thread {
-                HStack(spacing: 5) {
-                    Text(thread.kind.glyph).font(.system(size: 9))
-                    Text(thread.kind.label)
-                        .foregroundStyle(thread.kind.tint)
-                    Text("\u{00b7} \(thread.authorName)")
-                        .foregroundStyle(Theme.faint)
-                }
-                .font(.meta)
-                .lineLimit(1)
-            }
-        }
     }
 
     @ViewBuilder
@@ -1008,8 +1008,11 @@ private struct MessageLongPressOverlay: View {
                     .ignoresSafeArea()
                     .onTapGesture(perform: dismissAnimated)
 
-                // Photo never moves — pinned to the bubble's real frame.
+                // Keep the lift sized to the real bubble — without a width cap,
+                // GeometryReader lets long text expand to the overlay edge and clip.
                 liftedMessage
+                    .frame(width: max(anchor.width, 1), alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
                     .shadow(color: .black.opacity(chromeIn ? 0.4 : 0), radius: chromeIn ? 18 : 0, y: chromeIn ? 10 : 0)
                     .offset(x: anchor.minX, y: anchor.minY)
                     .allowsHitTesting(false)

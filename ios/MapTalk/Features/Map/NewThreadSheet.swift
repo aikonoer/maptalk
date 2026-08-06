@@ -1,20 +1,33 @@
 import SwiftUI
 
-private let maxTitleLength = 80
+/// Headline for the map pin + chat header. Stay short so bubbles stay scannable.
+private let maxTitleLength = 100
+/// Optional opening post (Reddit-style body). Becomes the first message in the chat.
+private let maxBodyLength = 1_000
 
-/// Starts a conversation at the point the map is centred on. The title is the whole thread for
-/// now; the first reply comes right after in the chat screen.
+/// Starts a conversation at the point the map is centred on.
+/// Title = pin headline; optional body = first message in the thread.
 struct NewThreadSheet: View {
 
     let position: GeoPoint
-    let onCreate: (String, ThreadKind) -> Void
+    let onCreate: (_ title: String, _ body: String, _ kind: ThreadKind) -> Void
 
     @State private var title = ""
+    @State private var bodyText = ""
     @State private var kind: ThreadKind = .general
-    @FocusState private var isTyping: Bool
+    @FocusState private var focusedField: Field?
 
-    private var trimmed: String {
+    private enum Field {
+        case title
+        case body
+    }
+
+    private var trimmedTitle: String {
         title.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var trimmedBody: String {
+        bodyText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     var body: some View {
@@ -37,21 +50,20 @@ struct NewThreadSheet: View {
             TextField(
                 "",
                 text: $title,
-                prompt: Text("What is going on?").foregroundStyle(Theme.faint)
+                prompt: Text("Title — what is going on?").foregroundStyle(Theme.faint)
             )
             .font(.body)
             .foregroundStyle(Theme.text)
-            .focused($isTyping)
-            .submitLabel(.done)
-            .onSubmit(create)
+            .focused($focusedField, equals: .title)
+            .submitLabel(.next)
+            .onSubmit { focusedField = .body }
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
             .background(Theme.raised, in: RoundedRectangle(cornerRadius: Theme.Radius.field))
             .overlay {
                 RoundedRectangle(cornerRadius: Theme.Radius.field)
-                    .strokeBorder(isTyping ? Theme.accent : Theme.hairline, lineWidth: 1)
+                    .strokeBorder(focusedField == .title ? Theme.accent : Theme.hairline, lineWidth: 1)
             }
-            .animation(.easeOut(duration: 0.15), value: isTyping)
             .onChange(of: title) { _, newValue in
                 if newValue.count > maxTitleLength {
                     title = String(newValue.prefix(maxTitleLength))
@@ -59,10 +71,46 @@ struct NewThreadSheet: View {
             }
             .padding(.top, 22)
 
-            Text("\(trimmed.count)/\(maxTitleLength)")
+            Text("\(trimmedTitle.count)/\(maxTitleLength)")
                 .font(.meta)
                 .foregroundStyle(Theme.faint)
-                .opacity(trimmed.count > maxTitleLength - 20 ? 1 : 0)
+                .opacity(trimmedTitle.count > maxTitleLength - 20 ? 1 : 0)
+                .padding(.top, 6)
+
+            TextEditor(text: $bodyText)
+                .font(.body)
+                .foregroundStyle(Theme.text)
+                .scrollContentBackground(.hidden)
+                .focused($focusedField, equals: .body)
+                .frame(minHeight: 72, maxHeight: 110)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(Theme.raised, in: RoundedRectangle(cornerRadius: Theme.Radius.field))
+                .overlay(alignment: .topLeading) {
+                    if trimmedBody.isEmpty && focusedField != .body {
+                        Text("Add more if you want (optional)")
+                            .font(.body)
+                            .foregroundStyle(Theme.faint)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 16)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: Theme.Radius.field)
+                        .strokeBorder(focusedField == .body ? Theme.accent : Theme.hairline, lineWidth: 1)
+                }
+                .onChange(of: bodyText) { _, newValue in
+                    if newValue.count > maxBodyLength {
+                        bodyText = String(newValue.prefix(maxBodyLength))
+                    }
+                }
+                .padding(.top, 12)
+
+            Text("\(trimmedBody.count)/\(maxBodyLength)")
+                .font(.meta)
+                .foregroundStyle(Theme.faint)
+                .opacity(trimmedBody.count > maxBodyLength - 80 ? 1 : 0)
                 .padding(.top, 6)
 
             Text("What kind of thing is it?")
@@ -84,12 +132,12 @@ struct NewThreadSheet: View {
                     .font(.control)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 15)
-                    .background(trimmed.isEmpty ? Theme.raised : Theme.accent, in: Capsule())
-                    .foregroundStyle(trimmed.isEmpty ? Theme.faint : .white)
+                    .background(trimmedTitle.isEmpty ? Theme.raised : Theme.accent, in: Capsule())
+                    .foregroundStyle(trimmedTitle.isEmpty ? Theme.faint : .white)
             }
             .buttonStyle(.pressable)
-            .disabled(trimmed.isEmpty)
-            .animation(.easeOut(duration: 0.15), value: trimmed.isEmpty)
+            .disabled(trimmedTitle.isEmpty)
+            .animation(.easeOut(duration: 0.15), value: trimmedTitle.isEmpty)
             .padding(.top, 22)
 
             Spacer(minLength: 0)
@@ -97,12 +145,12 @@ struct NewThreadSheet: View {
         .padding(24)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.surface)
-        .onAppear { isTyping = true }
+        .onAppear { focusedField = .title }
     }
 
     private func create() {
-        guard !trimmed.isEmpty else { return }
-        onCreate(trimmed, kind)
+        guard !trimmedTitle.isEmpty else { return }
+        onCreate(trimmedTitle, trimmedBody, kind)
     }
 }
 

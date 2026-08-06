@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Dark is the only theme. Everything sits on one near-black ramp so the accent and the four
 /// thread colours are the only things that pull the eye — which matters on a screen where the
@@ -73,12 +74,13 @@ extension ThreadKind {
 }
 
 /// A name reduced to its initials on a coloured disc, so a stranger's replies are easy to tell
-/// apart in a public thread.
+/// apart in a public thread. Optional `photoURL` replaces initials when set.
 struct InitialAvatar: View {
 
     let name: String
     let seed: String
     var size: CGFloat = 32
+    var photoURL: String? = nil
 
     private static let tints = [
         0xF87171, 0xFB923C, 0xFBBF24, 0x4ADE80,
@@ -92,12 +94,42 @@ struct InitialAvatar: View {
 
     var body: some View {
         let tint = Self.tint(for: seed)
+        ZStack {
+            Circle()
+                .fill(tint.opacity(0.18))
+            if let photoURL, let image = resolvedLocalPhoto(photoURL) {
+                image
+                    .resizable()
+                    .scaledToFill()
+            } else if let photoURL, photoURL.hasPrefix("http"), let remote = URL(string: photoURL) {
+                AsyncImage(url: remote) { phase in
+                    switch phase {
+                    case let .success(image):
+                        image.resizable().scaledToFill()
+                    default:
+                        initialsLabel(tint: tint)
+                    }
+                }
+            } else {
+                initialsLabel(tint: tint)
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        .overlay { Circle().strokeBorder(tint.opacity(0.35), lineWidth: 1) }
+    }
+
+    private func initialsLabel(tint: Color) -> some View {
         Text(initials)
             .font(.system(size: size * 0.4, weight: .bold, design: .rounded))
             .foregroundStyle(tint)
-            .frame(width: size, height: size)
-            .background(tint.opacity(0.18), in: Circle())
-            .overlay { Circle().strokeBorder(tint.opacity(0.35), lineWidth: 1) }
+    }
+
+    private func resolvedLocalPhoto(_ path: String) -> Image? {
+        guard !path.hasPrefix("http") else { return nil }
+        let url = LocalMediaStore.url(forRelativePath: path)
+        guard let ui = UIImage(contentsOfFile: url.path) else { return nil }
+        return Image(uiImage: ui)
     }
 
     private var initials: String {

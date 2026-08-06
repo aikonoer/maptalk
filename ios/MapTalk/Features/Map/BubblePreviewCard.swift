@@ -13,7 +13,7 @@ struct BubblePreviewCard: View {
     private var live: Bool { LiveNow.isLive(thread.lastMessageAt) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 16) {
             PreviewGrabber()
 
             header
@@ -25,9 +25,9 @@ struct BubblePreviewCard: View {
                 .foregroundStyle(Theme.faint)
                 .frame(maxWidth: .infinity)
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 18)
         .padding(.top, 10)
-        .padding(.bottom, 16)
+        .padding(.bottom, 18)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.surface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
@@ -61,30 +61,40 @@ struct BubblePreviewCard: View {
     }
 
     private var header: some View {
-        HStack(alignment: .top, spacing: 8) {
+        HStack(alignment: .top, spacing: 12) {
             Text(thread.kind.glyph)
-                .font(.title3)
+                .font(.system(size: 22))
+                .frame(width: 40, height: 40)
+                .background(
+                    thread.kind.tint.opacity(0.18),
+                    in: Theme.bubble(radius: 12, tail: .bottomLeading)
+                )
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 5) {
                 Text(thread.title)
                     .font(.cardTitle)
                     .foregroundStyle(Theme.text)
                     .lineLimit(2)
+                    .truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: true)
 
-                Text(subtitle)
-                    .font(.meta)
-                    .foregroundStyle(live ? Theme.accent : Theme.faint)
-                    .lineLimit(1)
+                HStack(spacing: 5) {
+                    if live {
+                        Circle()
+                            .fill(Theme.accent)
+                            .frame(width: 6, height: 6)
+                        Text("Live")
+                            .foregroundStyle(Theme.accent)
+                    }
+                    Text(thread.kind.label)
+                        .foregroundStyle(thread.kind.tint)
+                    Text("\u{00b7} \(thread.authorName)")
+                        .foregroundStyle(Theme.faint)
+                }
+                .font(.meta)
+                .lineLimit(1)
             }
-
-            Spacer(minLength: 8)
-
-            Text("Open")
-                .font(.control)
-                .foregroundStyle(Theme.accent)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Theme.accent.opacity(0.16), in: Capsule())
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -94,25 +104,26 @@ struct BubblePreviewCard: View {
                 value: thread.messageCount == 0 ? "—" : "\(thread.messageCount)",
                 label: thread.messageCount == 1 ? "message" : "messages"
             )
-            Divider().frame(height: 28).overlay(Theme.hairline)
+            Rectangle()
+                .fill(Theme.hairline)
+                .frame(width: 1, height: 28)
             statChip(
                 value: relativeTime(thread.lastMessageAt),
                 label: live ? "live now" : "last active"
             )
-            Divider().frame(height: 28).overlay(Theme.hairline)
+            Rectangle()
+                .fill(Theme.hairline)
+                .frame(width: 1, height: 28)
             statChip(
                 value: relativeTime(thread.createdAt),
                 label: "started"
             )
         }
-        .padding(.vertical, 10)
-        .padding(.horizontal, 4)
-        .frame(maxWidth: .infinity)
-        .background(Theme.raised.opacity(0.9), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(.vertical, 4)
     }
 
     private func statChip(value: String, label: String) -> some View {
-        VStack(spacing: 2) {
+        VStack(spacing: 3) {
             Text(value)
                 .font(.control)
                 .foregroundStyle(Theme.text)
@@ -128,30 +139,37 @@ struct BubblePreviewCard: View {
 
     @ViewBuilder
     private var latestBlock: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             Text("Latest")
                 .font(.meta)
                 .foregroundStyle(Theme.faint)
 
             if isLoading {
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(Theme.raised)
-                    .frame(height: 36)
+                    .frame(height: 40)
                     .redacted(reason: .placeholder)
             } else if let latest {
-                HStack(alignment: .top, spacing: 8) {
-                    Text(latest.authorName)
-                        .font(.meta)
-                        .foregroundStyle(Theme.subtle)
-                        .lineLimit(1)
-                    Text(messagePreviewLine(latest))
-                        .font(.subheadline)
-                        .foregroundStyle(Theme.text)
-                        .lineLimit(2)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Text(relativeTime(latest.createdAt))
-                        .font(.meta)
-                        .foregroundStyle(Theme.faint)
+                HStack(alignment: .top, spacing: 10) {
+                    InitialAvatar(name: latest.authorName, seed: latest.authorId, size: 28)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(latest.authorName)
+                                .font(.meta)
+                                .foregroundStyle(Theme.subtle)
+                                .lineLimit(1)
+                            Spacer(minLength: 4)
+                            Text(relativeTime(latest.createdAt))
+                                .font(.meta)
+                                .foregroundStyle(Theme.faint)
+                        }
+                        Text(messagePreviewLine(latest))
+                            .font(.subheadline)
+                            .foregroundStyle(Theme.text)
+                            .lineLimit(2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
             } else {
                 Text("Nobody has said anything yet")
@@ -159,12 +177,9 @@ struct BubblePreviewCard: View {
                     .foregroundStyle(Theme.faint)
             }
         }
-    }
-
-    private var subtitle: String {
-        [live ? "Live" : nil, thread.kind.label, thread.authorName]
-            .compactMap { $0 }
-            .joined(separator: " · ")
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.raised.opacity(0.85), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
 

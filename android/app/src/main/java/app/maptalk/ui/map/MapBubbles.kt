@@ -13,10 +13,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.maptalk.core.LiveNow
@@ -30,10 +32,10 @@ import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.GoogleMapComposable
 import com.google.maps.android.compose.MarkerComposable
 import com.google.maps.android.compose.rememberUpdatedMarkerState
+import java.time.Instant
 
 /**
- * A marker drawn as a chat bubble: the thread's title when it stands alone, a count when
- * several threads share a geohash cell at this zoom.
+ * A marker drawn as a chat bubble: title when alone, stacked kind glyphs when clustered.
  */
 @Composable
 @GoogleMapComposable
@@ -56,7 +58,7 @@ fun ThreadBubbleMarker(
         },
     ) {
         if (thread == null) {
-            ClusterBubble(count = bubble.size)
+            ClusterBubble(threads = bubble.items)
         } else {
             ThreadBubble(thread = thread)
         }
@@ -118,21 +120,72 @@ private fun ThreadBubble(thread: ChatThread) {
     }
 }
 
+/** Cluster pin: stack of kind glyphs (hottest first), +N if more than three. */
 @Composable
-private fun ClusterBubble(count: Int) {
+private fun ClusterBubble(threads: List<ChatThread>) {
+    val sorted = remember(threads) {
+        threads.sortedByDescending { it.lastMessageAt ?: Instant.EPOCH }
+    }
+    val visible = sorted.take(MaxClusterGlyphs)
+    val overflow = (sorted.size - visible.size).coerceAtLeast(0)
+    val anyLive = sorted.any { LiveNow.isLive(it.lastMessageAt) }
+
     Surface(
         shape = BubbleShape,
-        color = MapTalkColors.Accent,
-        contentColor = Color.White,
-        shadowElevation = 6.dp,
-        modifier = Modifier.border(1.dp, Color.White.copy(alpha = 0.25f), BubbleShape),
+        color = MapTalkColors.Surface,
+        contentColor = MapTalkColors.Text,
+        shadowElevation = if (anyLive) 10.dp else 6.dp,
+        modifier = Modifier.border(
+            if (anyLive) 1.5.dp else 1.dp,
+            if (anyLive) MapTalkColors.Accent.copy(alpha = 0.7f) else MapTalkColors.Hairline,
+            BubbleShape,
+        ),
     ) {
-        Text(
-            text = if (count == 1) "1 chat" else "$count chats",
-            style = MaterialTheme.typography.labelMedium,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-        )
+        Row(
+            modifier = Modifier.padding(start = 8.dp, end = 10.dp, top = 7.dp, bottom = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier.size(
+                    width = (28 + (visible.size - 1).coerceAtLeast(0) * 20).dp,
+                    height = 28.dp,
+                ),
+            ) {
+                visible.forEachIndexed { index, thread ->
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .padding(start = (index * 20).dp)
+                            .size(28.dp)
+                            .background(thread.kind.tint.copy(alpha = 0.22f), CircleShape)
+                            .border(1.5.dp, MapTalkColors.Surface, CircleShape),
+                    ) {
+                        Text(
+                            text = thread.kind.glyph,
+                            style = MaterialTheme.typography.labelSmall,
+                            textAlign = TextAlign.Center,
+                        )
+                    }
+                }
+            }
+            if (overflow > 0) {
+                Text(
+                    text = "+$overflow",
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+            } else if (anyLive) {
+                Box(
+                    modifier = Modifier
+                        .padding(start = 8.dp)
+                        .size(7.dp)
+                        .background(MapTalkColors.Accent, CircleShape),
+                )
+            }
+        }
     }
 }
+
+private const val MaxClusterGlyphs = 3
 
 private val BubbleShape = MapTalkShapes.bubble(radius = 14.dp)

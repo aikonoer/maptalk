@@ -12,7 +12,7 @@ A public conversation pinned to a single point on the map.
 | Field           | Type      | Notes                                                        |
 | --------------- | --------- | ------------------------------------------------------------ |
 | `title`         | string    | 1-80 chars. Shown on the bubble and in the thread header.     |
-| `kind`          | string    | One of `event`, `notice`, `traffic`, `general`. Display only. |
+| `kind`          | string    | One of `event`, `notice`, `traffic`, `general`. Required main kind; client map filters use it — not Firestore queries. |
 | `lat`           | number    | -90..90. Used for the client-side distance filter.           |
 | `lng`           | number    | -180..180.                                                   |
 | `geohash`       | string    | Precision 10, computed from `lat`/`lng`. Query key.          |
@@ -63,10 +63,15 @@ Firebase Storage rules in `firebase/storage.rules` remain for the emulator path.
 
 ### `users/{uid}`
 
-| Field         | Type      | Notes                                    |
-| ------------- | --------- | ---------------------------------------- |
-| `displayName` | string    | 1-24 chars, chosen at first launch.      |
-| `createdAt`   | timestamp | Server timestamp.                        |
+| Field         | Type      | Notes                                                         |
+| ------------- | --------- | ------------------------------------------------------------- |
+| `displayName` | string    | 1-24 chars, chosen at first launch / editable in Account.     |
+| `photoURL`    | string?   | Public HTTPS URL for avatar; nil → initials.                  |
+| `photoPath`   | string?   | Storage key for deletes (`users/{uid}/avatar.jpg`).           |
+| `createdAt`   | timestamp | Server timestamp on first profile write.                      |
+| `updatedAt`   | timestamp | Bumped on profile edits.                                      |
+
+Full account / auth catalogue: [`ACCOUNT.md`](ACCOUNT.md).
 
 ### `users/{uid}/blocks/{blockedUid}`
 

@@ -21,6 +21,9 @@ enum Fs {
     static let messageCount = "messageCount"
     static let text = "text"
     static let displayName = "displayName"
+    static let photoURL = "photoURL"
+    static let photoPath = "photoPath"
+    static let updatedAt = "updatedAt"
     static let kindMessage = "messageKind"
     static let imagePath = "imagePath"
     static let imageWidth = "imageWidth"
@@ -48,7 +51,6 @@ enum Fs {
     static let devices = "devices"
     static let token = "token"
     static let platform = "platform"
-    static let updatedAt = "updatedAt"
     static let subscribers = "subscribers"
     static let subscribedAt = "subscribedAt"
 }

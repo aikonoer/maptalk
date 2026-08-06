@@ -36,6 +36,7 @@ struct MapScreen: View {
     @State private var wantsToCenterOnUser = !Self.startsInDemo
     @State private var nearbyCountFlash = false
     @State private var lastNearbyCount = -1
+    @State private var kindFilterExpanded = false
 
     private var openThreadBinding: Binding<ThreadRoute?> {
         Binding(
@@ -119,7 +120,7 @@ struct MapScreen: View {
         }
         .sheet(isPresented: $showSettings) {
             NavigationStack {
-                SettingsScreen(environment: environment, author: author)
+                AccountScreen(environment: environment, author: author)
             }
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
@@ -127,16 +128,17 @@ struct MapScreen: View {
             .presentationBackground(Theme.base)
         }
         .sheet(isPresented: $isComposing) {
-            NewThreadSheet(position: model.visibleCenter) { title, kind in
+            NewThreadSheet(position: model.visibleCenter) { title, body, kind in
                 isComposing = false
                 openThreadId = model.createThread(
                     title: title,
                     kind: kind,
                     position: model.visibleCenter,
-                    author: author
+                    author: author,
+                    openingText: body
                 )
             }
-            .presentationDetents([.height(380)])
+            .presentationDetents([.height(520), .large])
             .presentationDragIndicator(.visible)
             .presentationCornerRadius(24)
             .presentationBackground(Theme.surface)
@@ -284,18 +286,21 @@ struct MapScreen: View {
                 Button {
                     showSettings = true
                 } label: {
-                    Image(systemName: "gearshape.fill")
-                        .font(.system(size: 14, weight: .semibold))
+                    Image(systemName: "person.crop.circle.fill")
+                        .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(Theme.text)
                         .frame(width: 36, height: 36)
                         .background(Theme.surface.opacity(0.92), in: Circle())
                         .overlay { Circle().strokeBorder(Theme.hairline, lineWidth: 1) }
                 }
-                .accessibilityLabel("Settings")
+                .accessibilityLabel("Account")
             }
             .shadow(color: .black.opacity(0.35), radius: 10, y: 3)
             .animation(.spring(duration: 0.3), value: statusText)
             .padding(.top, 10)
+
+            kindFilterRow
+                .padding(.top, 10)
 
             if showEmptyNearbyCTA {
                 VStack(spacing: 10) {
@@ -328,10 +333,40 @@ struct MapScreen: View {
                 .shadow(color: .black.opacity(0.4), radius: 16, y: 8)
                 .padding(.top, 28)
                 .transition(.opacity.combined(with: .scale(scale: 0.96)))
+            } else if showFilterEmptyHint {
+                VStack(spacing: 10) {
+                    Text("Nothing in this filter")
+                        .font(.cardTitle)
+                        .foregroundStyle(Theme.text)
+                    Text("Other chats are nearby — clear the filter to see them.")
+                        .font(.subheadline)
+                        .foregroundStyle(Theme.subtle)
+                        .multilineTextAlignment(.center)
+                    Button {
+                        withAnimation(.spring(duration: 0.25)) { model.clearKindFilter() }
+                    } label: {
+                        Text("Show all kinds")
+                            .font(.control)
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 12)
+                            .background(Theme.accent, in: Capsule())
+                    }
+                    .buttonStyle(.pressable)
+                }
+                .padding(20)
+                .frame(maxWidth: 300)
+                .background(Theme.surface.opacity(0.94), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(Theme.hairline, lineWidth: 1)
+                }
+                .shadow(color: .black.opacity(0.4), radius: 16, y: 8)
+                .padding(.top, 28)
+                .transition(.opacity.combined(with: .scale(scale: 0.96)))
             }
 
             Spacer()
-
             HStack(spacing: 12) {
                 Button {
                     wantsToCenterOnUser = true
@@ -366,14 +401,40 @@ struct MapScreen: View {
             .padding(.bottom, 14)
         }
         .animation(.spring(duration: 0.35), value: showEmptyNearbyCTA)
+        .animation(.spring(duration: 0.35), value: showFilterEmptyHint)
+        .animation(.spring(duration: 0.25), value: model.kindFilter)
+    }
+
+    private var kindFilterRow: some View {
+        HStack {
+            KindFilterStack(
+                expanded: $kindFilterExpanded,
+                kindFilter: model.kindFilter,
+                onToggle: { kind in
+                    withAnimation(.spring(duration: 0.25)) { model.toggleKindFilter(kind) }
+                },
+                onClear: {
+                    withAnimation(.spring(duration: 0.25)) { model.clearKindFilter() }
+                }
+            )
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
     }
 
     private var showEmptyNearbyCTA: Bool {
-        !model.isLoading && !model.isGlobalView && model.bubbles.isEmpty
+        !model.isLoading && !model.isGlobalView && model.bubbles.isEmpty && !model.isFilterHidingAll
+    }
+
+    private var showFilterEmptyHint: Bool {
+        !model.isLoading && model.bubbles.isEmpty && model.isFilterHidingAll
     }
 
     private var statusText: String {
         if model.isLoading { return "Looking around\u{2026}" }
+        if model.isFilterHidingAll {
+            return model.isGlobalView ? "No matches worldwide" : "No matches nearby"
+        }
         if model.isGlobalView { return "Busiest chats worldwide" }
         let count = model.bubbles.reduce(0) { $0 + $1.size }
         switch count {
@@ -536,8 +597,7 @@ private struct NearbyStatusIcon: View {
     }
 }
 
-/// A marker drawn as a chat bubble: the thread's title when it stands alone, a count when
-/// several threads share a geohash cell at this zoom.
+/// A marker drawn as a chat bubble: title when alone, stacked kind glyphs when clustered.
 private struct BubbleMarker: View {
     let bubble: GeoCluster<ChatThread>
 
@@ -547,7 +607,7 @@ private struct BubbleMarker: View {
             if let thread = bubble.single {
                 LiveThreadBubble(thread: thread, now: context.date)
             } else {
-                ClusterBubbleMarker(count: bubble.size)
+                ClusterBubbleMarker(threads: bubble.items, now: context.date)
             }
         }
     }
@@ -632,24 +692,175 @@ private struct LiveThreadBubble: View {
     }
 }
 
+/// Cluster pin: stack of kind glyphs (hottest first), +N if more than three.
+/// Glyphs are interim — custom icon set later (docs/PARKING.md).
 private struct ClusterBubbleMarker: View {
-    let count: Int
+    let threads: [ChatThread]
+    let now: Date
+
+    private static let maxVisible = 3
+
+    private var sorted: [ChatThread] {
+        threads.sorted {
+            ($0.lastMessageAt ?? .distantPast) > ($1.lastMessageAt ?? .distantPast)
+        }
+    }
+
+    private var visible: [ChatThread] {
+        Array(sorted.prefix(Self.maxVisible))
+    }
+
+    private var overflow: Int {
+        max(0, sorted.count - visible.count)
+    }
+
+    private var anyLive: Bool {
+        sorted.contains { LiveNow.isLive($0.lastMessageAt, now: now) }
+    }
 
     var body: some View {
-        HStack(spacing: 5) {
-            Image(systemName: "bubble.left.and.bubble.right.fill")
-                .font(.system(size: 11, weight: .bold))
-            Text("\(count)")
-                .font(.markerTitle)
+        HStack(spacing: 0) {
+            HStack(spacing: -8) {
+                ForEach(Array(visible.enumerated()), id: \.element.id) { index, thread in
+                    Text(thread.kind.glyph)
+                        .font(.system(size: 13))
+                        .frame(width: 28, height: 28)
+                        .background(
+                            thread.kind.tint.opacity(0.22),
+                            in: Circle()
+                        )
+                        .overlay {
+                            Circle()
+                                .strokeBorder(Theme.surface, lineWidth: 1.5)
+                        }
+                        .zIndex(Double(visible.count - index))
+                }
+            }
+
+            if overflow > 0 {
+                Text("+\(overflow)")
+                    .font(.markerTitle)
+                    .foregroundStyle(Theme.text)
+                    .padding(.leading, 8)
+            } else if anyLive {
+                Circle()
+                    .fill(Theme.accent)
+                    .frame(width: 7, height: 7)
+                    .padding(.leading, 8)
+            }
         }
-        .foregroundStyle(.white)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(Theme.accent, in: Theme.bubble(radius: 14))
+        .padding(.leading, 8)
+        .padding(.trailing, 10)
+        .padding(.vertical, 7)
+        .background(Theme.surface, in: Theme.bubble(radius: 14))
         .overlay {
-            Theme.bubble(radius: 14).strokeBorder(.white.opacity(0.25), lineWidth: 1)
+            Theme.bubble(radius: 14).strokeBorder(
+                anyLive ? Theme.accent.opacity(0.7) : Theme.hairline,
+                lineWidth: anyLive ? 1.5 : 1
+            )
         }
-        .shadow(color: .black.opacity(0.45), radius: 8, y: 3)
+        .shadow(
+            color: anyLive ? Theme.accent.opacity(0.35) : .black.opacity(0.45),
+            radius: anyLive ? 10 : 8,
+            y: 3
+        )
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var accessibilityLabel: String {
+        let n = sorted.count
+        let base = n == 1 ? "1 chat" : "\(n) chats"
+        return anyLive ? "\(base), live" : base
+    }
+}
+
+/// Kind filter: stacked glyphs like cluster pins; tap spreads them out to toggle.
+/// Map stays interactive while open — collapse with the trailing ×.
+private struct KindFilterStack: View {
+    @Binding var expanded: Bool
+    let kindFilter: Set<ThreadKind>
+    let onToggle: (ThreadKind) -> Void
+    let onClear: () -> Void
+
+    private let kinds = Array(ThreadKind.allCases)
+    private var filterActive: Bool { !kindFilter.isEmpty }
+
+    var body: some View {
+        HStack(spacing: expanded ? 10 : -8) {
+            ForEach(Array(kinds.enumerated()), id: \.element.rawValue) { index, kind in
+                let selected = kindFilter.contains(kind)
+                Button {
+                    if expanded {
+                        onToggle(kind)
+                    } else {
+                        withAnimation(.spring(duration: 0.38, bounce: 0.2)) {
+                            expanded = true
+                        }
+                    }
+                } label: {
+                    Text(kind.glyph)
+                        .font(.system(size: 13))
+                        .frame(width: 28, height: 28)
+                        .background(
+                            kind.tint.opacity(filterActive ? (selected ? 0.28 : 0.12) : 0.22),
+                            in: Circle()
+                        )
+                        .overlay {
+                            Circle().strokeBorder(
+                                filterActive && selected ? kind.tint.opacity(0.75) : Theme.surface,
+                                lineWidth: 1.5
+                            )
+                        }
+                        .opacity(expanded && filterActive && !selected ? 0.45 : 1)
+                }
+                .buttonStyle(.plain)
+                .zIndex(Double(kinds.count - index))
+                .accessibilityLabel(kind.label)
+                .accessibilityAddTraits(selected ? .isSelected : [])
+            }
+
+            if expanded {
+                Button {
+                    if filterActive { onClear() }
+                    withAnimation(.spring(duration: 0.38, bounce: 0.2)) {
+                        expanded = false
+                    }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(Theme.subtle)
+                        .frame(width: 28, height: 28)
+                        .background(Theme.raised, in: Circle())
+                        .overlay { Circle().strokeBorder(Theme.hairline, lineWidth: 1) }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(filterActive ? "Clear filter and collapse" : "Collapse")
+                .transition(.opacity)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .background(Theme.surface.opacity(0.92), in: Capsule())
+        .overlay {
+            Capsule().strokeBorder(
+                filterActive ? Theme.accent.opacity(0.55) : Theme.hairline,
+                lineWidth: filterActive ? 1.5 : 1
+            )
+        }
+        .shadow(color: .black.opacity(0.35), radius: 10, y: 3)
+        // Only the stack spacing should spring; glyph chrome stays put.
+        .animation(.spring(duration: 0.38, bounce: 0.2), value: expanded)
+        .accessibilityElement(children: expanded ? .contain : .combine)
+        .accessibilityLabel(collapsedAccessibilityLabel)
+        .accessibilityHint(expanded ? "" : "Double tap to expand kind filters")
+    }
+
+    private var collapsedAccessibilityLabel: String {
+        if filterActive {
+            let names = kinds.filter { kindFilter.contains($0) }.map(\.label)
+            return "Filtering: \(names.joined(separator: ", "))"
+        }
+        return "Filter by kind"
     }
 }
 

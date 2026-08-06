@@ -180,8 +180,15 @@ service cloud.firestore {
       allow read: if signedIn();
       allow create, update: if signedIn()
         && request.auth.uid == userId
-        && request.resource.data.keys().hasOnly(['displayName', 'createdAt'])
-        && validName(request.resource.data.displayName);
+        && request.resource.data.keys().hasOnly([
+             'displayName', 'photoURL', 'photoPath', 'createdAt', 'updatedAt'
+           ])
+        && (!('displayName' in request.resource.data)
+            || validName(request.resource.data.displayName))
+        && (!('photoURL' in request.resource.data)
+            || request.resource.data.photoURL is string)
+        && (!('photoPath' in request.resource.data)
+            || request.resource.data.photoPath is string);
       allow delete: if false;
 
       // Private block list — hides that author's threads and messages for this viewer.

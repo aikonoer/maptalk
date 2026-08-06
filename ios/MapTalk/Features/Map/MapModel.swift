@@ -12,6 +12,12 @@ final class MapModel {
     private(set) var visibleCenter = GeoPoint(lat: 20, lng: 10)
     private(set) var visibleRadiusKm = 5_000.0
 
+    /// Empty = show every kind. Non-empty = only those kinds (client-side; no query change).
+    private(set) var kindFilter: Set<ThreadKind> = []
+
+    /// True when the filter hid every nearby chat that would otherwise show.
+    private(set) var isFilterHidingAll = false
+
     var errorMessage: String?
 
     private let repository: ThreadRepository
@@ -20,6 +26,9 @@ final class MapModel {
     private var queried: (center: GeoPoint, radiusKm: Double)?
     private var streamTask: Task<Void, Never>?
     private var blockTask: Task<Void, Never>?
+    /// Last stream snapshot after block filtering, before kind filter + clustering.
+    private var latestThreads: [ChatThread] = []
+    private var clusterPrefixLength: Int?
 
     init(repository: ThreadRepository, safety: SafetyRepository) {
         self.repository = repository
@@ -31,6 +40,8 @@ final class MapModel {
             self?.errorMessage = error.localizedDescription
         }
     }
+
+    var isKindFilterActive: Bool { !kindFilter.isEmpty }
 
     func start() {
         guard blockTask == nil else { return }
@@ -60,26 +71,58 @@ final class MapModel {
         subscribe(center: center, radiusKm: radiusKm)
     }
 
+    func clearKindFilter() {
+        guard !kindFilter.isEmpty else { return }
+        kindFilter = []
+        publishBubbles()
+    }
+
+    func toggleKindFilter(_ kind: ThreadKind) {
+        if kindFilter.isEmpty {
+            kindFilter = [kind]
+        } else if kindFilter.contains(kind) {
+            kindFilter.remove(kind)
+        } else {
+            kindFilter.insert(kind)
+        }
+        if kindFilter.count == ThreadKind.allCases.count {
+            kindFilter = []
+        }
+        publishBubbles()
+    }
+
     private func subscribe(center: GeoPoint, radiusKm: Double) {
         streamTask?.cancel()
         let query = Viewport.query(center: center, radiusKm: radiusKm)
-        let prefixLength = Viewport.clusterPrefixLength(radiusKm: radiusKm)
+        clusterPrefixLength = Viewport.clusterPrefixLength(radiusKm: radiusKm)
         isGlobalView = query == .globalRecent
 
         streamTask = Task { [repository] in
             for await threads in repository.threads(for: query) {
                 if Task.isCancelled { return }
-                let visible = threads.filter { !blockedUids.contains($0.authorId) }
-                bubbles = clusterByGeohash(
-                    visible,
-                    prefixLength: prefixLength,
-                    geohash: \.geohash,
-                    position: \.position,
-                    id: \.id
-                )
+                latestThreads = threads.filter { !blockedUids.contains($0.authorId) }
+                publishBubbles()
                 isLoading = false
             }
         }
+    }
+
+    private func publishBubbles() {
+        let visible: [ChatThread]
+        if kindFilter.isEmpty {
+            visible = latestThreads
+            isFilterHidingAll = false
+        } else {
+            visible = latestThreads.filter { kindFilter.contains($0.kind) }
+            isFilterHidingAll = visible.isEmpty && !latestThreads.isEmpty
+        }
+        bubbles = clusterByGeohash(
+            visible,
+            prefixLength: clusterPrefixLength,
+            geohash: \.geohash,
+            position: \.position,
+            id: \.id
+        )
     }
 
     /// Panning a map produces a stream of positions. Re-subscribing Firestore for every one of
@@ -96,8 +139,19 @@ final class MapModel {
         return center.distance(to: queried.center) > queried.radiusKm * 1_000 * 0.2
     }
 
-    func createThread(title: String, kind: ThreadKind, position: GeoPoint, author: Author) -> String {
-        repository.createThread(title: title, kind: kind, position: position, author: author)
+    func createThread(
+        title: String,
+        kind: ThreadKind,
+        position: GeoPoint,
+        author: Author,
+        openingText: String = ""
+    ) -> String {
+        let id = repository.createThread(title: title, kind: kind, position: position, author: author)
+        let opening = openingText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !opening.isEmpty {
+            repository.postMessage(threadId: id, text: opening, author: author)
+        }
+        return id
     }
 
     /// Latest messages for the long-press bubble peek (caller uses `.last`).

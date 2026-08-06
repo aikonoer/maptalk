@@ -84,6 +84,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import app.maptalk.core.DeepLinkBus
+import app.maptalk.core.LiveNow
 import app.maptalk.core.ThreadLink
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -455,7 +457,7 @@ fun ThreadScreen(
                             text = state.thread?.title ?: "Chat",
                             style = MaterialTheme.typography.titleMedium,
                             color = MapTalkColors.Text,
-                            maxLines = 1,
+                            maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                         )
                         state.thread?.let { thread ->
@@ -463,6 +465,19 @@ fun ThreadScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(5.dp),
                             ) {
+                                if (LiveNow.isLive(thread.lastMessageAt)) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(6.dp)
+                                            .background(MapTalkColors.Accent, CircleShape),
+                                    )
+                                    Text(
+                                        text = "Live",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MapTalkColors.Accent,
+                                        maxLines = 1,
+                                    )
+                                }
                                 Text(
                                     text = "${thread.kind.glyph} ${thread.kind.label}",
                                     style = MaterialTheme.typography.labelSmall,
