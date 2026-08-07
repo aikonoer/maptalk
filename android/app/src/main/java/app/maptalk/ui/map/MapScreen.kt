@@ -47,6 +47,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
@@ -221,11 +222,12 @@ fun MapScreen(
     var openThreadId by remember { mutableStateOf<String?>(null) }
     var showAccount by remember { mutableStateOf(false) }
     var previewThread by remember { mutableStateOf<ChatThread?>(null) }
-    var previewLatest by remember { mutableStateOf<Message?>(null) }
+    var previewLatest by remember { mutableStateOf<List<Message>>(emptyList()) }
     var previewLoading by remember { mutableStateOf(false) }
     var previewCluster by remember { mutableStateOf<List<ChatThread>?>(null) }
     var searchLanding by remember { mutableStateOf<PlaceSearchHit?>(null) }
     var isSearching by remember { mutableStateOf(false) }
+    var emptyNearbyHintDismissed by remember { mutableStateOf(false) }
     val newThreadSheetState = rememberModalBottomSheetState()
     val threadSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val accountSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -242,13 +244,13 @@ fun MapScreen(
     fun dismissPreview() {
         previewThread = null
         previewCluster = null
-        previewLatest = null
+        previewLatest = emptyList()
         previewLoading = false
     }
 
     fun listCluster(threads: List<ChatThread>) {
         previewThread = null
-        previewLatest = null
+        previewLatest = emptyList()
         previewLoading = false
         previewCluster = threads
     }
@@ -382,11 +384,11 @@ fun MapScreen(
                                             // the Latest block rides with the peek instead of
                                             // popping in after it.
                                             previewCluster = null
-                                            previewLatest = null
+                                            previewLatest = emptyList()
                                             previewLoading = true
                                             scope.launch {
                                                 previewLatest =
-                                                    viewModel.peekMessages(single.id).lastOrNull()
+                                                    viewModel.peekMessages(single.id)
                                                 previewLoading = false
                                                 previewThread = single
                                             }
@@ -463,9 +465,14 @@ fun MapScreen(
                     )
                 }
 
-                val nearbyEmpty = !isPlacingPin && !showNewThreadSheet && !state.isLoading &&
+                val nearbyEmpty = !emptyNearbyHintDismissed &&
+                    !isPlacingPin && !showNewThreadSheet && !state.isLoading &&
                     !state.isGlobalView && state.bubbles.isEmpty() && !state.isFilterHidingAll
                 val filterEmpty = !state.isLoading && state.bubbles.isEmpty() && state.isFilterHidingAll
+
+                LaunchedEffect(state.bubbles) {
+                    if (state.bubbles.isNotEmpty()) emptyNearbyHintDismissed = false
+                }
 
                 if (nearbyEmpty) {
                     HintCard(
@@ -477,6 +484,7 @@ fun MapScreen(
                         onPrimary = viewModel::findClosestChat,
                         secondaryAction = "Start the first chat",
                         onSecondary = { isPlacingPin = true },
+                        onDismiss = { emptyNearbyHintDismissed = true },
                         modifier = Modifier.padding(top = 18.dp),
                     )
                 } else if (filterEmpty) {
@@ -623,7 +631,7 @@ fun MapScreen(
         ) {
             NewThreadSheet(
                 position = pinPosition,
-                onCreate = { title, body, kind ->
+                onCreate = { title, body, kind, image ->
                     showNewThreadSheet = false
                     isPlacingPin = false
                     openThreadId = viewModel.createThread(
@@ -632,6 +640,7 @@ fun MapScreen(
                         position = pinPosition,
                         author = author,
                         openingText = body,
+                        openingImage = image,
                     )
                 },
             )
@@ -1150,6 +1159,7 @@ private fun HintCard(
     primaryEnabled: Boolean = true,
     secondaryAction: String? = null,
     onSecondary: (() -> Unit)? = null,
+    onDismiss: (() -> Unit)? = null,
 ) {
     Surface(
         modifier = modifier.widthIn(max = 280.dp),
@@ -1159,68 +1169,86 @@ private fun HintCard(
         border = BorderStroke(1.dp, MapTalkColors.Hairline.copy(alpha = 0.85f)),
         shadowElevation = 8.dp,
     ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 22.dp, vertical = 20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .background(MapTalkColors.Accent.copy(alpha = 0.14f), CircleShape),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    painter = painterResource(icon),
-                    contentDescription = null,
-                    tint = MapTalkColors.Accent,
-                    modifier = Modifier.size(22.dp),
-                )
-            }
+        Box {
             Column(
+                modifier = Modifier.padding(horizontal = 22.dp, vertical = 20.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleMedium,
-                    textAlign = TextAlign.Center,
-                )
-                Text(
-                    text = detail,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MapTalkColors.Subtle,
-                    textAlign = TextAlign.Center,
-                )
-            }
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Button(
-                    onClick = onPrimary,
-                    enabled = primaryEnabled,
-                    shape = CircleShape,
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MapTalkColors.Accent,
-                        contentColor = Color.White,
-                    ),
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .background(MapTalkColors.Accent.copy(alpha = 0.14f), CircleShape),
+                    contentAlignment = Alignment.Center,
                 ) {
-                    Text(primaryAction)
+                    Icon(
+                        painter = painterResource(icon),
+                        contentDescription = null,
+                        tint = MapTalkColors.Accent,
+                        modifier = Modifier.size(22.dp),
+                    )
                 }
-                if (secondaryAction != null && onSecondary != null) {
-                    TextButton(
-                        onClick = onSecondary,
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleMedium,
+                        textAlign = TextAlign.Center,
+                    )
+                    Text(
+                        text = detail,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MapTalkColors.Subtle,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Button(
+                        onClick = onPrimary,
+                        enabled = primaryEnabled,
                         shape = CircleShape,
                         modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.textButtonColors(
-                            contentColor = MapTalkColors.Accent,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MapTalkColors.Accent,
+                            contentColor = Color.White,
                         ),
                     ) {
-                        Text(secondaryAction)
+                        Text(primaryAction)
                     }
+                    if (secondaryAction != null && onSecondary != null) {
+                        TextButton(
+                            onClick = onSecondary,
+                            shape = CircleShape,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.textButtonColors(
+                                contentColor = MapTalkColors.Accent,
+                            ),
+                        ) {
+                            Text(secondaryAction)
+                        }
+                    }
+                }
+            }
+            if (onDismiss != null) {
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(4.dp)
+                        .size(32.dp),
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_close),
+                        contentDescription = "Dismiss",
+                        tint = MapTalkColors.Faint,
+                        modifier = Modifier.size(14.dp),
+                    )
                 }
             }
         }

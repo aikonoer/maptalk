@@ -447,6 +447,8 @@ class ThreadRepository private constructor(
                             mapOf(
                                 Fs.LAST_MESSAGE_AT to FieldValue.serverTimestamp(),
                                 Fs.MESSAGE_COUNT to FieldValue.increment(1),
+                                Fs.LAST_MEDIA_PATH to url,
+                                Fs.LAST_MEDIA_KIND to MessageKind.VIDEO.id,
                             ),
                         )
                     }
@@ -524,16 +526,30 @@ class ThreadRepository private constructor(
         messageRef: com.google.firebase.firestore.DocumentReference,
         fields: Map<String, Any>,
     ) {
+        val threadUpdate = mutableMapOf<String, Any>(
+            Fs.LAST_MESSAGE_AT to FieldValue.serverTimestamp(),
+            Fs.MESSAGE_COUNT to FieldValue.increment(1),
+        )
+        val imagePath = fields[Fs.IMAGE_PATH] as? String
+        val videoPath = fields[Fs.VIDEO_PATH] as? String
+        when {
+            imagePath != null -> {
+                threadUpdate[Fs.LAST_MEDIA_PATH] = imagePath
+                threadUpdate[Fs.LAST_MEDIA_KIND] = MessageKind.IMAGE.id
+            }
+            videoPath != null -> {
+                threadUpdate[Fs.LAST_MEDIA_PATH] = videoPath
+                threadUpdate[Fs.LAST_MEDIA_KIND] = MessageKind.VIDEO.id
+            }
+            else -> {
+                threadUpdate[Fs.LAST_MEDIA_PATH] = FieldValue.delete()
+                threadUpdate[Fs.LAST_MEDIA_KIND] = FieldValue.delete()
+            }
+        }
         db.batch()
             .apply {
                 set(messageRef, fields)
-                update(
-                    threadRef,
-                    mapOf(
-                        Fs.LAST_MESSAGE_AT to FieldValue.serverTimestamp(),
-                        Fs.MESSAGE_COUNT to FieldValue.increment(1),
-                    ),
-                )
+                update(threadRef, threadUpdate)
             }
             .commit()
             .addOnFailureListener { _errors.tryEmit(it) }

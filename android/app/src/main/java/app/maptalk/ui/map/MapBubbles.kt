@@ -10,25 +10,35 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.material3.Icon
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import app.maptalk.R
+import app.maptalk.appContainer
 import app.maptalk.core.LiveNow
 import app.maptalk.data.model.ChatThread
+import app.maptalk.data.model.MessageKind
 import app.maptalk.geo.GeoCluster
 import app.maptalk.ui.relativeTime
 import app.maptalk.ui.theme.MapTalkColors
 import app.maptalk.ui.theme.MapTalkShapes
 import app.maptalk.ui.theme.tint
+import coil.compose.AsyncImage
 import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.GoogleMapComposable
 import com.google.maps.android.compose.MarkerComposable
@@ -109,6 +119,7 @@ fun SearchLandingMarker(title: String, latitude: Double, longitude: Double) {
 @Composable
 private fun ThreadBubble(thread: ChatThread) {
     val live = LiveNow.isLive(thread.lastMessageAt)
+    val mediaPreview = thread.hasMapMediaPreview
     Surface(
         shape = BubbleShape,
         color = MapTalkColors.Surface,
@@ -122,41 +133,93 @@ private fun ThreadBubble(thread: ChatThread) {
     ) {
         Row(
             modifier = Modifier
-                .widthIn(max = 200.dp)
+                .widthIn(max = if (mediaPreview) 180.dp else 200.dp)
                 .padding(start = 10.dp, end = 9.dp, top = 8.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(7.dp),
         ) {
             if (live) {
-                Box(
-                    modifier = Modifier
-                        .size(8.dp)
-                        .background(MapTalkColors.Accent, CircleShape),
+                LiveDot(size = 8.dp)
+            }
+            if (mediaPreview) {
+                MapBubbleMediaThumb(
+                    path = thread.lastMediaPath!!,
+                    isVideo = thread.lastMediaKind == MessageKind.VIDEO,
+                )
+                Text(
+                    text = thread.title,
+                    style = MaterialTheme.typography.labelMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+            } else {
+                Text(text = thread.kind.glyph, style = MaterialTheme.typography.labelSmall)
+                Text(
+                    text = thread.title,
+                    style = MaterialTheme.typography.labelMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                Text(
+                    text = if (live) "Live" else relativeTime(thread.lastMessageAt),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (live) MapTalkColors.Accent else MapTalkColors.Faint,
                 )
             }
-            Text(text = thread.kind.glyph, style = MaterialTheme.typography.labelSmall)
-            Text(
-                text = thread.title,
-                style = MaterialTheme.typography.labelMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false),
+        }
+    }
+}
+
+@Composable
+private fun MapBubbleMediaThumb(path: String, isVideo: Boolean) {
+    val context = LocalContext.current
+    val model = remember(path) {
+        when {
+            path.startsWith("http") -> path
+            else -> context.appContainer.resolveLocalMedia(path)
+        }
+    }
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .size(28.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(MapTalkColors.Raised)
+            .border(1.dp, MapTalkColors.Hairline, RoundedCornerShape(6.dp)),
+    ) {
+        if (model != null) {
+            AsyncImage(
+                model = model,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.size(28.dp),
             )
-            if (thread.messageCount > 0) {
-                Surface(shape = CircleShape, color = thread.kind.tint.copy(alpha = 0.16f)) {
-                    Text(
-                        text = thread.messageCount.toString(),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = thread.kind.tint,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                    )
-                }
+        } else {
+            Icon(
+                painter = painterResource(
+                    if (isVideo) R.drawable.ic_video else R.drawable.ic_photo,
+                ),
+                contentDescription = null,
+                tint = MapTalkColors.Faint,
+                modifier = Modifier.size(12.dp),
+            )
+        }
+        if (isVideo) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .size(14.dp)
+                    .background(Color.Black.copy(alpha = 0.45f), CircleShape),
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_play),
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(8.dp),
+                )
             }
-            Text(
-                text = if (live) "Live" else relativeTime(thread.lastMessageAt),
-                style = MaterialTheme.typography.labelSmall,
-                color = if (live) MapTalkColors.Accent else MapTalkColors.Faint,
-            )
         }
     }
 }
@@ -216,11 +279,9 @@ private fun ClusterBubble(threads: List<ChatThread>) {
                     modifier = Modifier.padding(start = 8.dp),
                 )
             } else if (anyLive) {
-                Box(
-                    modifier = Modifier
-                        .padding(start = 8.dp)
-                        .size(7.dp)
-                        .background(MapTalkColors.Accent, CircleShape),
+                LiveDot(
+                    size = 7.dp,
+                    modifier = Modifier.padding(start = 8.dp),
                 )
             }
         }

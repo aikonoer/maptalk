@@ -41,6 +41,7 @@ import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import app.maptalk.data.model.Message
+import app.maptalk.data.model.PreparedImage
 
 /** What the camera can see: where it is pointed and how far out it is zoomed. */
 data class CameraSnapshot(val center: GeoPoint, val radiusKm: Double)
@@ -169,8 +170,8 @@ class MapViewModel(
     }
 
     /**
-     * The title is the map headline; an optional [openingText] becomes the first message, so a
-     * chat can start with more than a one-liner.
+     * The title is the map headline; optional [openingText] and/or [openingImage] become the
+     * first message, so a chat can start with more than a one-liner.
      */
     fun createThread(
         title: String,
@@ -178,18 +179,24 @@ class MapViewModel(
         position: GeoPoint,
         author: Author,
         openingText: String = "",
+        openingImage: PreparedImage? = null,
     ): String {
         val id = threadRepository.createThread(title, kind, position, author)
         val opening = openingText.trim()
-        if (opening.isNotEmpty()) {
-            threadRepository.postMessage(threadId = id, text = opening, author = author)
+        if (openingImage != null || opening.isNotEmpty()) {
+            threadRepository.postMessage(
+                threadId = id,
+                text = opening,
+                author = author,
+                image = openingImage,
+            )
         }
         return id
     }
 
-    /** Latest message for the long-press bubble peek. */
+    /** Up to three tip messages for the long-press bubble peek (oldest → newest). */
     suspend fun peekMessages(threadId: String): List<Message> =
-        threadRepository.messages(threadId).first().takeLast(1)
+        threadRepository.messages(threadId).first().takeLast(3)
 
     /**
      * Panning a map produces a continuous stream of positions. Re-subscribing Firestore for

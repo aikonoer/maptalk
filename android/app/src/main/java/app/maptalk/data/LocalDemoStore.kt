@@ -196,6 +196,8 @@ class LocalDemoStore(context: Context) {
             createdAt = now,
             lastMessageAt = now,
             messageCount = 0,
+            lastMediaPath = null,
+            lastMediaKind = null,
         )
         threads[id] = thread
         messages[id] = mutableListOf()
@@ -281,9 +283,27 @@ class LocalDemoStore(context: Context) {
             reply = reply,
         )
         messages.getOrPut(threadId) { mutableListOf() }.add(message)
+        val previewPath: String?
+        val previewKind: MessageKind?
+        when (kind) {
+            MessageKind.IMAGE -> {
+                previewPath = imagePath
+                previewKind = MessageKind.IMAGE
+            }
+            MessageKind.VIDEO -> {
+                previewPath = videoPath
+                previewKind = MessageKind.VIDEO
+            }
+            else -> {
+                previewPath = null
+                previewKind = null
+            }
+        }
         threads[threadId] = existing.copy(
             lastMessageAt = now,
             messageCount = existing.messageCount + 1,
+            lastMediaPath = previewPath,
+            lastMediaKind = previewKind,
         )
         threadPulse.tryEmit(Unit)
     }
@@ -370,6 +390,8 @@ class LocalDemoStore(context: Context) {
                 createdAt = created,
                 lastMessageAt = Instant.now().minusSeconds(lastAge * 60),
                 messageCount = replies.size.toLong(),
+                lastMediaPath = null,
+                lastMediaKind = null,
             )
             val msgs = replies.mapIndexed { index, (name, text, age) ->
                 Message(
