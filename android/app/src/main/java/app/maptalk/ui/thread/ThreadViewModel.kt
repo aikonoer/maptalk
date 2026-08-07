@@ -35,6 +35,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -44,6 +45,9 @@ data class ThreadUiState(
     val thread: ChatThread? = null,
     val messages: List<Message> = emptyList(),
     val isLoading: Boolean = true,
+    val isLoadingOlder: Boolean = false,
+    /** False once a scroll-up page comes back empty or short — stop asking. */
+    val hasMoreHistory: Boolean = true,
     val replyTarget: Message? = null,
     val shouldDismiss: Boolean = false,
 )
@@ -133,46 +137,122 @@ class ThreadViewModel(
     private val _pendingOutgoing = MutableStateFlow<Message?>(null)
     private val _replyTarget = MutableStateFlow<Message?>(null)
     private val _shouldDismiss = MutableStateFlow(false)
+    /** Live tip + pages loaded by scrolling up. Grows; live updates overwrite by id. */
+    private val _retainedMessages = MutableStateFlow<List<Message>>(emptyList())
+    private val _isLoadingOlder = MutableStateFlow(false)
+    private val _hasMoreHistory = MutableStateFlow(true)
+    private val _tipReady = MutableStateFlow(false)
+    private val _historyPrepended = MutableSharedFlow<Int>(extraBufferCapacity = 1)
+
+    /** How many messages were just prepended — UI uses this to keep the scroll anchor. */
+    val historyPrepended = _historyPrepended
 
     private val blockedUids: StateFlow<Set<String>> = safetyRepository.blockedPeople()
         .map { people -> people.map { it.uid }.toSet() }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
 
+    private val historyFlags: StateFlow<Pair<Boolean, Boolean>> = combine(
+        _isLoadingOlder,
+        _hasMoreHistory,
+    ) { loadingOlder, hasMore -> loadingOlder to hasMore }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false to true)
+
     val state: StateFlow<ThreadUiState> = combine(
         threadRepository.thread(threadId),
-        threadRepository.messages(threadId),
-        _replyTarget,
-        blockedUids,
-        _shouldDismiss,
+        _retainedMessages,
         _pendingOutgoing,
-    ) { values ->
-        @Suppress("UNCHECKED_CAST")
-        val thread = values[0] as ChatThread?
-        @Suppress("UNCHECKED_CAST")
-        val messages = values[1] as List<Message>
-        @Suppress("UNCHECKED_CAST")
-        val reply = values[2] as Message?
-        @Suppress("UNCHECKED_CAST")
-        val blocked = values[3] as Set<String>
-        val dismiss = values[4] as Boolean
-        @Suppress("UNCHECKED_CAST")
-        val pending = values[5] as Message?
-        val filtered = messages.filter { it.authorId !in blocked }
-        val withPending = if (pending != null) filtered + pending else filtered
-        val replyVisible = reply?.takeUnless { it.authorId in blocked }
+        blockedUids,
+        combine(_replyTarget, _shouldDismiss, _tipReady, historyFlags) { reply, dismiss, tipReady, history ->
+            HistoryChrome(reply, dismiss, tipReady, history.first, history.second)
+        },
+    ) { thread, retained, pending, blocked, chrome ->
+        val messages = mergeMessages(older = retained, live = emptyList(), pending = pending)
+            .filter { it.authorId !in blocked }
+        val replyVisible = chrome.reply?.takeUnless { it.authorId in blocked }
         val authorBlocked = thread != null && thread.authorId in blocked
         ThreadUiState(
             thread = thread,
-            messages = withPending,
-            isLoading = false,
+            messages = messages,
+            isLoading = !chrome.tipReady,
+            isLoadingOlder = chrome.loadingOlder,
+            hasMoreHistory = chrome.hasMore,
             replyTarget = replyVisible,
-            shouldDismiss = dismiss || authorBlocked,
+            shouldDismiss = chrome.dismiss || authorBlocked,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ThreadUiState())
 
     init {
         pushRepository.subscribe(toThreadId = threadId)
+        viewModelScope.launch {
+            threadRepository.messages(threadId).collect { live ->
+                _retainedMessages.update { previous ->
+                    mergeMessages(older = previous, live = live, pending = null)
+                }
+                // A short tip means the whole thread fit in one page.
+                if (live.size < ThreadRepository.MESSAGE_PAGE) {
+                    _hasMoreHistory.value = false
+                }
+                _tipReady.value = true
+            }
+        }
     }
+
+    /**
+     * Fetch the next older page when the user scrolls near the top. No-ops while a fetch is
+     * already running, when history is exhausted, or when the tip has not arrived yet.
+     */
+    fun loadOlder() {
+        if (_isLoadingOlder.value || !_hasMoreHistory.value || !_tipReady.value) return
+        val oldest = _retainedMessages.value.firstOrNull { !it.isLocalPending } ?: return
+        viewModelScope.launch {
+            _isLoadingOlder.value = true
+            try {
+                val page = threadRepository.olderMessages(threadId, beforeMessageId = oldest.id)
+                if (page.reachedEnd) _hasMoreHistory.value = false
+                if (page.messages.isEmpty()) return@launch
+                val known = _retainedMessages.value.map { it.id }.toSet()
+                val fresh = page.messages.filter { it.id !in known }
+                if (fresh.isEmpty()) {
+                    _hasMoreHistory.value = false
+                    return@launch
+                }
+                _retainedMessages.update { previous ->
+                    mergeMessages(older = fresh, live = previous, pending = null)
+                }
+                _historyPrepended.emit(fresh.size)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                _errors.tryEmit(error)
+            } finally {
+                _isLoadingOlder.value = false
+            }
+        }
+    }
+
+    private fun mergeMessages(
+        older: List<Message>,
+        live: List<Message>,
+        pending: Message?,
+    ): List<Message> {
+        val byId = LinkedHashMap<String, Message>()
+        // Retained / older first; the live tip overwrites so reactions on recent messages stay fresh.
+        older.forEach { byId[it.id] = it }
+        live.forEach { byId[it.id] = it }
+        if (pending != null) byId[pending.id] = pending
+        return byId.values.sortedWith(
+            compareBy<Message> { it.createdAt ?: Instant.MAX }
+                .thenBy { it.id },
+        )
+    }
+
+    private data class HistoryChrome(
+        val reply: Message?,
+        val dismiss: Boolean,
+        val tipReady: Boolean,
+        val loadingOlder: Boolean,
+        val hasMore: Boolean,
+    )
 
     fun mediaFile(relativePath: String): File? = resolveMedia(relativePath)
 

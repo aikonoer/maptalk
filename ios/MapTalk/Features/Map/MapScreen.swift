@@ -374,65 +374,30 @@ struct MapScreen: View {
             }
 
             if showEmptyNearbyCTA {
-                VStack(spacing: 10) {
-                    Text("Nothing pinned near here")
-                        .font(.cardTitle)
-                        .foregroundStyle(Theme.text)
-                    Text("Be the first — pick a spot and start a chat.")
-                        .font(.subheadline)
-                        .foregroundStyle(Theme.subtle)
-                        .multilineTextAlignment(.center)
-                    Button {
-                        beginPlacingPin()
-                    } label: {
-                        Text("Start a chat here")
-                            .font(.control)
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 18)
-                            .padding(.vertical, 12)
-                            .background(Theme.accent, in: Capsule())
-                    }
-                    .buttonStyle(.pressable)
-                }
-                .padding(20)
-                .frame(maxWidth: 300)
-                .background(Theme.surface.opacity(0.94), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .strokeBorder(Theme.hairline, lineWidth: 1)
-                }
-                .shadow(color: .black.opacity(0.4), radius: 16, y: 8)
+                EmptyMapHint(
+                    symbol: "bubble.left.and.bubble.right",
+                    title: "Quiet around here",
+                    detail: "Zoom out until a chat appears, or start one right here.",
+                    primaryTitle: model.isFindingClosest ? "Looking\u{2026}" : "Find the closest chat",
+                    primaryEnabled: !model.isFindingClosest,
+                    onPrimary: {
+                        Task { await widenToClosestChat() }
+                    },
+                    secondaryTitle: "Start the first chat",
+                    onSecondary: { beginPlacingPin() }
+                )
                 .padding(.top, 28)
                 .transition(.opacity.combined(with: .scale(scale: 0.96)))
             } else if showFilterEmptyHint {
-                VStack(spacing: 10) {
-                    Text("Nothing in this filter")
-                        .font(.cardTitle)
-                        .foregroundStyle(Theme.text)
-                    Text("Other chats are nearby — clear the filter to see them.")
-                        .font(.subheadline)
-                        .foregroundStyle(Theme.subtle)
-                        .multilineTextAlignment(.center)
-                    Button {
+                EmptyMapHint(
+                    symbol: "line.3.horizontal.decrease.circle",
+                    title: "Nothing of that kind here",
+                    detail: "Other chats are nearby — clear the filter to see them.",
+                    primaryTitle: "Show all chats",
+                    onPrimary: {
                         withAnimation(.spring(duration: 0.25)) { model.clearKindFilter() }
-                    } label: {
-                        Text("Show all kinds")
-                            .font(.control)
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 18)
-                            .padding(.vertical, 12)
-                            .background(Theme.accent, in: Capsule())
                     }
-                    .buttonStyle(.pressable)
-                }
-                .padding(20)
-                .frame(maxWidth: 300)
-                .background(Theme.surface.opacity(0.94), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .strokeBorder(Theme.hairline, lineWidth: 1)
-                }
-                .shadow(color: .black.opacity(0.4), radius: 16, y: 8)
+                )
                 .padding(.top, 28)
                 .transition(.opacity.combined(with: .scale(scale: 0.96)))
             }
@@ -693,6 +658,23 @@ struct MapScreen: View {
         }
     }
 
+    /// Keep the same centre; open the view until the nearest chat fits on screen.
+    private func widenToClosestChat() async {
+        guard let nearest = await model.findClosestChat() else { return }
+        let center = model.visibleCenter
+        let distanceMeters = center.distance(to: nearest.position)
+        let diameter = max(distanceMeters * 1.35 * 2, model.visibleRadiusKm * 1_000 * 1.2 * 2)
+        withAnimation(.easeInOut(duration: 0.7)) {
+            camera = .region(
+                MKCoordinateRegion(
+                    center: center.coordinate,
+                    latitudinalMeters: diameter,
+                    longitudinalMeters: diameter
+                )
+            )
+        }
+    }
+
     private var kindFilterRow: some View {
         HStack {
             KindFilterStack(
@@ -746,30 +728,41 @@ struct MapScreen: View {
             openThreadId = thread.id
             return
         }
-        // Tapping a group moves to the chats' own bounds, so every one of them is still on screen
-        // afterwards. When no camera move would separate them, list them instead of moving.
-        guard let fit = Viewport.drillFit(
+        // Tap = move the camera. Prefer fitting the members' own bounds so none go missing;
+        // if they're too tight to separate, still step in toward the group. The chat list is
+        // long-press only — tap never opens it.
+        if let fit = Viewport.drillFit(
             bubble.items,
             geohash: \.geohash,
             position: \.position
-        ) else {
-            presentClusterPreview(bubble.items)
+        ) {
+            let box = fit.withRoomForBubbles()
+            withAnimation {
+                camera = .region(
+                    MKCoordinateRegion(
+                        center: box.center.coordinate,
+                        span: MKCoordinateSpan(
+                            latitudeDelta: max(
+                                box.latitudeSpan * GeoBounds.screenPaddingSlack,
+                                Self.minFitSpan
+                            ),
+                            longitudeDelta: max(
+                                box.longitudeSpan * GeoBounds.screenPaddingSlack,
+                                Self.minFitSpan
+                            )
+                        )
+                    )
+                )
+            }
             return
         }
-        let box = fit.withRoomForBubbles()
         withAnimation {
             camera = .region(
                 MKCoordinateRegion(
-                    center: box.center.coordinate,
+                    center: bubble.position.coordinate,
                     span: MKCoordinateSpan(
-                        latitudeDelta: max(
-                            box.latitudeSpan * GeoBounds.screenPaddingSlack,
-                            Self.minFitSpan
-                        ),
-                        longitudeDelta: max(
-                            box.longitudeSpan * GeoBounds.screenPaddingSlack,
-                            Self.minFitSpan
-                        )
+                        latitudeDelta: max(0.005, model.visibleRadiusKm / 111 / 4),
+                        longitudeDelta: max(0.005, model.visibleRadiusKm / 111 / 4)
                     )
                 )
             )
@@ -1024,6 +1017,76 @@ private struct NearbyStatusIcon: View {
             .onChange(of: isActive) { _, active in
                 pulse = active
             }
+    }
+}
+
+/// Soft empty-state tip on the map — invite, not a warning.
+private struct EmptyMapHint: View {
+    let symbol: String
+    let title: String
+    let detail: String
+    let primaryTitle: String
+    var primaryEnabled: Bool = true
+    let onPrimary: () -> Void
+    var secondaryTitle: String? = nil
+    var onSecondary: (() -> Void)? = nil
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: symbol)
+                .font(.system(size: 22, weight: .medium))
+                .foregroundStyle(Theme.accent)
+                .frame(width: 44, height: 44)
+                .background(Theme.accent.opacity(0.14), in: Circle())
+
+            VStack(spacing: 6) {
+                Text(title)
+                    .font(.cardTitle)
+                    .foregroundStyle(Theme.text)
+                Text(detail)
+                    .font(.subheadline)
+                    .foregroundStyle(Theme.subtle)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(spacing: 8) {
+                Button(action: onPrimary) {
+                    Text(primaryTitle)
+                        .font(.control)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 11)
+                        .frame(maxWidth: .infinity)
+                        .background(Theme.accent.opacity(primaryEnabled ? 1 : 0.55), in: Capsule())
+                }
+                .buttonStyle(.pressable)
+                .disabled(!primaryEnabled)
+
+                if let secondaryTitle, let onSecondary {
+                    Button(action: onSecondary) {
+                        Text(secondaryTitle)
+                            .font(.control)
+                            .foregroundStyle(Theme.accent)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 10)
+                            .frame(maxWidth: .infinity)
+                            .background(Theme.accent.opacity(0.12), in: Capsule())
+                    }
+                    .buttonStyle(.pressable)
+                }
+            }
+            .padding(.top, 2)
+        }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 20)
+        .frame(maxWidth: 280)
+        .background(Theme.surface.opacity(0.92), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(Theme.hairline.opacity(0.85), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.28), radius: 14, y: 6)
     }
 }
 

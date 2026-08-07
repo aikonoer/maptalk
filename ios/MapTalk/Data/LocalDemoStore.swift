@@ -189,11 +189,32 @@ final class LocalDemoStore {
         let id = UUID()
         return AsyncStream { continuation in
             messageListeners[id] = MessageListener(threadId: threadId, continuation: continuation)
-            continuation.yield(messages[threadId] ?? [])
+            continuation.yield(tipMessages(threadId: threadId))
             continuation.onTermination = { [weak self] _ in
                 Task { @MainActor in self?.messageListeners[id] = nil }
             }
         }
+    }
+
+    /// Newest page only, matching the Firestore live tip so scroll-up pagination can be demoed.
+    private func tipMessages(threadId: String) -> [Message] {
+        let all = (messages[threadId] ?? []).sorted {
+            ($0.createdAt ?? .distantFuture) < ($1.createdAt ?? .distantFuture)
+        }
+        return Array(all.suffix(ThreadRepository.messagePageSizeDefault))
+    }
+
+    func olderMessages(threadId: String, beforeMessageId: String) -> ThreadRepository.OlderMessages {
+        let all = (messages[threadId] ?? []).sorted {
+            ($0.createdAt ?? .distantFuture) < ($1.createdAt ?? .distantFuture)
+        }
+        guard let index = all.firstIndex(where: { $0.id == beforeMessageId }), index > 0 else {
+            return ThreadRepository.OlderMessages(messages: [], reachedEnd: true)
+        }
+        let pageSize = ThreadRepository.messagePageSizeDefault
+        let start = max(0, index - pageSize)
+        let page = Array(all[start..<index])
+        return ThreadRepository.OlderMessages(messages: page, reachedEnd: start == 0)
     }
 
     func createThread(title: String, kind: ThreadKind, position: GeoPoint, author: Author) -> String {
@@ -373,6 +394,12 @@ final class LocalDemoStore {
         }
     }
 
+    func nearestThread(from: GeoPoint, excludingAuthorIds: Set<String>) -> ChatThread? {
+        threads.values
+            .filter { !excludingAuthorIds.contains($0.authorId) }
+            .min { from.distance(to: $0.position) < from.distance(to: $1.position) }
+    }
+
     private func publishAllThreadLists() {
         for listener in threadListeners.values {
             listener.continuation.yield(snapshot(for: listener.query))
@@ -387,7 +414,7 @@ final class LocalDemoStore {
 
     private func publishMessages(_ threadId: String) {
         for listener in messageListeners.values where listener.threadId == threadId {
-            listener.continuation.yield(messages[threadId] ?? [])
+            listener.continuation.yield(tipMessages(threadId: threadId))
         }
     }
 
@@ -557,6 +584,38 @@ private extension LocalDemoStore {
                 ageMinutes: 70,
                 replies: [("Fen", "Maybe 40 minutes from where I am", 68)]
             ),
+            // 400 messages so the live tip (200) leaves a full older page to scroll into.
+            {
+                let names = ["Mira", "Jonah", "Kai", "Sera", "Omar", "Lina", "Dex", "Yuki"]
+                let lines = [
+                    "Anyone else still here?",
+                    "The satay stall is the one",
+                    "Moved closer to the fountain",
+                    "Queue for drinks is wild",
+                    "Live set starts in a bit",
+                    "Found a table near the edge",
+                    "Bring cash, card reader is down",
+                    "Meet by the big lantern",
+                ]
+                let total = 400
+                let replies: [(String, String, Double)] = (0..<total).map { index in
+                    let fromEnd = total - 1 - index
+                    return (
+                        names[index % names.count],
+                        "#\(index + 1) — \(lines[index % lines.count])",
+                        10 + Double(fromEnd) * 16
+                    )
+                }
+                return pack(
+                    id: "cebu-history",
+                    title: "Ayala night market — long thread (scroll up)",
+                    kind: .event,
+                    position: at(40, -60),
+                    author: "Mira",
+                    ageMinutes: replies.map(\.2).max() ?? 0,
+                    replies: replies
+                )
+            }(),
             // A couple elsewhere so the worldwide zoom still has something to show.
             pack(
                 id: "world-london",

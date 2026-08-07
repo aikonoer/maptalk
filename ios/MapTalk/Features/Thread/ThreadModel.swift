@@ -9,6 +9,11 @@ final class ThreadModel {
     private(set) var thread: ChatThread?
     private(set) var messages: [Message] = []
     private(set) var isLoading = true
+    private(set) var isLoadingOlder = false
+    /// False once a scroll-up page comes back empty or short — stop asking.
+    private(set) var hasMoreHistory = true
+    /// Set when older messages were just prepended so the screen can keep its scroll anchor.
+    private(set) var historyPrepended: Int = 0
     private(set) var blockedUids: Set<String> = []
     var errorMessage: String?
     var replyTarget: Message?
@@ -19,7 +24,8 @@ final class ThreadModel {
     private let safety: SafetyRepository
     private let push: PushRepository
     private let threadId: String
-    private var allMessages: [Message] = []
+    /// Live tip + pages loaded by scrolling up. Grows; live updates overwrite by id.
+    private var retainedMessages: [Message] = []
     private var tasks: [Task<Void, Never>] = []
 
     init(
@@ -55,8 +61,12 @@ final class ThreadModel {
         )
         tasks.append(
             Task { [repository, threadId] in
-                for await messages in repository.messages(threadId: threadId) {
-                    allMessages = messages
+                for await live in repository.messages(threadId: threadId) {
+                    retainedMessages = Self.merge(older: retainedMessages, live: live)
+                    // A short tip means the whole thread fit in one page.
+                    if live.count < repository.messagePageSize {
+                        hasMoreHistory = false
+                    }
                     applyMessageFilter()
                     isLoading = false
                 }
@@ -78,6 +88,37 @@ final class ThreadModel {
     func stop() {
         tasks.forEach { $0.cancel() }
         tasks = []
+    }
+
+    /// Fetch the next older page when the user scrolls near the top.
+    func loadOlder() {
+        guard !isLoadingOlder, hasMoreHistory, !isLoading else { return }
+        guard let oldest = retainedMessages.first(where: { !$0.isLocalPending }) else { return }
+        isLoadingOlder = true
+        tasks.append(
+            Task { [repository, threadId] in
+                let page = await repository.olderMessages(
+                    threadId: threadId,
+                    beforeMessageId: oldest.id
+                )
+                if page.reachedEnd { hasMoreHistory = false }
+                defer { isLoadingOlder = false }
+                guard !page.messages.isEmpty else { return }
+                let known = Set(retainedMessages.map(\.id))
+                let fresh = page.messages.filter { !known.contains($0.id) }
+                guard !fresh.isEmpty else {
+                    hasMoreHistory = false
+                    return
+                }
+                retainedMessages = Self.merge(older: fresh, live: retainedMessages)
+                historyPrepended = fresh.count
+                applyMessageFilter()
+            }
+        )
+    }
+
+    func consumeHistoryPrepend() {
+        historyPrepended = 0
     }
 
     func send(
@@ -163,9 +204,22 @@ final class ThreadModel {
     }
 
     private func applyMessageFilter() {
-        messages = allMessages.filter { !blockedUids.contains($0.authorId) }
+        messages = retainedMessages.filter { !blockedUids.contains($0.authorId) }
         if let reply = replyTarget, blockedUids.contains(reply.authorId) {
             replyTarget = nil
+        }
+    }
+
+    private static func merge(older: [Message], live: [Message]) -> [Message] {
+        var byId: [String: Message] = [:]
+        // Retained / older first; the live tip overwrites so reactions on recent messages stay fresh.
+        for message in older { byId[message.id] = message }
+        for message in live { byId[message.id] = message }
+        return byId.values.sorted {
+            let left = $0.createdAt ?? .distantFuture
+            let right = $1.createdAt ?? .distantFuture
+            if left != right { return left < right }
+            return $0.id < $1.id
         }
     }
 }

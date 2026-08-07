@@ -81,6 +81,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
@@ -139,6 +140,7 @@ fun MapScreen(
     val startLocation by viewModel.startLocation.collectAsStateWithLifecycle()
     val kindFilter by viewModel.kindFilter.collectAsStateWithLifecycle()
     val profile by viewModel.profile.collectAsStateWithLifecycle()
+    val findingClosest by viewModel.findingClosest.collectAsStateWithLifecycle()
 
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -178,6 +180,19 @@ fun MapScreen(
             cameraPositionState.animate(
                 CameraUpdateFactory.newLatLngZoom(LatLng(point.lat, point.lng), NEARBY_ZOOM),
             )
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.widenToClosest.collect { widen ->
+            val latDelta = widen.radiusKm / 111.32
+            val cosLat = kotlin.math.cos(Math.toRadians(widen.center.lat)).coerceAtLeast(0.2)
+            val lngDelta = widen.radiusKm / (111.32 * cosLat)
+            val bounds = LatLngBounds(
+                LatLng(widen.center.lat - latDelta, widen.center.lng - lngDelta),
+                LatLng(widen.center.lat + latDelta, widen.center.lng + lngDelta),
+            )
+            cameraPositionState.animate(CameraUpdateFactory.newLatLngBounds(bounds, 72))
         }
     }
 
@@ -327,19 +342,17 @@ fun MapScreen(
                                             openThreadId = single.id
                                             return@bubbleGestures
                                         }
-                                        // Move to the chats' own bounds so none of them end up
-                                        // off screen; list them when no camera move would separate
-                                        // them.
+                                        // Tap = move the camera. Prefer fitting member bounds;
+                                        // if too tight to separate, still step in. List is
+                                        // long-press only.
                                         val fit = Viewport.drillFit(
                                             items = bubble.items,
                                             geohashOf = ChatThread::geohash,
                                             positionOf = ChatThread::position,
                                         )
-                                        if (fit == null) {
-                                            listCluster(bubble.items)
-                                        } else {
-                                            val box = fit.withRoomForBubbles()
-                                            scope.launch {
+                                        scope.launch {
+                                            if (fit != null) {
+                                                val box = fit.withRoomForBubbles()
                                                 cameraPositionState.animate(
                                                     CameraUpdateFactory.newLatLngBounds(
                                                         LatLngBounds(
@@ -347,6 +360,17 @@ fun MapScreen(
                                                             LatLng(box.northeast.lat, box.northeast.lng),
                                                         ),
                                                         clusterFitPadding,
+                                                    ),
+                                                )
+                                            } else {
+                                                cameraPositionState.animate(
+                                                    CameraUpdateFactory.newLatLngZoom(
+                                                        LatLng(
+                                                            bubble.position.lat,
+                                                            bubble.position.lng,
+                                                        ),
+                                                        (cameraPositionState.position.zoom + 2f)
+                                                            .coerceAtMost(18f),
                                                     ),
                                                 )
                                             }
@@ -445,18 +469,23 @@ fun MapScreen(
 
                 if (nearbyEmpty) {
                     HintCard(
-                        title = "Nothing pinned near here",
-                        body = "Be the first — pick a spot and start a chat.",
-                        action = "Start a chat here",
-                        onAction = { isPlacingPin = true },
+                        icon = R.drawable.ic_nearby,
+                        title = "Quiet around here",
+                        detail = "Zoom out until a chat appears, or start one right here.",
+                        primaryAction = if (findingClosest) "Looking…" else "Find the closest chat",
+                        primaryEnabled = !findingClosest,
+                        onPrimary = viewModel::findClosestChat,
+                        secondaryAction = "Start the first chat",
+                        onSecondary = { isPlacingPin = true },
                         modifier = Modifier.padding(top = 18.dp),
                     )
                 } else if (filterEmpty) {
                     HintCard(
-                        title = "Nothing in this filter",
-                        body = "Other chats are nearby — clear the filter to see them.",
-                        action = "Show all kinds",
-                        onAction = viewModel::clearKindFilter,
+                        icon = R.drawable.ic_search,
+                        title = "Nothing of that kind here",
+                        detail = "Other chats are nearby — clear the filter to see them.",
+                        primaryAction = "Show all chats",
+                        onPrimary = viewModel::clearKindFilter,
                         modifier = Modifier.padding(top = 18.dp),
                     )
                 }
@@ -1112,40 +1141,87 @@ private fun PlaceSearchChrome(
 
 @Composable
 private fun HintCard(
+    icon: Int,
     title: String,
-    body: String,
-    action: String,
-    onAction: () -> Unit,
+    detail: String,
+    primaryAction: String,
+    onPrimary: () -> Unit,
     modifier: Modifier = Modifier,
+    primaryEnabled: Boolean = true,
+    secondaryAction: String? = null,
+    onSecondary: (() -> Unit)? = null,
 ) {
     Surface(
-        modifier = modifier.widthIn(max = 300.dp),
-        shape = RoundedCornerShape(18.dp),
-        color = MapTalkColors.Surface.copy(alpha = 0.94f),
+        modifier = modifier.widthIn(max = 280.dp),
+        shape = RoundedCornerShape(20.dp),
+        color = MapTalkColors.Surface.copy(alpha = 0.92f),
         contentColor = MapTalkColors.Text,
-        border = BorderStroke(1.dp, MapTalkColors.Hairline),
-        shadowElevation = 12.dp,
+        border = BorderStroke(1.dp, MapTalkColors.Hairline.copy(alpha = 0.85f)),
+        shadowElevation = 8.dp,
     ) {
         Column(
-            modifier = Modifier.padding(20.dp),
+            modifier = Modifier.padding(horizontal = 22.dp, vertical = 20.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text(text = title, style = MaterialTheme.typography.titleMedium)
-            Text(
-                text = body,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MapTalkColors.Subtle,
-            )
-            Button(
-                onClick = onAction,
-                shape = CircleShape,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MapTalkColors.Accent,
-                    contentColor = Color.White,
-                ),
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .background(MapTalkColors.Accent.copy(alpha = 0.14f), CircleShape),
+                contentAlignment = Alignment.Center,
             ) {
-                Text(action)
+                Icon(
+                    painter = painterResource(icon),
+                    contentDescription = null,
+                    tint = MapTalkColors.Accent,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium,
+                    textAlign = TextAlign.Center,
+                )
+                Text(
+                    text = detail,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MapTalkColors.Subtle,
+                    textAlign = TextAlign.Center,
+                )
+            }
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Button(
+                    onClick = onPrimary,
+                    enabled = primaryEnabled,
+                    shape = CircleShape,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MapTalkColors.Accent,
+                        contentColor = Color.White,
+                    ),
+                ) {
+                    Text(primaryAction)
+                }
+                if (secondaryAction != null && onSecondary != null) {
+                    TextButton(
+                        onClick = onSecondary,
+                        shape = CircleShape,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.textButtonColors(
+                            contentColor = MapTalkColors.Accent,
+                        ),
+                    ) {
+                        Text(secondaryAction)
+                    }
+                }
             }
         }
     }

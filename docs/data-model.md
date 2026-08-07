@@ -157,6 +157,21 @@ listeners are detached before new ones attach.
 Only single field indexes are needed (`geohash` ascending and `lastMessageAt`
 descending), and Firestore creates those automatically.
 
+## Reading a thread
+
+Both apps keep a live listener on the **newest 200** messages
+(`orderBy('createdAt', desc).limit(200)`, sorted oldest→newest in the UI). That tip
+updates itself — new replies appear without a refresh.
+
+Older history is not in that listener. Scrolling near the top fetches the next page with
+`startAfter` the oldest message already on screen, same page size, and prepends it. A
+short tip (fewer than 200) means the whole thread already fits; a short or empty older
+page means there is nothing further back. Clients keep messages that fall out of the live
+tip in memory for the open screen so a busy thread does not lose the middle of the
+conversation while you are looking at it.
+
+Reference: `ThreadRepository.messages` / `olderMessages` on both platforms.
+
 ## Clustering the bubbles
 
 Both apps group markers by geohash prefix instead of using a clustering library, so the

@@ -161,4 +161,17 @@ final class MapModel {
         }
         return []
     }
+
+    private(set) var isFindingClosest = false
+
+    /// Nearest chat to the current camera centre — caller zooms out in place to reveal it.
+    func findClosestChat() async -> ChatThread? {
+        guard !isFindingClosest else { return nil }
+        isFindingClosest = true
+        defer { isFindingClosest = false }
+        return await repository.nearestThread(
+            from: visibleCenter,
+            excludingAuthorIds: blockedUids
+        )
+    }
 }

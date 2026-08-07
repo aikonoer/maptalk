@@ -20,7 +20,20 @@ final class ThreadRepository {
     private let backend: Backend
     var onError: ((Error) -> Void)?
 
-    private let messagePageSize = 200
+    let messagePageSize = 200
+
+    /// Shared with `LocalDemoStore` so the Cebu demo pages the same way as Firestore.
+    static let messagePageSizeDefault = 200
+
+    /// Widen until we find something; last step falls back to worldwide activity.
+    private static let nearestSearchRadiiKm: [Double] = [10, 50, 200, 1_000]
+
+    /// One older page of messages, oldest→newest for the UI.
+    struct OlderMessages: Sendable {
+        let messages: [Message]
+        /// True when this page was short or empty — nothing further back.
+        let reachedEnd: Bool
+    }
 
     init(firestore: Firestore, mediaUploader: MediaUploading) {
         backend = .firestore(firestore, mediaUploader)
@@ -125,7 +138,8 @@ final class ThreadRepository {
 
     /// Newest messages first from Firestore, oldest first for the UI. Sorting locally keeps a
     /// reply that has not reached the server yet (its timestamp is still an estimate) at the
-    /// bottom where the sender expects it.
+    /// bottom where the sender expects it. Older history is fetched one page at a time via
+    /// `olderMessages(threadId:beforeMessageId:)`.
     func messages(threadId: String) -> AsyncStream<[Message]> {
         switch backend {
         case let .firestore(firestore, _):
@@ -153,6 +167,101 @@ final class ThreadRepository {
             }
         case let .local(store):
             return store.messages(threadId: threadId)
+        }
+    }
+
+    /// Closest chat to `from`, ignoring blocked authors. Widens a one-shot geohash search until
+    /// something appears, then picks the nearest by real distance — for countryside empty states.
+    func nearestThread(
+        from: GeoPoint,
+        excludingAuthorIds: Set<String> = []
+    ) async -> ChatThread? {
+        switch backend {
+        case let .local(store):
+            return store.nearestThread(from: from, excludingAuthorIds: excludingAuthorIds)
+        case let .firestore(firestore, _):
+            for radiusKm in Self.nearestSearchRadiiKm {
+                do {
+                    let candidates = try await fetchNearbyOnce(
+                        firestore: firestore,
+                        center: from,
+                        radiusKm: radiusKm
+                    )
+                    .filter { !excludingAuthorIds.contains($0.authorId) }
+                    if let nearest = candidates.min(by: {
+                        from.distance(to: $0.position) < from.distance(to: $1.position)
+                    }) {
+                        return nearest
+                    }
+                } catch {
+                    onError?(error)
+                    return nil
+                }
+            }
+            do {
+                let snapshot = try await firestore.collection(Fs.threads)
+                    .order(by: Fs.lastMessageAt, descending: true)
+                    .limit(to: Viewport.globalLimit)
+                    .getDocuments()
+                return snapshot.documents
+                    .compactMap { $0.chatThread() }
+                    .filter { !excludingAuthorIds.contains($0.authorId) }
+                    .min { from.distance(to: $0.position) < from.distance(to: $1.position) }
+            } catch {
+                onError?(error)
+                return nil
+            }
+        }
+    }
+
+    private func fetchNearbyOnce(
+        firestore: Firestore,
+        center: GeoPoint,
+        radiusKm: Double
+    ) async throws -> [ChatThread] {
+        let radiusMeters = radiusKm * 1_000
+        let bounds = GeoHash.queryBounds(for: center, radiusMeters: radiusMeters)
+        var pages: [ChatThread] = []
+        for bound in bounds {
+            let snapshot = try await firestore.collection(Fs.threads)
+                .order(by: Fs.geohash)
+                .start(at: [bound.startHash])
+                .end(at: [bound.endHash])
+                .limit(to: Viewport.perBoundLimit)
+                .getDocuments()
+            pages.append(contentsOf: snapshot.documents.compactMap { $0.chatThread() })
+        }
+        return pages.within(radiusMeters, of: center)
+    }
+
+    /// One older page before `beforeMessageId` (the oldest message already on screen).
+    func olderMessages(threadId: String, beforeMessageId: String) async -> OlderMessages {
+        switch backend {
+        case let .firestore(firestore, _):
+            let collection = firestore.collection(Fs.threads).document(threadId)
+                .collection(Fs.messages)
+            do {
+                let cursor = try await collection.document(beforeMessageId).getDocument()
+                guard cursor.exists else {
+                    return OlderMessages(messages: [], reachedEnd: true)
+                }
+                let snapshot = try await collection
+                    .order(by: Fs.createdAt, descending: true)
+                    .start(afterDocument: cursor)
+                    .limit(to: messagePageSize)
+                    .getDocuments()
+                let page = snapshot.documents.compactMap { $0.message() }
+                    .sorted { ($0.createdAt ?? .distantFuture) < ($1.createdAt ?? .distantFuture) }
+                return OlderMessages(
+                    messages: page,
+                    reachedEnd: page.count < messagePageSize
+                )
+            } catch {
+                onError?(error)
+                return OlderMessages(messages: [], reachedEnd: false)
+            }
+        case .local(let store):
+            return store.olderMessages(threadId: threadId, beforeMessageId: beforeMessageId)
         }
     }
 

@@ -22,9 +22,12 @@ import app.maptalk.location.LocationProvider
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
@@ -41,6 +44,9 @@ import app.maptalk.data.model.Message
 
 /** What the camera can see: where it is pointed and how far out it is zoomed. */
 data class CameraSnapshot(val center: GeoPoint, val radiusKm: Double)
+
+/** Keep [center], open the view to [radiusKm] so a distant chat becomes visible. */
+data class WidenMap(val center: GeoPoint, val radiusKm: Double)
 
 data class MapUiState(
     val bubbles: List<GeoCluster<ChatThread>> = emptyList(),
@@ -72,6 +78,13 @@ class MapViewModel(
 
     /** Where to point the camera on first load, once we know it. */
     val startLocation: StateFlow<GeoPoint?> = _startLocation.asStateFlow()
+
+    private val _widenToClosest = MutableSharedFlow<WidenMap>(extraBufferCapacity = 1)
+    /** Same centre, wider zoom so the nearest chat lands on screen. */
+    val widenToClosest: SharedFlow<WidenMap> = _widenToClosest.asSharedFlow()
+
+    private val _findingClosest = MutableStateFlow(false)
+    val findingClosest: StateFlow<Boolean> = _findingClosest.asStateFlow()
 
     val errors = merge(threadRepository.errors, safetyRepository.errors)
 
@@ -135,6 +148,27 @@ class MapViewModel(
     }
 
     /**
+     * Zoom out around the current camera centre until the nearest chat fits on screen —
+     * centre stays put; only the visible radius grows.
+     */
+    fun findClosestChat() {
+        val snapshot = camera.value ?: return
+        if (_findingClosest.value) return
+        viewModelScope.launch {
+            _findingClosest.value = true
+            try {
+                val nearest = threadRepository.nearestThread(snapshot.center, blockedUids.value)
+                    ?: return@launch
+                val distanceKm = snapshot.center.distanceTo(nearest.position) / 1_000
+                val radiusKm = maxOf(distanceKm * REVEAL_PADDING, snapshot.radiusKm * 1.2)
+                _widenToClosest.emit(WidenMap(center = snapshot.center, radiusKm = radiusKm))
+            } finally {
+                _findingClosest.value = false
+            }
+        }
+    }
+
+    /**
      * The title is the map headline; an optional [openingText] becomes the first message, so a
      * chat can start with more than a one-liner.
      */
@@ -185,6 +219,9 @@ class MapViewModel(
 
     companion object {
         private const val CAMERA_DEBOUNCE_MS = 250L
+
+        /** How much wider than the bare distance, so the chat is not glued to the edge. */
+        private const val REVEAL_PADDING = 1.35
 
         fun factory(container: AppContainer): ViewModelProvider.Factory =
             viewModelFactory {

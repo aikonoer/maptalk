@@ -82,6 +82,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import app.maptalk.core.DeepLinkBus
@@ -134,6 +135,7 @@ import coil.compose.AsyncImage
 import java.io.File
 import java.time.Duration
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 /** Messages from one person, close enough in time, are drawn as one run. */
@@ -264,9 +266,50 @@ fun ThreadScreen(
         if (state.shouldDismiss) onBack()
     }
 
-    LaunchedEffect(state.messages.size) {
-        if (state.messages.isNotEmpty()) {
-            listState.animateScrollToItem(state.messages.lastIndex)
+    // Stick to the latest bubble on first paint and when a new tip message arrives while
+    // the user is already near the bottom. Loading older history must not yank the camera.
+    var pinnedBottom by remember { mutableStateOf(true) }
+    var lastTipId by remember { mutableStateOf<String?>(null) }
+    // LazyColumn opens at index 0 — wait until we have scrolled to the tip before paging up.
+    var historyLoadEnabled by remember { mutableStateOf(false) }
+    LaunchedEffect(state.messages.lastOrNull()?.id) {
+        val tipId = state.messages.lastOrNull()?.id ?: return@LaunchedEffect
+        val firstOpen = lastTipId == null
+        val tipGrew = lastTipId != null && tipId != lastTipId
+        lastTipId = tipId
+        if (firstOpen || (tipGrew && pinnedBottom)) {
+            listState.scrollToItem(state.messages.lastIndex)
+            pinnedBottom = true
+            if (firstOpen) {
+                delay(350)
+                historyLoadEnabled = true
+            }
+        }
+    }
+    LaunchedEffect(listState) {
+        snapshotFlow {
+            val info = listState.layoutInfo
+            val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: 0
+            lastVisible >= (info.totalItemsCount - 3).coerceAtLeast(0)
+        }
+            .distinctUntilChanged()
+            .collect { nearBottom -> pinnedBottom = nearBottom }
+    }
+    LaunchedEffect(listState, state.hasMoreHistory, state.isLoadingOlder, historyLoadEnabled) {
+        if (!historyLoadEnabled) return@LaunchedEffect
+        snapshotFlow { listState.firstVisibleItemIndex }
+            .distinctUntilChanged()
+            .collect { index ->
+                if (index <= 2 && state.hasMoreHistory && !state.isLoadingOlder) {
+                    viewModel.loadOlder()
+                }
+            }
+    }
+    LaunchedEffect(Unit) {
+        viewModel.historyPrepended.collect { prepended ->
+            val index = listState.firstVisibleItemIndex
+            val offset = listState.firstVisibleItemScrollOffset
+            listState.scrollToItem(index + prepended, offset)
         }
     }
 
@@ -599,30 +642,42 @@ fun ThreadScreen(
                             .padding(40.dp),
                     )
 
-                    else -> LazyColumn(
-                        state = listState,
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 16.dp),
-                        modifier = Modifier.fillMaxSize(),
-                    ) {
-                        itemsIndexed(
-                            items = state.messages,
-                            key = { _, message -> message.id },
-                        ) { index, message ->
-                            MessageRow(
-                                message = message,
-                                isMine = message.authorId == author.uid,
-                                myUid = author.uid,
-                                startsRun = startsRun(state.messages, index),
-                                endsRun = endsRun(state.messages, index),
-                                isLifted = longPressTarget?.id == message.id,
-                                resolveMedia = viewModel::mediaFile,
-                                onImageClick = { path -> fullscreenPath = path },
-                                onOpenVideo = { path -> fullscreenVideoPath = path },
-                                onReply = { viewModel.setReply(message) },
-                                onLongPress = { longPressTarget = message },
-                                onToggleReaction = { emoji ->
-                                    viewModel.toggleReaction(emoji, message, author)
-                                },
+                    else -> Box(modifier = Modifier.fillMaxSize()) {
+                        LazyColumn(
+                            state = listState,
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 16.dp),
+                            modifier = Modifier.fillMaxSize(),
+                        ) {
+                            itemsIndexed(
+                                items = state.messages,
+                                key = { _, message -> message.id },
+                            ) { index, message ->
+                                MessageRow(
+                                    message = message,
+                                    isMine = message.authorId == author.uid,
+                                    myUid = author.uid,
+                                    startsRun = startsRun(state.messages, index),
+                                    endsRun = endsRun(state.messages, index),
+                                    isLifted = longPressTarget?.id == message.id,
+                                    resolveMedia = viewModel::mediaFile,
+                                    onImageClick = { path -> fullscreenPath = path },
+                                    onOpenVideo = { path -> fullscreenVideoPath = path },
+                                    onReply = { viewModel.setReply(message) },
+                                    onLongPress = { longPressTarget = message },
+                                    onToggleReaction = { emoji ->
+                                        viewModel.toggleReaction(emoji, message, author)
+                                    },
+                                )
+                            }
+                        }
+                        if (state.isLoadingOlder) {
+                            CircularProgressIndicator(
+                                color = MapTalkColors.Subtle,
+                                strokeWidth = 2.dp,
+                                modifier = Modifier
+                                    .align(Alignment.TopCenter)
+                                    .padding(top = 12.dp)
+                                    .size(18.dp),
                             )
                         }
                     }

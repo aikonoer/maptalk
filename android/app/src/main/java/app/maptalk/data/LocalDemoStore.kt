@@ -152,8 +152,32 @@ class LocalDemoStore(context: Context) {
         threadPulse.map { threads[threadId] }.onStart { emit(threads[threadId]) }
 
     fun messages(threadId: String): Flow<List<Message>> =
-        threadPulse.map { messages[threadId]?.toList().orEmpty() }
-            .onStart { emit(messages[threadId]?.toList().orEmpty()) }
+        threadPulse.map { tipMessages(threadId) }
+            .onStart { emit(tipMessages(threadId)) }
+
+    /** Newest [ThreadRepository.MESSAGE_PAGE] messages, matching the Firestore live tip. */
+    private fun tipMessages(threadId: String): List<Message> {
+        val all = messages[threadId]?.sortedBy { it.createdAt }.orEmpty()
+        return all.takeLast(ThreadRepository.MESSAGE_PAGE.toInt())
+    }
+
+    /**
+     * One older page before [beforeMessageId], oldest→newest. Mirrors the Firestore
+     * `startAfter` page so scroll-up pagination works in the Cebu demo.
+     */
+    fun olderMessages(threadId: String, beforeMessageId: String): ThreadRepository.OlderMessages {
+        val all = messages[threadId]?.sortedBy { it.createdAt }.orEmpty()
+        val index = all.indexOfFirst { it.id == beforeMessageId }
+        if (index <= 0) {
+            return ThreadRepository.OlderMessages(messages = emptyList(), reachedEnd = true)
+        }
+        val start = (index - ThreadRepository.MESSAGE_PAGE.toInt()).coerceAtLeast(0)
+        val page = all.subList(start, index)
+        return ThreadRepository.OlderMessages(
+            messages = page,
+            reachedEnd = start == 0,
+        )
+    }
 
     fun createThread(title: String, kind: ThreadKind, position: GeoPoint, author: Author): String {
         val id = "local-${UUID.randomUUID().toString().take(8)}"
@@ -306,6 +330,11 @@ class LocalDemoStore(context: Context) {
         }
     }
 
+    fun nearestThread(from: GeoPoint, excludingAuthorIds: Set<String>): ChatThread? =
+        threads.values
+            .filter { it.authorId !in excludingAuthorIds }
+            .minByOrNull { from.distanceTo(it.position) }
+
     private data class Pack(val thread: ChatThread, val messages: List<Message>)
 
     private fun cebuSeed(): List<Pack> {
@@ -448,10 +477,42 @@ class LocalDemoStore(context: Context) {
                 70,
                 listOf(Triple("Fen", "Maybe 40 minutes from where I am", 68)),
             ),
+            // 400 messages so the live tip (200) leaves a full older page to scroll into.
+            run {
+                val names = listOf("Mira", "Jonah", "Kai", "Sera", "Omar", "Lina", "Dex", "Yuki")
+                val lines = listOf(
+                    "Anyone else still here?",
+                    "The satay stall is the one",
+                    "Moved closer to the fountain",
+                    "Queue for drinks is wild",
+                    "Live set starts in a bit",
+                    "Found a table near the edge",
+                    "Bring cash, card reader is down",
+                    "Meet by the big lantern",
+                )
+                val total = 400
+                val replies = (0 until total).map { index ->
+                    val fromEnd = total - 1 - index
+                    Triple(
+                        names[index % names.size],
+                        "#${index + 1} — ${lines[index % lines.size]}",
+                        10L + fromEnd * 16L,
+                    )
+                }
+                pack(
+                    "cebu-history",
+                    "Ayala night market — long thread (scroll up)",
+                    ThreadKind.EVENT,
+                    at(40.0, -60.0),
+                    "Mira",
+                    replies.maxOf { it.third },
+                    replies,
+                )
+            },
         )
     }
 
-        companion object {
+    companion object {
         val CEBU = GeoPoint(10.3157, 123.8854)
         private const val PREFS = "maptalk.localDemo"
         private const val KEY_DISPLAY_NAME = "displayName"

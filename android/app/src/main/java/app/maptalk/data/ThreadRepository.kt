@@ -125,6 +125,10 @@ class ThreadRepository private constructor(
         is Backend.Local -> backend.store.thread(threadId)
     }
 
+    /**
+     * Live tip of the thread: newest [MESSAGE_PAGE] messages, oldest→newest for the UI.
+     * Older history is fetched one page at a time via [olderMessages] when the user scrolls up.
+     */
     fun messages(threadId: String): Flow<List<Message>> = when (val backend = backend) {
         is Backend.Firestore -> callbackFlow {
             val registration = backend.db.collection(Fs.THREADS).document(threadId)
@@ -143,6 +147,42 @@ class ThreadRepository private constructor(
         }
         is Backend.Local -> backend.store.messages(threadId)
     }
+
+    /**
+     * One older page before [beforeMessageId] (the oldest message already on screen).
+     * Empty [messages] or [OlderMessages.reachedEnd] means there is nothing further back.
+     */
+    suspend fun olderMessages(threadId: String, beforeMessageId: String): OlderMessages =
+        when (val backend = backend) {
+            is Backend.Firestore -> {
+                val collection = backend.db.collection(Fs.THREADS).document(threadId)
+                    .collection(Fs.MESSAGES)
+                val cursor = collection.document(beforeMessageId).get().await()
+                if (!cursor.exists()) {
+                    OlderMessages(messages = emptyList(), reachedEnd = true)
+                } else {
+                    val snapshot = collection
+                        .orderBy(Fs.CREATED_AT, Query.Direction.DESCENDING)
+                        .startAfter(cursor)
+                        .limit(MESSAGE_PAGE)
+                        .get()
+                        .await()
+                    val page = snapshot.documents.mapNotNull { it.toMessage() }
+                        .sortedBy { it.createdAt }
+                    OlderMessages(
+                        messages = page,
+                        reachedEnd = page.size < MESSAGE_PAGE,
+                    )
+                }
+            }
+            // Local demo pages the same way as Firestore so the long Cebu seed can be scrolled.
+            is Backend.Local -> backend.store.olderMessages(threadId, beforeMessageId)
+        }
+
+    data class OlderMessages(
+        val messages: List<Message>,
+        val reachedEnd: Boolean,
+    )
 
     fun createThread(
         title: String,
@@ -504,7 +544,62 @@ class ThreadRepository private constructor(
             .filter { center.distanceTo(it.position) <= radiusMetres }
             .sortedByDescending { it.lastMessageAt }
 
-    private companion object {
+    /**
+     * Closest chat to [from], ignoring blocked authors. Widens a one-shot geohash search until
+     * something appears, then picks the nearest by real distance — for countryside empty states.
+     */
+    suspend fun nearestThread(
+        from: GeoPoint,
+        excludingAuthorIds: Set<String> = emptySet(),
+    ): ChatThread? = when (val backend = backend) {
+        is Backend.Local -> backend.store.nearestThread(from, excludingAuthorIds)
+        is Backend.Firestore -> {
+            for (radiusKm in NEAREST_SEARCH_RADII_KM) {
+                val candidates = fetchNearbyOnce(backend.db, from, radiusKm)
+                    .filter { it.authorId !in excludingAuthorIds }
+                val nearest = candidates.minByOrNull { from.distanceTo(it.position) }
+                if (nearest != null) return nearest
+            }
+            backend.db.collection(Fs.THREADS)
+                .orderBy(Fs.LAST_MESSAGE_AT, Query.Direction.DESCENDING)
+                .limit(Viewport.GLOBAL_LIMIT)
+                .get()
+                .await()
+                .documents
+                .mapNotNull { it.toChatThread() }
+                .filter { it.authorId !in excludingAuthorIds }
+                .minByOrNull { from.distanceTo(it.position) }
+        }
+    }
+
+    private suspend fun fetchNearbyOnce(
+        firestore: FirebaseFirestore,
+        center: GeoPoint,
+        radiusKm: Double,
+    ): List<ChatThread> {
+        val radiusMetres = radiusKm * 1_000
+        val bounds = GeoFireUtils.getGeoHashQueryBounds(
+            GeoLocation(center.lat, center.lng),
+            radiusMetres,
+        )
+        val pages = bounds.map { bound ->
+            firestore.collection(Fs.THREADS)
+                .orderBy(Fs.GEOHASH)
+                .startAt(bound.startHash)
+                .endAt(bound.endHash)
+                .limit(Viewport.PER_BOUND_LIMIT)
+                .get()
+                .await()
+                .documents
+                .mapNotNull { it.toChatThread() }
+        }
+        return pages.flatten().within(center, radiusMetres)
+    }
+
+    companion object {
         const val MESSAGE_PAGE = 200L
+
+        /** Widen until we find something; last step falls back to worldwide activity. */
+        private val NEAREST_SEARCH_RADII_KM = listOf(10.0, 50.0, 200.0, 1_000.0)
     }
 }

@@ -38,6 +38,12 @@ struct ThreadScreen: View {
     @State private var fullscreenVideo: FullscreenVideoRoute?
     @AppStorage(ChatBackgroundStore.key) private var backgroundId = ChatBackground.standard.rawValue
     @State private var recorder = VoiceRecorder()
+    /// Stick to the latest bubble until the user scrolls away from the bottom.
+    @State private var pinnedToBottom = true
+    @State private var lastTipId: String?
+    /// Top-sentinel loadOlder must wait until the first scroll-to-bottom finishes, or a long
+    /// tip opens halfway up (older page prepends while the list is still at the top).
+    @State private var historyLoadEnabled = false
     @FocusState private var isComposing: Bool
     @Environment(\.dismiss) private var dismiss
 
@@ -398,6 +404,21 @@ struct ThreadScreen: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 0) {
+                        Color.clear
+                            .frame(height: 1)
+                            .onAppear {
+                                guard historyLoadEnabled,
+                                      model.hasMoreHistory,
+                                      !model.isLoadingOlder
+                                else { return }
+                                model.loadOlder()
+                            }
+                        if model.isLoadingOlder {
+                            ProgressView()
+                                .tint(Theme.subtle)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 10)
+                        }
                         ForEach(Array(displayedMessages.enumerated()), id: \.element.id) { index, message in
                             MessageRow(
                                 message: message,
@@ -425,6 +446,13 @@ struct ThreadScreen: View {
                                 }
                             )
                             .id(message.id)
+                            .onAppear {
+                                if index >= displayedMessages.count - 3 {
+                                    pinnedToBottom = true
+                                } else if index < displayedMessages.count - 8 {
+                                    pinnedToBottom = false
+                                }
+                            }
                         }
                     }
                     .padding(.horizontal, 14)
@@ -439,8 +467,32 @@ struct ThreadScreen: View {
                     }
                 }
                 .scrollDismissesKeyboard(.interactively)
-                .onChange(of: displayedMessages.count) { _, _ in scroll(proxy, animated: true) }
-                .onAppear { scroll(proxy, animated: false) }
+                .onChange(of: displayedMessages.last?.id) { _, tipId in
+                    guard let tipId else { return }
+                    let firstOpen = lastTipId == nil
+                    let tipGrew = lastTipId != nil && tipId != lastTipId
+                    lastTipId = tipId
+                    if firstOpen || (tipGrew && pinnedToBottom) {
+                        scroll(proxy, animated: !firstOpen)
+                        if firstOpen {
+                            // Let the tip settle at the bottom before the top sentinel can page.
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                                historyLoadEnabled = true
+                            }
+                        }
+                    }
+                }
+                .onChange(of: model.historyPrepended) { _, prepended in
+                    guard prepended > 0 else { return }
+                    // Keep the previously top-visible bubble on screen after older pages land.
+                    if let anchor = displayedMessages.dropFirst(prepended).first {
+                        proxy.scrollTo(anchor.id, anchor: .top)
+                    }
+                    model.consumeHistoryPrepend()
+                }
+                .onAppear {
+                    scroll(proxy, animated: false)
+                }
             }
         }
     }
