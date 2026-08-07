@@ -108,6 +108,8 @@ struct Message: Identifiable, Equatable, Sendable {
     let reply: MessageReply?
     /// emoji → uids who reacted with it
     let reactions: [String: [String]]
+    /// Set when the author edits text / caption. Nil for never-edited messages.
+    let editedAt: Date?
 
     var hasImage: Bool { kind == .image && imagePath != nil }
     var hasVoice: Bool { kind == .voice && audioPath != nil }
@@ -115,6 +117,11 @@ struct Message: Identifiable, Equatable, Sendable {
     var isSticker: Bool { kind == .sticker }
     /// Optimistic local send — not yet on the server.
     var isLocalPending: Bool { id.hasPrefix("local:") }
+    var isEdited: Bool { editedAt != nil }
+    /// Text body or image caption — voice/video/sticker are not editable.
+    var isEditable: Bool {
+        !isLocalPending && (kind == .text || kind == .image)
+    }
 
     init(
         id: String,
@@ -133,7 +140,8 @@ struct Message: Identifiable, Equatable, Sendable {
         videoWidth: Int? = nil,
         videoHeight: Int? = nil,
         reply: MessageReply? = nil,
-        reactions: [String: [String]] = [:]
+        reactions: [String: [String]] = [:],
+        editedAt: Date? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -152,6 +160,7 @@ struct Message: Identifiable, Equatable, Sendable {
         self.videoHeight = videoHeight
         self.reply = reply
         self.reactions = reactions
+        self.editedAt = editedAt
     }
 
     func reactionCount(for emoji: String) -> Int {

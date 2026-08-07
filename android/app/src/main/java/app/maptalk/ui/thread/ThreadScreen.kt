@@ -116,6 +116,7 @@ import app.maptalk.data.ThreadVideoPlayer
 import app.maptalk.data.model.Author
 import app.maptalk.data.model.ChatThread
 import app.maptalk.data.model.Message
+import app.maptalk.data.model.MessageKind
 import app.maptalk.data.model.PreparedAudio
 import app.maptalk.data.model.PreparedImage
 import app.maptalk.data.model.ReactionEmoji
@@ -169,6 +170,10 @@ fun ThreadScreen(
     var reportThanks by remember { mutableStateOf(false) }
     var showBackgroundPicker by remember { mutableStateOf(false) }
     var showThreadMenu by remember { mutableStateOf(false) }
+    var editTarget by remember { mutableStateOf<Message?>(null) }
+    var editDraft by remember { mutableStateOf("") }
+    var deleteMessageConfirm by remember { mutableStateOf<Message?>(null) }
+    var deleteThreadConfirm by remember { mutableStateOf(false) }
     var chatBackground by remember {
         mutableStateOf(ChatBackgroundStore.current(context))
     }
@@ -348,6 +353,13 @@ fun ThreadScreen(
             onReply = {
                 viewModel.setReply(message)
             },
+            onEdit = {
+                editDraft = message.text
+                editTarget = message
+            },
+            onDelete = {
+                deleteMessageConfirm = message
+            },
             onReport = {
                 reportTarget = ReportTarget.Message(message)
             },
@@ -455,6 +467,106 @@ fun ThreadScreen(
                 showBackgroundPicker = false
             },
             onDismiss = { showBackgroundPicker = false },
+        )
+    }
+
+    editTarget?.let { message ->
+        val trimmed = editDraft.trim()
+        val canSave = message.kind == MessageKind.IMAGE || trimmed.isNotEmpty()
+        AlertDialog(
+            onDismissRequest = { editTarget = null },
+            containerColor = MapTalkColors.Surface,
+            title = { Text("Edit message", color = MapTalkColors.Text) },
+            text = {
+                OutlinedTextField(
+                    value = editDraft,
+                    onValueChange = { editDraft = it },
+                    placeholder = {
+                        Text(
+                            if (message.kind == MessageKind.IMAGE) "Caption" else "Message",
+                            color = MapTalkColors.Faint,
+                        )
+                    },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = MapTalkColors.Text,
+                        unfocusedTextColor = MapTalkColors.Text,
+                        focusedBorderColor = MapTalkColors.Accent,
+                        unfocusedBorderColor = MapTalkColors.Hairline,
+                        cursorColor = MapTalkColors.Accent,
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.editMessage(message, editDraft)
+                        editTarget = null
+                    },
+                    enabled = canSave,
+                ) {
+                    Text("Save", color = if (canSave) MapTalkColors.Accent else MapTalkColors.Faint)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { editTarget = null }) {
+                    Text("Cancel", color = MapTalkColors.Subtle)
+                }
+            },
+        )
+    }
+
+    deleteMessageConfirm?.let { message ->
+        AlertDialog(
+            onDismissRequest = { deleteMessageConfirm = null },
+            containerColor = MapTalkColors.Surface,
+            title = { Text("Delete message?", color = MapTalkColors.Text) },
+            text = {
+                Text(
+                    "This message will be removed for everyone.",
+                    color = MapTalkColors.Subtle,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.deleteMessage(message)
+                    deleteMessageConfirm = null
+                }) {
+                    Text("Delete", color = MapTalkColors.Danger)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteMessageConfirm = null }) {
+                    Text("Cancel", color = MapTalkColors.Subtle)
+                }
+            },
+        )
+    }
+
+    if (deleteThreadConfirm) {
+        AlertDialog(
+            onDismissRequest = { deleteThreadConfirm = false },
+            containerColor = MapTalkColors.Surface,
+            title = { Text("Delete chat?", color = MapTalkColors.Text) },
+            text = {
+                Text(
+                    "This chat and all its messages will be permanently deleted.",
+                    color = MapTalkColors.Subtle,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.deleteThread()
+                    deleteThreadConfirm = false
+                }) {
+                    Text("Delete", color = MapTalkColors.Danger)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteThreadConfirm = false }) {
+                    Text("Cancel", color = MapTalkColors.Subtle)
+                }
+            },
         )
     }
 
@@ -607,6 +719,17 @@ fun ThreadScreen(
                                     onClick = {
                                         showThreadMenu = false
                                         blockConfirm = thread.authorId to thread.authorName
+                                    },
+                                )
+                            } else if (thread != null && thread.authorId == author.uid) {
+                                HorizontalDivider(color = MapTalkColors.Hairline)
+                                DropdownMenuItem(
+                                    text = {
+                                        Text("Delete chat", color = MapTalkColors.Danger)
+                                    },
+                                    onClick = {
+                                        showThreadMenu = false
+                                        deleteThreadConfirm = true
                                     },
                                 )
                             }
@@ -985,12 +1108,24 @@ private fun MessageRow(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 if (endsRun) {
-                    Text(
-                        text = if (message.isLocalPending) "Sending…" else relativeTime(message.createdAt),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MapTalkColors.Faint,
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.padding(horizontal = 2.dp, vertical = 3.dp),
-                    )
+                    ) {
+                        Text(
+                            text = if (message.isLocalPending) "Sending…" else relativeTime(message.createdAt),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MapTalkColors.Faint,
+                        )
+                        if (message.isEdited && !message.isLocalPending) {
+                            Text(
+                                text = "· Edited",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MapTalkColors.Faint,
+                            )
+                        }
+                    }
                 }
                 if (!message.isLocalPending) {
                     Text(
@@ -1855,6 +1990,8 @@ private fun MessageLongPressDialog(
     onDismiss: () -> Unit,
     onReact: (String) -> Unit,
     onReply: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
     onReport: () -> Unit,
     onBlock: () -> Unit,
 ) {
@@ -2084,7 +2221,23 @@ private fun MessageLongPressDialog(
                             onReply()
                             playExit(onDismiss)
                         }
-                        if (!isMine) {
+                        if (isMine) {
+                            if (message.isEditable) {
+                                HorizontalDivider(color = MapTalkColors.Hairline)
+                                LongPressMenuRow("Edit") {
+                                    onEdit()
+                                    playExit(onDismiss)
+                                }
+                            }
+                            HorizontalDivider(color = MapTalkColors.Hairline)
+                            LongPressMenuRow(
+                                title = "Delete",
+                                tint = MapTalkColors.Danger,
+                            ) {
+                                onDelete()
+                                playExit(onDismiss)
+                            }
+                        } else {
                             HorizontalDivider(color = MapTalkColors.Hairline)
                             LongPressMenuRow("Report") {
                                 onReport()

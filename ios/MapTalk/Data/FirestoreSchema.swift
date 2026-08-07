@@ -40,6 +40,7 @@ enum Fs {
     static let replyToText = "replyToText"
     static let replyToAuthorName = "replyToAuthorName"
     static let reactions = "reactions"
+    static let editedAt = "editedAt"
 
     static let blocks = "blocks"
     static let blockedUid = "blockedUid"
@@ -128,7 +129,8 @@ extension DocumentSnapshot {
             videoWidth: (self[Fs.videoWidth] as? NSNumber)?.intValue,
             videoHeight: (self[Fs.videoHeight] as? NSNumber)?.intValue,
             reply: reply,
-            reactions: reactions
+            reactions: reactions,
+            editedAt: estimatedDate(Fs.editedAt)
         )
     }
 

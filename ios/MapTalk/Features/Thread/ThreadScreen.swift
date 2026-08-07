@@ -29,6 +29,10 @@ struct ThreadScreen: View {
     @State private var longPressTarget: Message?
     @State private var longPressFrame: CGRect = .zero
     @State private var bubbleFrames: [String: CGRect] = [:]
+    @State private var editTarget: Message?
+    @State private var editDraft = ""
+    @State private var deleteMessageConfirm: Message?
+    @State private var deleteThreadConfirm = false
     @State private var reportTarget: ReportSheetTarget?
     @State private var blockConfirm: BlockConfirm?
     @State private var reportThanks = false
@@ -131,6 +135,69 @@ struct ThreadScreen: View {
             } message: {
                 Text("Their chats and messages will disappear for you. Unblock anytime from Settings.")
             }
+            .alert(
+                "Delete message?",
+                isPresented: Binding(
+                    get: { deleteMessageConfirm != nil },
+                    set: { if !$0 { deleteMessageConfirm = nil } }
+                )
+            ) {
+                Button("Delete", role: .destructive) {
+                    if let deleteMessageConfirm {
+                        model.deleteMessage(deleteMessageConfirm)
+                    }
+                    deleteMessageConfirm = nil
+                }
+                Button("Cancel", role: .cancel) { deleteMessageConfirm = nil }
+            } message: {
+                Text("This message will be removed for everyone.")
+            }
+            .alert("Delete chat?", isPresented: $deleteThreadConfirm) {
+                Button("Delete", role: .destructive) {
+                    model.deleteThread()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This chat and all its messages will be permanently deleted.")
+            }
+            .sheet(item: $editTarget) { message in
+                editMessageSheet(for: message)
+            }
+    }
+
+    private func editMessageSheet(for message: Message) -> some View {
+        let trimmed = editDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let canSave = message.kind == .image || !trimmed.isEmpty
+        return NavigationStack {
+            Form {
+                TextField(
+                    message.kind == .image ? "Caption" : "Message",
+                    text: $editDraft,
+                    axis: .vertical
+                )
+                .lineLimit(3...8)
+            }
+            .scrollContentBackground(.hidden)
+            .background(Theme.base)
+            .navigationTitle("Edit message")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { editTarget = nil }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        model.editMessage(message, text: editDraft)
+                        editTarget = nil
+                    }
+                    .disabled(!canSave)
+                    .fontWeight(.semibold)
+                }
+            }
+        }
+        .presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
+        .presentationBackground(Theme.base)
     }
 
     private var threadChrome: some View {
@@ -290,16 +357,23 @@ struct ThreadScreen: View {
             Button("Background", systemImage: "photo.on.rectangle") {
                 showBackgroundPicker = true
             }
-            if let thread = model.thread, thread.authorId != author.uid {
-                Divider()
-                Button("Report chat", systemImage: "flag") {
-                    reportTarget = .thread(thread)
-                }
-                Button("Block \(thread.authorName)", systemImage: "hand.raised", role: .destructive) {
-                    blockConfirm = BlockConfirm(
-                        uid: thread.authorId,
-                        name: thread.authorName
-                    )
+            if let thread = model.thread {
+                if thread.authorId != author.uid {
+                    Divider()
+                    Button("Report chat", systemImage: "flag") {
+                        reportTarget = .thread(thread)
+                    }
+                    Button("Block \(thread.authorName)", systemImage: "hand.raised", role: .destructive) {
+                        blockConfirm = BlockConfirm(
+                            uid: thread.authorId,
+                            name: thread.authorName
+                        )
+                    }
+                } else if thread.authorId == author.uid {
+                    Divider()
+                    Button("Delete chat", systemImage: "trash", role: .destructive) {
+                        deleteThreadConfirm = true
+                    }
                 }
             }
         } label: {
@@ -325,6 +399,13 @@ struct ThreadScreen: View {
                 },
                 onReply: {
                     model.setReply(to: message)
+                },
+                onEdit: {
+                    editDraft = message.text
+                    editTarget = message
+                },
+                onDelete: {
+                    deleteMessageConfirm = message
                 },
                 onReport: {
                     reportTarget = .message(message)
@@ -1000,6 +1081,8 @@ private struct MessageLongPressOverlay: View {
     let anchor: CGRect
     let onReact: (String) -> Void
     let onReply: () -> Void
+    let onEdit: () -> Void
+    let onDelete: () -> Void
     let onReport: () -> Void
     let onBlock: () -> Void
     let onDismiss: () -> Void
@@ -1019,6 +1102,8 @@ private struct MessageLongPressOverlay: View {
         anchor: CGRect,
         onReact: @escaping (String) -> Void,
         onReply: @escaping () -> Void,
+        onEdit: @escaping () -> Void,
+        onDelete: @escaping () -> Void,
         onReport: @escaping () -> Void,
         onBlock: @escaping () -> Void,
         onDismiss: @escaping () -> Void
@@ -1029,6 +1114,8 @@ private struct MessageLongPressOverlay: View {
         self.anchor = anchor
         self.onReact = onReact
         self.onReply = onReply
+        self.onEdit = onEdit
+        self.onDelete = onDelete
         self.onReport = onReport
         self.onBlock = onBlock
         self.onDismiss = onDismiss
@@ -1206,7 +1293,20 @@ private struct MessageLongPressOverlay: View {
                 onReply()
                 dismissAnimated()
             }
-            if !isMine {
+            if isMine {
+                if message.isEditable {
+                    Divider().overlay(Theme.hairline)
+                    menuRow(title: "Edit", systemImage: "pencil") {
+                        onEdit()
+                        dismissAnimated()
+                    }
+                }
+                Divider().overlay(Theme.hairline)
+                menuRow(title: "Delete", systemImage: "trash", tint: Theme.danger) {
+                    onDelete()
+                    dismissAnimated()
+                }
+            } else {
                 Divider().overlay(Theme.hairline)
                 menuRow(title: "Report", systemImage: "flag") {
                     onReport()
@@ -1339,11 +1439,16 @@ private struct MessageRow: View {
                 }
 
                 if endsRun {
-                    Text(message.isLocalPending ? "Sending…" : relativeTime(message.createdAt))
-                        .font(.meta)
-                        .foregroundStyle(Theme.faint)
-                        .padding(.horizontal, 2)
-                        .opacity(isLifted ? 0 : 1)
+                    HStack(spacing: 4) {
+                        Text(message.isLocalPending ? "Sending…" : relativeTime(message.createdAt))
+                        if message.isEdited, !message.isLocalPending {
+                            Text("· Edited")
+                        }
+                    }
+                    .font(.meta)
+                    .foregroundStyle(Theme.faint)
+                    .padding(.horizontal, 2)
+                    .opacity(isLifted ? 0 : 1)
                 }
             }
 

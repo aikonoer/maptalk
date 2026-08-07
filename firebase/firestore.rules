@@ -176,6 +176,49 @@ service cloud.firestore {
         && request.resource.data.reactions.size() <= 12;
     }
 
+    // Author edits text (plain message) or image caption. Media paths stay immutable.
+    function isOwnMessageEdit() {
+      return resource.data.authorId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['text', 'editedAt'])
+        && request.resource.data.editedAt == request.time
+        && request.resource.data.text is string
+        && request.resource.data.text.size() <= 1000
+        && (
+          (
+            (!('messageKind' in resource.data) || resource.data.messageKind == 'text')
+            && request.resource.data.text.size() >= 1
+          )
+          || (
+            resource.data.messageKind == 'image'
+          )
+        );
+    }
+
+    function isTipIncrement() {
+      return request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['lastMessageAt', 'messageCount', 'lastMediaPath', 'lastMediaKind'])
+        && request.resource.data.messageCount == resource.data.messageCount + 1
+        && request.resource.data.lastMessageAt == request.time
+        && lastMediaPreviewOk();
+    }
+
+    // After deleting a message: count goes down; tip fields may be recomputed.
+    function isTipRewind() {
+      let keys = request.resource.data.diff(resource.data).affectedKeys();
+      return request.resource.data.messageCount is int
+        && request.resource.data.messageCount >= 0
+        && request.resource.data.messageCount == resource.data.messageCount - 1
+        && (
+          keys.hasOnly(['messageCount'])
+          || (
+            keys.hasOnly(['lastMessageAt', 'messageCount', 'lastMediaPath', 'lastMediaKind'])
+            && request.resource.data.lastMessageAt is timestamp
+            && lastMediaPreviewOk()
+          )
+        );
+    }
+
     match /users/{userId} {
       allow read: if signedIn();
       allow create, update: if signedIn()
@@ -298,14 +341,10 @@ service cloud.firestore {
         && request.resource.data.lastMessageAt == request.time
         && request.resource.data.messageCount == 0;
 
-      allow update: if signedIn()
-        && request.resource.data.diff(resource.data).affectedKeys()
-             .hasOnly(['lastMessageAt', 'messageCount', 'lastMediaPath', 'lastMediaKind'])
-        && request.resource.data.messageCount == resource.data.messageCount + 1
-        && request.resource.data.lastMessageAt == request.time
-        && lastMediaPreviewOk();
+      allow update: if signedIn() && (isTipIncrement() || isTipRewind());
 
-      allow delete: if false;
+      // Thread starter can remove the chat (client deletes messages first).
+      allow delete: if signedIn() && resource.data.authorId == request.auth.uid;
 
       match /messages/{messageId} {
         allow read: if signedIn();
@@ -314,8 +353,9 @@ service cloud.firestore {
           && baseAuthorOk()
           && (isTextMessage() || isImageMessage() || isVoiceMessage() || isVideoMessage() || isStickerMessage());
 
-        allow update: if signedIn() && isReactionUpdate();
-        allow delete: if false;
+        allow update: if signedIn() && (isReactionUpdate() || isOwnMessageEdit());
+
+        allow delete: if signedIn() && resource.data.authorId == request.auth.uid;
       }
 
       // Auto-subscribed when the user opens or posts in a thread.

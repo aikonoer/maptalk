@@ -181,6 +181,20 @@ final class ThreadModel {
         )
     }
 
+    func editMessage(_ message: Message, text: String) {
+        repository.editMessage(threadId: threadId, messageId: message.id, text: text)
+    }
+
+    func deleteMessage(_ message: Message) {
+        if replyTarget?.id == message.id { replyTarget = nil }
+        repository.deleteMessage(threadId: threadId, messageId: message.id)
+    }
+
+    func deleteThread() {
+        repository.deleteThread(threadId: threadId)
+        shouldDismiss = true
+    }
+
     func block(uid: String, displayName: String, as author: Author) {
         safety.block(uid: uid, displayName: displayName, as: author)
         shouldDismiss = true

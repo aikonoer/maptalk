@@ -400,10 +400,104 @@ final class LocalDemoStore {
             videoWidth: old.videoWidth,
             videoHeight: old.videoHeight,
             reply: old.reply,
-            reactions: reactions
+            reactions: reactions,
+            editedAt: old.editedAt
         )
         messages[threadId] = list
         publishMessages(threadId)
+    }
+
+    enum EditError: LocalizedError {
+        case notFound
+        case notEditable
+        case empty
+
+        var errorDescription: String? {
+            switch self {
+            case .notFound: "Message not found."
+            case .notEditable: "That message can’t be edited."
+            case .empty: "Message can’t be empty."
+            }
+        }
+    }
+
+    func editMessage(threadId: String, messageId: String, text: String) throws {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard var list = messages[threadId],
+              let index = list.firstIndex(where: { $0.id == messageId })
+        else { throw EditError.notFound }
+        let old = list[index]
+        guard old.isEditable else { throw EditError.notEditable }
+        if old.kind == .text, trimmed.isEmpty { throw EditError.empty }
+        list[index] = Message(
+            id: old.id,
+            kind: old.kind,
+            text: trimmed,
+            authorId: old.authorId,
+            authorName: old.authorName,
+            createdAt: old.createdAt,
+            imagePath: old.imagePath,
+            imageWidth: old.imageWidth,
+            imageHeight: old.imageHeight,
+            audioPath: old.audioPath,
+            audioDurationMs: old.audioDurationMs,
+            videoPath: old.videoPath,
+            videoDurationMs: old.videoDurationMs,
+            videoWidth: old.videoWidth,
+            videoHeight: old.videoHeight,
+            reply: old.reply,
+            reactions: old.reactions,
+            editedAt: Date()
+        )
+        messages[threadId] = list
+        publishMessages(threadId)
+    }
+
+    func deleteMessage(threadId: String, messageId: String) throws {
+        guard var list = messages[threadId],
+              let index = list.firstIndex(where: { $0.id == messageId }),
+              let existing = threads[threadId]
+        else { throw EditError.notFound }
+        list.remove(at: index)
+        messages[threadId] = list
+        let latest = list.max(by: { ($0.createdAt ?? .distantPast) < ($1.createdAt ?? .distantPast) })
+        let previewPath: String?
+        let previewKind: MessageKind?
+        switch latest?.kind {
+        case .image:
+            previewPath = latest?.imagePath
+            previewKind = .image
+        case .video:
+            previewPath = latest?.videoPath
+            previewKind = .video
+        default:
+            previewPath = nil
+            previewKind = nil
+        }
+        threads[threadId] = ChatThread(
+            id: existing.id,
+            title: existing.title,
+            kind: existing.kind,
+            position: existing.position,
+            geohash: existing.geohash,
+            authorId: existing.authorId,
+            authorName: existing.authorName,
+            createdAt: existing.createdAt,
+            lastMessageAt: latest?.createdAt ?? existing.createdAt,
+            messageCount: max(0, existing.messageCount - 1),
+            lastMediaPath: previewPath,
+            lastMediaKind: previewKind
+        )
+        publishMessages(threadId)
+        publishThread(threadId)
+        publishAllThreadLists()
+    }
+
+    func deleteThread(threadId: String) throws {
+        guard threads[threadId] != nil else { throw EditError.notFound }
+        threads[threadId] = nil
+        messages[threadId] = nil
+        publishAllThreadLists()
     }
 
     // MARK: - Internals

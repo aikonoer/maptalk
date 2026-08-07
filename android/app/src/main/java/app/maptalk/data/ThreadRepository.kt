@@ -14,6 +14,7 @@ import app.maptalk.geo.Viewport
 import app.maptalk.geo.ViewportQuery
 import com.firebase.geofire.GeoFireUtils
 import com.firebase.geofire.GeoLocation
+import com.google.firebase.Timestamp
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
@@ -75,6 +76,7 @@ class ThreadRepository private constructor(
             radiusMetres,
         )
         val pages = MutableList(bounds.size) { emptyList<ChatThread>() }
+        val ready = BooleanArray(bounds.size)
 
         val registrations = bounds.mapIndexed { index, bound ->
             firestore.collection(Fs.THREADS)
@@ -88,11 +90,15 @@ class ThreadRepository private constructor(
                         return@addSnapshotListener
                     }
                     pages[index] = snapshot?.documents?.mapNotNull { it.toChatThread() }.orEmpty()
-                    trySend(pages.flatten().within(center, radiusMetres))
+                    ready[index] = true
+                    // Wait for every geohash bound once — partial merges flicker on pan release.
+                    if (ready.all { it }) {
+                        trySend(pages.flatten().within(center, radiusMetres))
+                    }
                 }
         }
 
-        trySend(emptyList())
+        // Don't emit [] first — UI would clear markers on every camera resubscribe.
         awaitClose { registrations.forEach(ListenerRegistration::remove) }
     }
 
@@ -517,6 +523,122 @@ class ThreadRepository private constructor(
                 }
             }
             is Backend.Local -> backend.store.toggleReaction(threadId, messageId, emoji, author)
+        }
+    }
+
+    /** Edit own text / image caption. Voice, video, and stickers are not editable. */
+    fun editMessage(threadId: String, messageId: String, text: String) {
+        val trimmed = text.trim()
+        when (val backend = backend) {
+            is Backend.Firestore -> scope.launch {
+                runCatching {
+                    val ref = backend.db.collection(Fs.THREADS).document(threadId)
+                        .collection(Fs.MESSAGES).document(messageId)
+                    val message = ref.get().await().toMessage()
+                        ?: error("Message not found.")
+                    require(message.isEditable) { "That message can’t be edited." }
+                    if (message.kind == MessageKind.TEXT) {
+                        require(trimmed.isNotEmpty()) { "Message can’t be empty." }
+                    }
+                    ref.update(
+                        mapOf(
+                            Fs.TEXT to trimmed,
+                            Fs.EDITED_AT to FieldValue.serverTimestamp(),
+                        ),
+                    ).await()
+                }.onFailure { _errors.emit(it) }
+            }
+            is Backend.Local -> runCatching {
+                backend.store.editMessage(threadId, messageId, trimmed)
+            }.onFailure { scope.launch { _errors.emit(it) } }
+        }
+    }
+
+    /** Delete own message and rewind the thread tip when needed. */
+    fun deleteMessage(threadId: String, messageId: String) {
+        when (val backend = backend) {
+            is Backend.Firestore -> scope.launch {
+                runCatching {
+                    val threadRef = backend.db.collection(Fs.THREADS).document(threadId)
+                    val messageRef = threadRef.collection(Fs.MESSAGES).document(messageId)
+                    val exists = messageRef.get().await().exists()
+                    if (!exists) return@runCatching
+                    messageRef.delete().await()
+
+                    val latest = threadRef.collection(Fs.MESSAGES)
+                        .orderBy(Fs.CREATED_AT, Query.Direction.DESCENDING)
+                        .limit(1)
+                        .get()
+                        .await()
+                        .documents
+                        .firstOrNull()
+                        ?.toMessage()
+
+                    val tip = mutableMapOf<String, Any>(
+                        Fs.MESSAGE_COUNT to FieldValue.increment(-1),
+                    )
+                    if (latest != null) {
+                        tip[Fs.LAST_MESSAGE_AT] = latest.createdAt?.let {
+                            Timestamp(it.epochSecond, it.nano)
+                        } ?: FieldValue.serverTimestamp()
+                        when {
+                            latest.kind == MessageKind.IMAGE && latest.imagePath != null -> {
+                                tip[Fs.LAST_MEDIA_PATH] = latest.imagePath
+                                tip[Fs.LAST_MEDIA_KIND] = MessageKind.IMAGE.id
+                            }
+                            latest.kind == MessageKind.VIDEO && latest.videoPath != null -> {
+                                tip[Fs.LAST_MEDIA_PATH] = latest.videoPath
+                                tip[Fs.LAST_MEDIA_KIND] = MessageKind.VIDEO.id
+                            }
+                            else -> {
+                                tip[Fs.LAST_MEDIA_PATH] = FieldValue.delete()
+                                tip[Fs.LAST_MEDIA_KIND] = FieldValue.delete()
+                            }
+                        }
+                    } else {
+                        val thread = threadRef.get().await().toChatThread()
+                        tip[Fs.LAST_MESSAGE_AT] = thread?.createdAt?.let {
+                            Timestamp(it.epochSecond, it.nano)
+                        } ?: FieldValue.serverTimestamp()
+                        tip[Fs.LAST_MEDIA_PATH] = FieldValue.delete()
+                        tip[Fs.LAST_MEDIA_KIND] = FieldValue.delete()
+                    }
+                    threadRef.update(tip).await()
+                }.onFailure { _errors.emit(it) }
+            }
+            is Backend.Local -> runCatching {
+                backend.store.deleteMessage(threadId, messageId)
+            }.onFailure { scope.launch { _errors.emit(it) } }
+        }
+    }
+
+    /** Delete a thread you started (messages + subscribers first). */
+    fun deleteThread(threadId: String) {
+        when (val backend = backend) {
+            is Backend.Firestore -> scope.launch {
+                runCatching {
+                    val threadRef = backend.db.collection(Fs.THREADS).document(threadId)
+                    require(threadRef.get().await().toChatThread() != null) { "Chat not found." }
+                    while (true) {
+                        val page = threadRef.collection(Fs.MESSAGES).limit(400).get().await()
+                        if (page.isEmpty) break
+                        val batch = backend.db.batch()
+                        page.documents.forEach { batch.delete(it.reference) }
+                        batch.commit().await()
+                    }
+                    while (true) {
+                        val page = threadRef.collection(Fs.SUBSCRIBERS).limit(400).get().await()
+                        if (page.isEmpty) break
+                        val batch = backend.db.batch()
+                        page.documents.forEach { batch.delete(it.reference) }
+                        batch.commit().await()
+                    }
+                    threadRef.delete().await()
+                }.onFailure { _errors.emit(it) }
+            }
+            is Backend.Local -> runCatching {
+                backend.store.deleteThread(threadId)
+            }.onFailure { scope.launch { _errors.emit(it) } }
         }
     }
 

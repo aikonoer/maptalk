@@ -49,6 +49,7 @@ object Fs {
     const val REPLY_TO_TEXT = "replyToText"
     const val REPLY_TO_AUTHOR_NAME = "replyToAuthorName"
     const val REACTIONS = "reactions"
+    const val EDITED_AT = "editedAt"
 
     const val BLOCKS = "blocks"
     const val BLOCKED_UID = "blockedUid"
@@ -149,6 +150,7 @@ fun DocumentSnapshot.toMessage(): Message? {
         videoHeight = getLong(Fs.VIDEO_HEIGHT)?.toInt(),
         reply = reply,
         reactions = reactions,
+        editedAt = estimatedInstant(Fs.EDITED_AT),
     )
 }
 

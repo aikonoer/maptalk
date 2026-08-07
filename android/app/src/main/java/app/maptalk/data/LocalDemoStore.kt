@@ -345,6 +345,54 @@ class LocalDemoStore(context: Context) {
         threadPulse.tryEmit(Unit)
     }
 
+    fun editMessage(threadId: String, messageId: String, text: String) {
+        val list = messages[threadId] ?: error("Message not found.")
+        val index = list.indexOfFirst { it.id == messageId }
+        if (index < 0) error("Message not found.")
+        val old = list[index]
+        if (!old.isEditable) error("That message can’t be edited.")
+        val trimmed = text.trim()
+        if (old.kind == MessageKind.TEXT && trimmed.isEmpty()) error("Message can’t be empty.")
+        list[index] = old.copy(text = trimmed, editedAt = Instant.now())
+        threadPulse.tryEmit(Unit)
+    }
+
+    fun deleteMessage(threadId: String, messageId: String) {
+        val list = messages[threadId] ?: error("Message not found.")
+        val existing = threads[threadId] ?: error("Chat not found.")
+        if (!list.removeAll { it.id == messageId }) error("Message not found.")
+        val latest = list.maxByOrNull { it.createdAt ?: Instant.EPOCH }
+        val previewPath: String?
+        val previewKind: MessageKind?
+        when (latest?.kind) {
+            MessageKind.IMAGE -> {
+                previewPath = latest.imagePath
+                previewKind = MessageKind.IMAGE
+            }
+            MessageKind.VIDEO -> {
+                previewPath = latest.videoPath
+                previewKind = MessageKind.VIDEO
+            }
+            else -> {
+                previewPath = null
+                previewKind = null
+            }
+        }
+        threads[threadId] = existing.copy(
+            lastMessageAt = latest?.createdAt ?: existing.createdAt,
+            messageCount = (existing.messageCount - 1).coerceAtLeast(0),
+            lastMediaPath = previewPath,
+            lastMediaKind = previewKind,
+        )
+        threadPulse.tryEmit(Unit)
+    }
+
+    fun deleteThread(threadId: String) {
+        if (threads.remove(threadId) == null) error("Chat not found.")
+        messages.remove(threadId)
+        threadPulse.tryEmit(Unit)
+    }
+
     private fun snapshot(query: ViewportQuery): List<ChatThread> {
         val all = threads.values.toList()
         return when (query) {

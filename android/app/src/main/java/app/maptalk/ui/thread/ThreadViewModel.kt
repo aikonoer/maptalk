@@ -547,6 +547,20 @@ class ThreadViewModel(
         threadRepository.toggleReaction(threadId, message.id, emoji, author)
     }
 
+    fun editMessage(message: Message, text: String) {
+        threadRepository.editMessage(threadId, message.id, text)
+    }
+
+    fun deleteMessage(message: Message) {
+        if (_replyTarget.value?.id == message.id) clearReply()
+        threadRepository.deleteMessage(threadId, message.id)
+    }
+
+    fun deleteThread() {
+        threadRepository.deleteThread(threadId)
+        _shouldDismiss.value = true
+    }
+
     fun block(blockedUid: String, displayName: String, author: Author) {
         safetyRepository.block(blockedUid, displayName, author)
         _shouldDismiss.value = true

@@ -79,12 +79,16 @@ final class ThreadRepository {
                             return
                         }
                         let threads = snapshot?.documents.compactMap { $0.chatThread() } ?? []
-                        let merged = pages.replace(threads, at: index)
+                        let (merged, allReady) = pages.replace(threads, at: index)
+                        // Hold the previous map markers until every geohash bound has answered —
+                        // publishing partial merges is what looks like a pan-release flicker.
+                        guard allReady else { return }
                         continuation.yield(merged.within(radiusMeters, of: center))
                     }
                 listeners.add(registration)
             }
-            continuation.yield([])
+            // Don't yield [] here — MapModel would clear bubbles on every camera
+            // resubscribe and flicker until the first geohash page arrives.
             continuation.onTermination = { _ in listeners.removeAll() }
         }
     }
@@ -473,6 +477,156 @@ final class ThreadRepository {
         case let .local(store):
             store.toggleReaction(threadId: threadId, messageId: messageId, emoji: emoji, author: author)
         }
+    }
+
+    /// Edit own text / image caption. Voice, video, and stickers are not editable.
+    func editMessage(threadId: String, messageId: String, text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch backend {
+        case let .firestore(firestore, _):
+            Task { [weak self] in
+                do {
+                    let ref = firestore.collection(Fs.threads).document(threadId)
+                        .collection(Fs.messages).document(messageId)
+                    let snap = try await ref.getDocument()
+                    guard let message = snap.message() else {
+                        throw Self.editError("Message not found.")
+                    }
+                    guard message.isEditable else {
+                        throw Self.editError("That message can’t be edited.")
+                    }
+                    if message.kind == .text, trimmed.isEmpty {
+                        throw Self.editError("Message can’t be empty.")
+                    }
+                    try await ref.updateData([
+                        Fs.text: message.kind == .image ? trimmed : trimmed,
+                        Fs.editedAt: FieldValue.serverTimestamp(),
+                    ])
+                } catch {
+                    self?.onError?(error)
+                }
+            }
+        case let .local(store):
+            do {
+                try store.editMessage(threadId: threadId, messageId: messageId, text: trimmed)
+            } catch {
+                onError?(error)
+            }
+        }
+    }
+
+    /// Delete own message and rewind the thread tip when needed.
+    func deleteMessage(threadId: String, messageId: String) {
+        switch backend {
+        case let .firestore(firestore, _):
+            Task { [weak self] in
+                do {
+                    let threadRef = firestore.collection(Fs.threads).document(threadId)
+                    let messageRef = threadRef.collection(Fs.messages).document(messageId)
+                    let messageSnap = try await messageRef.getDocument()
+                    guard messageSnap.exists else { return }
+
+                    try await messageRef.delete()
+
+                    let latest = try await threadRef.collection(Fs.messages)
+                        .order(by: Fs.createdAt, descending: true)
+                        .limit(to: 1)
+                        .getDocuments()
+                        .documents
+                        .first
+                        .flatMap { $0.message() }
+
+                    var tip: [String: Any] = [
+                        Fs.messageCount: FieldValue.increment(Int64(-1)),
+                    ]
+                    if let latest {
+                        tip[Fs.lastMessageAt] = latest.createdAt.map { Timestamp(date: $0) }
+                            ?? FieldValue.serverTimestamp()
+                        if latest.kind == .image, let path = latest.imagePath {
+                            tip[Fs.lastMediaPath] = path
+                            tip[Fs.lastMediaKind] = MessageKind.image.rawValue
+                        } else if latest.kind == .video, let path = latest.videoPath {
+                            tip[Fs.lastMediaPath] = path
+                            tip[Fs.lastMediaKind] = MessageKind.video.rawValue
+                        } else {
+                            tip[Fs.lastMediaPath] = FieldValue.delete()
+                            tip[Fs.lastMediaKind] = FieldValue.delete()
+                        }
+                    } else if let thread = try? await threadRef.getDocument().chatThread(),
+                              let created = thread.createdAt {
+                        tip[Fs.lastMessageAt] = Timestamp(date: created)
+                        tip[Fs.lastMediaPath] = FieldValue.delete()
+                        tip[Fs.lastMediaKind] = FieldValue.delete()
+                    } else {
+                        tip[Fs.lastMessageAt] = FieldValue.serverTimestamp()
+                        tip[Fs.lastMediaPath] = FieldValue.delete()
+                        tip[Fs.lastMediaKind] = FieldValue.delete()
+                    }
+                    try await threadRef.updateData(tip)
+                } catch {
+                    self?.onError?(error)
+                }
+            }
+        case let .local(store):
+            do {
+                try store.deleteMessage(threadId: threadId, messageId: messageId)
+            } catch {
+                onError?(error)
+            }
+        }
+    }
+
+    /// Delete a thread you started (messages + subscribers first).
+    func deleteThread(threadId: String) {
+        switch backend {
+        case let .firestore(firestore, _):
+            Task { [weak self] in
+                do {
+                    let threadRef = firestore.collection(Fs.threads).document(threadId)
+                    let threadSnap = try await threadRef.getDocument()
+                    guard threadSnap.chatThread() != nil else {
+                        throw Self.editError("Chat not found.")
+                    }
+                    // Messages
+                    while true {
+                        let page = try await threadRef.collection(Fs.messages).limit(to: 400).getDocuments()
+                        if page.documents.isEmpty { break }
+                        let batch = firestore.batch()
+                        for doc in page.documents {
+                            batch.deleteDocument(doc.reference)
+                        }
+                        try await batch.commit()
+                    }
+                    // Subscribers
+                    while true {
+                        let page = try await threadRef.collection(Fs.subscribers).limit(to: 400).getDocuments()
+                        if page.documents.isEmpty { break }
+                        let batch = firestore.batch()
+                        for doc in page.documents {
+                            batch.deleteDocument(doc.reference)
+                        }
+                        try await batch.commit()
+                    }
+                    try await threadRef.delete()
+                } catch {
+                    self?.onError?(error)
+                }
+            }
+        case let .local(store):
+            do {
+                try store.deleteThread(threadId: threadId)
+            } catch {
+                onError?(error)
+            }
+        }
+    }
+
+    private static func editError(_ message: String) -> NSError {
+        NSError(
+            domain: "MapTalk.ThreadRepository",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: message]
+        )
     }
 }
 

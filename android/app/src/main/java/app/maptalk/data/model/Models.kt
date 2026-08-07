@@ -97,6 +97,8 @@ data class Message(
     val reply: MessageReply? = null,
     /** emoji → uids who reacted with it */
     val reactions: Map<String, List<String>> = emptyMap(),
+    /** Set when the author edits text / caption. Null for never-edited messages. */
+    val editedAt: Instant? = null,
 ) {
     val hasImage: Boolean get() = kind == MessageKind.IMAGE && imagePath != null
     val hasVoice: Boolean get() = kind == MessageKind.VOICE && audioPath != null
@@ -104,6 +106,10 @@ data class Message(
     val isSticker: Boolean get() = kind == MessageKind.STICKER
     /** Optimistic local send — not yet on the server. */
     val isLocalPending: Boolean get() = id.startsWith("local:")
+    val isEdited: Boolean get() = editedAt != null
+    /** Text body or image caption — voice/video/sticker are not editable. */
+    val isEditable: Boolean
+        get() = !isLocalPending && (kind == MessageKind.TEXT || kind == MessageKind.IMAGE)
 
     fun reacted(by: String, emoji: String): Boolean =
         reactions[emoji]?.contains(by) == true
