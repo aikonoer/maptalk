@@ -44,9 +44,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.ImeAction
@@ -62,9 +64,10 @@ import app.maptalk.data.model.BlockedPerson
 import app.maptalk.ui.InitialAvatar
 import app.maptalk.ui.theme.MapTalkColors
 import app.maptalk.ui.theme.MapTalkShapes
+import kotlinx.coroutines.launch
 
 /**
- * Standard account settings — profile, sign-in, posting prefs, safety.
+ * Production account settings — profile, sign-in, safety, account lifecycle, About.
  * Spec: `docs/ACCOUNT.md`; mirrors `ios/MapTalk/Features/Account/AccountScreen.swift`.
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -72,13 +75,14 @@ import app.maptalk.ui.theme.MapTalkShapes
 fun AccountScreen(
     author: Author,
     onBack: () -> Unit,
+    onSessionEnded: () -> Unit = onBack,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     val activity = context as? Activity
-    val container = context.appContainer
     val viewModel: AccountViewModel =
-        viewModel(factory = AccountViewModel.factory(container, author))
+        viewModel(factory = AccountViewModel.factory(context.appContainer, author))
+    val scope = rememberCoroutineScope()
 
     val state by viewModel.state.collectAsStateWithLifecycle()
     val blocked by viewModel.blocked.collectAsStateWithLifecycle()
@@ -86,6 +90,9 @@ fun AccountScreen(
     var showBlocked by remember { mutableStateOf(false) }
     var showPhotoActions by remember { mutableStateOf(false) }
     var editingName by remember { mutableStateOf<String?>(null) }
+    var confirmSignOut by remember { mutableStateOf(false) }
+    var confirmDelete by remember { mutableStateOf(false) }
+    var legalDocument by remember { mutableStateOf<LegalDocument?>(null) }
 
     val photoPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia(),
@@ -93,16 +100,33 @@ fun AccountScreen(
         if (uri != null) viewModel.setPhoto(uri)
     }
 
+    val versionName = remember {
+        runCatching {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName
+        }.getOrNull() ?: "1.0"
+    }
+
     if (showBlocked) BackHandler { showBlocked = false }
+    if (legalDocument != null) BackHandler { legalDocument = null }
 
     Scaffold(
         modifier = modifier,
         containerColor = MapTalkColors.Base,
         topBar = {
             AccountTopBar(
-                title = if (showBlocked) "Blocked people" else "Account",
-                showsBack = showBlocked,
-                onNavigate = { if (showBlocked) showBlocked = false else onBack() },
+                title = when {
+                    showBlocked -> "Blocked people"
+                    legalDocument != null -> legalDocument!!.title
+                    else -> "Account"
+                },
+                showsBack = showBlocked || legalDocument != null,
+                onNavigate = {
+                    when {
+                        showBlocked -> showBlocked = false
+                        legalDocument != null -> legalDocument = null
+                        else -> onBack()
+                    }
+                },
             )
         },
     ) { padding ->
@@ -118,116 +142,225 @@ fun AccountScreen(
             return@Scaffold
         }
 
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            item {
-                ProfileHeader(
-                    state = state,
-                    seed = author.uid,
-                    onEditPhoto = { showPhotoActions = true },
-                )
-            }
-
-            sectionHeader("Profile")
-            item {
-                SettingsRow(
-                    title = "Display name",
-                    value = state.displayName,
-                    onClick = { editingName = state.displayName },
-                )
-            }
-            item {
-                SettingsRow(
-                    title = "Profile photo",
-                    value = if (state.photoURL == null) "None" else "Set",
-                    onClick = { showPhotoActions = true },
-                )
-            }
-
-            sectionHeader("Sign-in")
-            if (state.isAnonymous && !container.isLocalDemo) {
+        legalDocument?.let { doc ->
+            androidx.compose.foundation.lazy.LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding),
+                contentPadding = PaddingValues(24.dp),
+            ) {
                 item {
-                    Button(
-                        onClick = { activity?.let(viewModel::linkWithGoogle) },
-                        enabled = !state.isLinking,
-                        shape = RoundedCornerShape(MapTalkShapes.Field),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MapTalkColors.Raised,
-                            contentColor = MapTalkColors.Text,
-                            disabledContainerColor = MapTalkColors.Raised,
-                            disabledContentColor = MapTalkColors.Faint,
-                        ),
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(
-                            text = if (state.isLinking) "Connecting…" else "Continue with Google",
-                            modifier = Modifier.padding(vertical = 4.dp),
+                    Text(
+                        text = doc.body,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MapTalkColors.Subtle,
+                    )
+                }
+            }
+            return@Scaffold
+        }
+
+        Box(modifier = Modifier.fillMaxSize()) {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding),
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                item {
+                    ProfileHeader(
+                        state = state,
+                        seed = author.uid,
+                        onEditPhoto = { showPhotoActions = true },
+                    )
+                }
+
+                sectionHeader("Profile")
+                item {
+                    SettingsRow(
+                        title = "Display name",
+                        value = state.displayName,
+                        onClick = { editingName = state.displayName },
+                    )
+                }
+                item {
+                    SettingsRow(
+                        title = "Profile photo",
+                        value = if (state.photoURL == null) "None" else "Set",
+                        onClick = { showPhotoActions = true },
+                    )
+                }
+
+                sectionHeader("Sign-in")
+                if (state.canLinkGoogle) {
+                    item {
+                        Button(
+                            onClick = { activity?.let(viewModel::linkWithGoogle) },
+                            enabled = !state.isLinking && !state.isEndingSession,
+                            shape = RoundedCornerShape(MapTalkShapes.Field),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MapTalkColors.Raised,
+                                contentColor = MapTalkColors.Text,
+                                disabledContainerColor = MapTalkColors.Raised,
+                                disabledContentColor = MapTalkColors.Faint,
+                            ),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                text = if (state.isLinking) "Connecting…" else "Continue with Google",
+                                modifier = Modifier.padding(vertical = 4.dp),
+                            )
+                        }
+                    }
+                } else if (state.linkedProviders.isNotEmpty()) {
+                    items(state.linkedProviders, key = { it }) { provider ->
+                        RaisedRow {
+                            Text(
+                                text = provider,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MapTalkColors.Text,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                text = "Linked",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MapTalkColors.Faint,
+                            )
+                        }
+                    }
+                } else if (state.isLocalDemo) {
+                    item {
+                        RaisedRow {
+                            Text(
+                                text = "Google Sign-In is available on Live builds.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MapTalkColors.Faint,
+                            )
+                        }
+                    }
+                }
+                sectionFooter(
+                    when {
+                        state.isLocalDemo ->
+                            "Local demo keeps your name on this phone only."
+                        state.isAnonymous ->
+                            "You’re exploring as a guest. Save with Google so this account survives reinstalls."
+                        else ->
+                            "This Google account keeps your MapTalk identity when you reinstall."
+                    },
+                )
+
+                sectionHeader("Safety")
+                item {
+                    SettingsRow(
+                        title = "Blocked people",
+                        value = when {
+                            state.isLoadingBlocked -> "…"
+                            blocked.isEmpty() -> "None"
+                            else -> blocked.size.toString()
+                        },
+                        onClick = { showBlocked = true },
+                    )
+                }
+                sectionFooter("Blocked authors’ chats stay hidden for you. Long-press a message to block.")
+
+                sectionHeader("Account")
+                if (state.showsSignOut) {
+                    item {
+                        SettingsRow(
+                            title = if (state.isLocalDemo) "Reset demo profile" else "Sign out",
+                            value = "",
+                            onClick = { confirmSignOut = true },
                         )
                     }
                 }
-            } else if (state.linkedProviders.isNotEmpty()) {
-                items(state.linkedProviders, key = { it }) { provider ->
+                item {
+                    Surface(
+                        onClick = { confirmDelete = true },
+                        enabled = !state.isEndingSession,
+                        shape = RoundedCornerShape(MapTalkShapes.Field),
+                        color = MapTalkColors.Raised,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = "Delete account",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MapTalkColors.Danger,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                        )
+                    }
+                }
+                sectionFooter(
+                    if (state.isAnonymous && !state.isLocalDemo) {
+                        "Delete removes this guest profile from our servers."
+                    } else {
+                        "Delete removes your profile and sign-in. Old public posts may remain on the map."
+                    },
+                )
+
+                sectionHeader("About")
+                item {
                     RaisedRow {
                         Text(
-                            text = provider,
+                            text = "Version",
                             style = MaterialTheme.typography.bodyLarge,
                             color = MapTalkColors.Text,
                             modifier = Modifier.weight(1f),
                         )
                         Text(
-                            text = "Linked",
-                            style = MaterialTheme.typography.labelSmall,
+                            text = versionName,
+                            style = MaterialTheme.typography.bodyLarge,
                             color = MapTalkColors.Faint,
                         )
                     }
                 }
-            }
-            sectionFooter(
-                if (state.isAnonymous) {
-                    "You’re on an anonymous account. Save it with Google so chats stick across " +
-                        "reinstalls. Apple sign-in is on iOS."
-                } else {
-                    "Your account stays the same when you reinstall and sign in again."
-                },
-            )
-
-            sectionHeader("Posting")
-            item {
-                RaisedRow {
-                    Text(
-                        text = "Post anonymously by default",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MapTalkColors.Text,
-                        modifier = Modifier.weight(1f),
+                item {
+                    SettingsRow(
+                        title = "Privacy Policy",
+                        value = "",
+                        onClick = { legalDocument = LegalDocument.Privacy },
                     )
-                    SoonPill()
+                }
+                item {
+                    SettingsRow(
+                        title = "Terms of Use",
+                        value = "",
+                        onClick = { legalDocument = LegalDocument.Terms },
+                    )
                 }
             }
-            sectionFooter(
-                "Later you’ll choose for each chat or reply whether to show your name or stay " +
-                    "anonymous — while keeping one account.",
-            )
 
-            sectionHeader("Safety")
-            item {
-                SettingsRow(
-                    title = "Blocked people",
-                    value = if (blocked.isEmpty()) "None" else blocked.size.toString(),
-                    onClick = { showBlocked = true },
-                )
+            if (state.isEndingSession) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.35f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = MapTalkColors.Surface,
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(20.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            CircularProgressIndicator(
+                                color = MapTalkColors.Accent,
+                                strokeWidth = 2.dp,
+                                modifier = Modifier.size(22.dp),
+                            )
+                            Text(
+                                text = state.endingLabel,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MapTalkColors.Text,
+                            )
+                        }
+                    }
+                }
             }
-
-            sectionHeader("Account")
-            item { SoonRow(title = "Sign out") }
-            item { SoonRow(title = "Delete account", destructive = true) }
-            sectionFooter(
-                "Sign out and delete are coming next. See docs/ACCOUNT.md for the full field list.",
-            )
         }
     }
 
@@ -245,6 +378,74 @@ fun AccountScreen(
                 viewModel.removePhoto()
             },
             onDismiss = { showPhotoActions = false },
+        )
+    }
+
+    if (confirmSignOut) {
+        AlertDialog(
+            onDismissRequest = { confirmSignOut = false },
+            containerColor = MapTalkColors.Surface,
+            titleContentColor = MapTalkColors.Text,
+            title = { Text("Sign out?") },
+            text = {
+                Text(
+                    text = if (state.isLocalDemo) {
+                        "Clears your demo name and photo on this phone."
+                    } else {
+                        "You’ll keep exploring as a guest. Link Google again later to return to a saved account."
+                    },
+                    color = MapTalkColors.Subtle,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmSignOut = false
+                        scope.launch {
+                            if (viewModel.signOut()) onSessionEnded()
+                        }
+                    },
+                ) {
+                    Text("Sign out", color = MapTalkColors.Danger)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmSignOut = false }) {
+                    Text("Cancel", color = MapTalkColors.Subtle)
+                }
+            },
+        )
+    }
+
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            containerColor = MapTalkColors.Surface,
+            titleContentColor = MapTalkColors.Text,
+            title = { Text("Delete account?") },
+            text = {
+                Text(
+                    text = "Removes your profile and sign-in. Public chats you already posted may stay on the map with the name you used.",
+                    color = MapTalkColors.Subtle,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmDelete = false
+                        scope.launch {
+                            if (viewModel.deleteAccount(activity)) onSessionEnded()
+                        }
+                    },
+                ) {
+                    Text("Delete account", color = MapTalkColors.Danger)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = false }) {
+                    Text("Cancel", color = MapTalkColors.Subtle)
+                }
+            },
         )
     }
 
@@ -400,12 +601,14 @@ private fun SettingsRow(title: String, value: String, onClick: () -> Unit) {
                 color = MapTalkColors.Text,
                 modifier = Modifier.weight(1f),
             )
-            Text(
-                text = value,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MapTalkColors.Faint,
-                maxLines = 1,
-            )
+            if (value.isNotEmpty()) {
+                Text(
+                    text = value,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MapTalkColors.Faint,
+                    maxLines = 1,
+                )
+            }
             Icon(
                 painter = painterResource(R.drawable.ic_chevron_right),
                 contentDescription = null,
@@ -428,35 +631,6 @@ private fun RaisedRow(content: @Composable RowScope.() -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             content = content,
-        )
-    }
-}
-
-@Composable
-private fun SoonPill() {
-    Surface(shape = CircleShape, color = MapTalkColors.Base.copy(alpha = 0.8f)) {
-        Text(
-            text = "Soon",
-            style = MaterialTheme.typography.labelSmall,
-            color = MapTalkColors.Faint,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-        )
-    }
-}
-
-@Composable
-private fun SoonRow(title: String, destructive: Boolean = false) {
-    RaisedRow {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.bodyLarge,
-            color = if (destructive) MapTalkColors.Danger else MapTalkColors.Text,
-            modifier = Modifier.weight(1f),
-        )
-        Text(
-            text = "Soon",
-            style = MaterialTheme.typography.labelSmall,
-            color = MapTalkColors.Faint,
         )
     }
 }

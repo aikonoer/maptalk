@@ -20,6 +20,7 @@ final class AuthRepository {
         case alreadyLinked
         case credentialInUse
         case cancelled
+        case requiresRecentLogin
         case failed(String)
 
         var errorDescription: String? {
@@ -29,6 +30,8 @@ final class AuthRepository {
             case .credentialInUse:
                 "That Apple ID is already linked to another MapTalk account."
             case .cancelled: "Sign in was cancelled."
+            case .requiresRecentLogin:
+                "Confirm with Apple once more to delete this account."
             case let .failed(message): message
             }
         }
@@ -93,6 +96,14 @@ final class AuthRepository {
             }
         case .local:
             return []
+        }
+    }
+
+    /// Local demo has no Firebase Auth — guest path only on the welcome screen.
+    var allowsAppleSignIn: Bool {
+        switch backend {
+        case .firebase: true
+        case .local: false
         }
     }
 
@@ -232,6 +243,72 @@ final class AuthRepository {
         case .local:
             throw LinkError.failed("Account linking isn’t available in local demo.")
         }
+    }
+
+    /// Signs out the durable provider (or clears local demo). Boots a fresh anonymous uid.
+    func signOut() async throws {
+        clearAuthPathChoice()
+        switch backend {
+        case let .firebase(auth, _, _):
+            try auth.signOut()
+            _ = try await auth.signInAnonymously()
+        case let .local(store):
+            store.clearAccount()
+        }
+    }
+
+    /// Wipes profile + Auth user (App Store account deletion). Past chats keep denormalised names.
+    /// Apple-linked accounts must pass a fresh Apple credential before wipe.
+    func deleteAccount(
+        appleIdToken: String? = nil,
+        appleRawNonce: String? = nil
+    ) async throws {
+        clearAuthPathChoice()
+        switch backend {
+        case let .firebase(auth, firestore, storage):
+            guard let user = auth.currentUser else { throw LinkError.notSignedIn }
+            let uid = user.uid
+
+            if !user.isAnonymous {
+                guard let appleIdToken, let appleRawNonce else {
+                    throw LinkError.requiresRecentLogin
+                }
+                let credential = OAuthProvider.appleCredential(
+                    withIDToken: appleIdToken,
+                    rawNonce: appleRawNonce,
+                    fullName: nil
+                )
+                do {
+                    _ = try await user.reauthenticate(with: credential)
+                } catch let error as NSError {
+                    throw mapLinkError(error)
+                }
+            }
+
+            try? await removeAvatar()
+            try await wipeProfileData(uid: uid, firestore: firestore)
+            try await user.delete()
+            _ = try await auth.signInAnonymously()
+        case let .local(store):
+            store.clearAccount()
+        }
+    }
+
+    private func wipeProfileData(uid: String, firestore: Firestore) async throws {
+        let userRef = firestore.collection(Fs.users).document(uid)
+        let blocks = try await userRef.collection(Fs.blocks).getDocuments()
+        for doc in blocks.documents {
+            try await doc.reference.delete()
+        }
+        let devices = try await userRef.collection(Fs.devices).getDocuments()
+        for doc in devices.documents {
+            try await doc.reference.delete()
+        }
+        try await userRef.delete()
+    }
+
+    private func clearAuthPathChoice() {
+        UserDefaults.standard.removeObject(forKey: "maptalk.didChooseAuthPath")
     }
 
     private func mapLinkError(_ error: NSError) -> LinkError {

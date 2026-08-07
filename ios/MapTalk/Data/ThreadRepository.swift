@@ -374,13 +374,21 @@ final class ThreadRepository {
 
                     let batch = firestore.batch()
                     batch.setData(fields, forDocument: messageRef)
-                    batch.updateData(
-                        [
-                            Fs.lastMessageAt: FieldValue.serverTimestamp(),
-                            Fs.messageCount: FieldValue.increment(Int64(1)),
-                        ],
-                        forDocument: threadRef
-                    )
+                    var threadUpdate: [String: Any] = [
+                        Fs.lastMessageAt: FieldValue.serverTimestamp(),
+                        Fs.messageCount: FieldValue.increment(Int64(1)),
+                    ]
+                    if let imagePath = fields[Fs.imagePath] as? String {
+                        threadUpdate[Fs.lastMediaPath] = imagePath
+                        threadUpdate[Fs.lastMediaKind] = MessageKind.image.rawValue
+                    } else if let videoPath = fields[Fs.videoPath] as? String {
+                        threadUpdate[Fs.lastMediaPath] = videoPath
+                        threadUpdate[Fs.lastMediaKind] = MessageKind.video.rawValue
+                    } else {
+                        threadUpdate[Fs.lastMediaPath] = FieldValue.delete()
+                        threadUpdate[Fs.lastMediaKind] = FieldValue.delete()
+                    }
+                    batch.updateData(threadUpdate, forDocument: threadRef)
                     try await batch.commit()
                 } catch {
                     self?.onError?(Self.mapMediaUploadError(error))

@@ -1,7 +1,7 @@
 # MapTalk account model
 
 Contract for identity, profile, and auth. Both apps must stay aligned.
-Anonymous bootstrap stays for now; durable accounts + per-post anonymity come later
+Anonymous bootstrap stays for launch; per-post anonymity comes later
 (see [`PARKING.md`](PARKING.md) § Account).
 
 ---
@@ -11,14 +11,15 @@ Anonymous bootstrap stays for now; durable accounts + per-post anonymity come la
 | Flow | What happens | Status |
 | ---- | ------------ | ------ |
 | **Bootstrap** | `signInAnonymously()` if no user → stable `uid` | Live |
-| **Choose name** | First launch writes `users/{uid}.displayName` | Live |
-| **Upgrade / “Sign up”** | Link Apple (iOS) or Google (Android) to the same anonymous `uid` | Live (Apple); Google on Android |
+| **Welcome (first launch)** | Brand screen: Continue with Apple/Google **or** explore as guest → then display name. Anonymous `uid` already exists. Skip if profile already has a name. | Live (iOS + Android) |
+| **Choose name** | Writes `users/{uid}.displayName` | Live |
+| **Upgrade / “Sign up”** | Link Apple (iOS) or Google (Android) to the same anonymous `uid` — from welcome **or** Account | Live |
 | **Sign in (returning)** | Open app → existing Firebase session restores; or link/sign-in with Apple/Google | Partial — no email/password; credential-already-in-use merge parked |
-| **Sign out** | `Auth.signOut()` then re-bootstrap anonymous or require sign-in | Parked |
-| **Delete account** | Delete `users/{uid}` (+ subcollections), revoke providers, `user.delete()` | Parked |
+| **Sign out** | Linked: `Auth.signOut()` → fresh anonymous → welcome. Local demo: clear on-device profile. Guest anonymous: no Sign out row (use Delete). | Live (iOS + Android) |
+| **Delete account** | Wipe profile (blocks, devices, avatar, `users/{uid}`), `user.delete()`, fresh anonymous → welcome. Provider reauth before wipe when linked. Public posts may remain with denormalised names. | Live (iOS + Android); rules allow own-user delete |
 | **Per-post anonymous** | One `uid`; writer chooses display name vs “Anonymous” on each create | Parked |
 
-There is **no** separate email/password sign-up. “Sign up” = link a provider to the anonymous account. “Log in” on a new device = Sign in with Apple/Google (needs merge handling when that provider already owns another uid).
+There is **no** separate email/password sign-up. “Sign up” = link a provider to the anonymous account. “Log in” on a new device = Sign in with Apple/Google (needs merge handling when that provider already owns another uid). Guest (“Explore without an account”) stays on the anonymous Firebase user until they link from Account.
 
 ---
 
@@ -58,39 +59,37 @@ Email/password, phone number as login, birthday, gender, full address, follower 
 
 ## Account settings UI (standard sections)
 
-Mirror common mobile account screens, kept kid-friendly and map-chat specific.
-
 ### 1. Profile
 - Avatar (tap → change / remove photo)
 - Display name
 - Provider status (“Anonymous” / “Apple” / “Google” / “Local demo”)
 
 ### 2. Sign-in & security
-- Continue with Apple (if anonymous) — iOS
+- Continue with Apple (if anonymous) — iOS Live
 - Continue with Google (if anonymous) — Android
 - Linked providers list
-- Sign out (parked)
-- Delete account (parked)
+- Sign out (linked / local demo reset)
+- Delete account (always)
 
-### 3. Posting
-- Post anonymously (default) — Soon
-- Copy: you’ll keep an account; choose per chat/reply later
+### 3. Safety
+- Blocked people (count in row)
 
-### 4. Safety
-- Blocked people
-- (Later) Muted chats, report history
+### 4. About
+- Version
+- Privacy Policy (in-app)
+- Terms of Use (in-app)
 
-### 5. Notifications (later)
-- Push on/off, per-type if needed
-
-### 6. About / legal (later)
-- Privacy, terms, version
+### Parked (not shown)
+- Post anonymously (default)
+- Notifications master toggle
+- Hosted privacy/terms URLs (replace in-app copy when `maptalk.app` is live)
+- Credential merge when Apple/Google already owns another uid
 
 ---
 
 ## Denormalisation
 
-Threads and messages keep `authorId` + `authorName` (and later optional `authorPhotoURL` snapshot on new writes only). Changing display name or photo does **not** rewrite old messages; new posts use the current profile. Anonymous posts use a fixed public label (e.g. `Anonymous`) and omit or hide photo.
+Threads and messages keep `authorId` + `authorName` (and later optional `authorPhotoURL` snapshot on new writes only). Changing display name or photo does **not** rewrite old messages; new posts use the current profile. Anonymous posts use a fixed public label (e.g. `Anonymous`) and omit or hide photo. Account deletion does **not** rewrite historical posts.
 
 ---
 
@@ -102,3 +101,15 @@ Threads and messages keep `authorId` + `authorName` (and later optional `authorP
 | Live | R2 (preferred) `users/{uid}/avatar.jpg` via Worker, or Firebase Storage until avatar presign exists |
 
 Max edge ~512 px, JPEG ~0.8 — small enough for avatars on the map and in chat.
+
+---
+
+## Delete account checklist (client)
+
+1. Apple reauth if linked  
+2. Delete `users/{uid}/blocks/*` and `users/{uid}/devices/*`  
+3. Delete Storage avatar  
+4. Delete `users/{uid}` (rules: own uid only)  
+5. `Auth.currentUser.delete()`  
+6. Clear `maptalk.didChooseAuthPath`  
+7. Sign in anonymously → SessionStore restart → welcome  

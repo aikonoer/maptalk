@@ -44,6 +44,15 @@ struct ChatThread: Identifiable, Equatable, Sendable {
     let createdAt: Date?
     let lastMessageAt: Date?
     let messageCount: Int
+    /// Latest message media for the map bubble thumb — image/video path, or nil.
+    let lastMediaPath: String?
+    /// `.image` or `.video` when `lastMediaPath` is set; cleared when the tip is text/voice/sticker.
+    let lastMediaKind: MessageKind?
+
+    var hasMapMediaPreview: Bool {
+        guard let lastMediaPath, !lastMediaPath.isEmpty else { return false }
+        return lastMediaKind == .image || lastMediaKind == .video
+    }
 }
 
 enum MessageKind: String, Sendable {

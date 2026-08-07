@@ -12,14 +12,17 @@ import com.google.firebase.storage.StorageMetadata
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
 
-/** Where the user is in the two step sign-in: anonymous account, then a display name. */
+/** Where the user is in sign-in: anonymous bootstrap → welcome → display name → map. */
 sealed interface Session {
     data object SignedOut : Session
+    data class NeedsAuthChoice(val uid: String) : Session
     data class NeedsDisplayName(val uid: String) : Session
     data class Ready(val author: Author) : Session
 }
@@ -37,7 +40,10 @@ data class UserProfile(val displayName: String? = null, val photoURL: String? = 
  */
 class AuthRepository private constructor(
     private val backend: Backend,
+    private val prefs: android.content.SharedPreferences,
 ) {
+    /** Bumped when the welcome path is chosen so [session] re-evaluates without a profile write. */
+    private val authChoiceRevision = MutableStateFlow(0)
 
     private sealed interface Backend {
         data class Firebase(
@@ -49,10 +55,20 @@ class AuthRepository private constructor(
         data class Local(val store: LocalDemoStore) : Backend
     }
 
-    constructor(auth: FirebaseAuth, firestore: FirebaseFirestore, storage: FirebaseStorage) :
-        this(Backend.Firebase(auth, firestore, storage))
+    constructor(
+        auth: FirebaseAuth,
+        firestore: FirebaseFirestore,
+        storage: FirebaseStorage,
+        context: android.content.Context,
+    ) : this(
+        Backend.Firebase(auth, firestore, storage),
+        context.applicationContext.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE),
+    )
 
-    constructor(local: LocalDemoStore) : this(Backend.Local(local))
+    constructor(local: LocalDemoStore, context: android.content.Context) : this(
+        Backend.Local(local),
+        context.applicationContext.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE),
+    )
 
     val currentUid: String?
         get() = when (val backend = backend) {
@@ -102,6 +118,10 @@ class AuthRepository private constructor(
             is Backend.Local -> emptyList()
         }
 
+    /** Local demo has no Firebase Auth — guest path only on the welcome screen. */
+    val allowsGoogleSignIn: Boolean
+        get() = backend is Backend.Firebase
+
     /** Name + photo, for the account screen and the map avatar button. */
     fun profile(uid: String): Flow<UserProfile> = when (val backend = backend) {
         is Backend.Firebase -> callbackFlow {
@@ -125,18 +145,29 @@ class AuthRepository private constructor(
             if (uid == null) {
                 flowOf(Session.SignedOut)
             } else {
-                displayName(backend.firestore, uid).map { name ->
+                combine(
+                    displayName(backend.firestore, uid),
+                    authChoiceRevision,
+                ) { name, _ ->
                     if (name.isNullOrBlank()) {
-                        Session.NeedsDisplayName(uid)
+                        if (hasChosenAuthPath()) {
+                            Session.NeedsDisplayName(uid)
+                        } else {
+                            Session.NeedsAuthChoice(uid)
+                        }
                     } else {
                         Session.Ready(Author(uid, name))
                     }
                 }
             }
         }
-        is Backend.Local -> backend.store.displayName.map { name ->
+        is Backend.Local -> combine(backend.store.displayName, authChoiceRevision) { name, _ ->
             if (name.isNullOrBlank()) {
-                Session.NeedsDisplayName(backend.store.uid)
+                if (hasChosenAuthPath()) {
+                    Session.NeedsDisplayName(backend.store.uid)
+                } else {
+                    Session.NeedsAuthChoice(backend.store.uid)
+                }
             } else {
                 Session.Ready(Author(backend.store.uid, name))
             }
@@ -252,6 +283,69 @@ class AuthRepository private constructor(
         }
     }
 
+    fun markAuthPathChosen() {
+        prefs.edit().putBoolean(AUTH_CHOICE_KEY, true).apply()
+        authChoiceRevision.value += 1
+    }
+
+    fun hasChosenAuthPath(): Boolean = prefs.getBoolean(AUTH_CHOICE_KEY, false)
+
+    private fun clearAuthPathChoice() {
+        prefs.edit().remove(AUTH_CHOICE_KEY).apply()
+        authChoiceRevision.value += 1
+    }
+
+    /** Signs out the durable provider (or clears local demo). Boots a fresh anonymous uid. */
+    suspend fun signOut() {
+        clearAuthPathChoice()
+        when (val backend = backend) {
+            is Backend.Firebase -> {
+                backend.auth.signOut()
+                backend.auth.signInAnonymously().await()
+            }
+            is Backend.Local -> backend.store.clearAccount()
+        }
+    }
+
+    /**
+     * Wipes profile + Auth user (Play Store account deletion). Past chats keep denormalised names.
+     * Google-linked accounts must pass a fresh ID token before wipe.
+     */
+    suspend fun deleteAccount(googleIdToken: String? = null) {
+        clearAuthPathChoice()
+        when (val backend = backend) {
+            is Backend.Firebase -> {
+                val user = backend.auth.currentUser ?: throw LinkException.NotSignedIn
+                val uid = user.uid
+                if (!user.isAnonymous) {
+                    val token = googleIdToken ?: throw LinkException.RequiresRecentLogin
+                    val credential = GoogleAuthProvider.getCredential(token, null)
+                    try {
+                        user.reauthenticate(credential).await()
+                    } catch (e: Exception) {
+                        throw LinkException.Failed(e.message ?: "Couldn’t confirm with Google.")
+                    }
+                }
+                runCatching { removeAvatar() }
+                wipeProfileData(backend.firestore, uid)
+                user.delete().await()
+                backend.auth.signInAnonymously().await()
+            }
+            is Backend.Local -> backend.store.clearAccount()
+        }
+    }
+
+    private suspend fun wipeProfileData(firestore: FirebaseFirestore, uid: String) {
+        val userRef = firestore.collection(Fs.USERS).document(uid)
+        userRef.collection(Fs.BLOCKS).get().await().documents.forEach {
+            it.reference.delete().await()
+        }
+        userRef.collection(Fs.DEVICES).get().await().documents.forEach {
+            it.reference.delete().await()
+        }
+        userRef.delete().await()
+    }
+
     private fun currentUid(auth: FirebaseAuth): Flow<String?> = callbackFlow {
         val listener = FirebaseAuth.AuthStateListener { trySend(it.currentUser?.uid) }
         auth.addAuthStateListener(listener)
@@ -268,6 +362,8 @@ class AuthRepository private constructor(
 
     companion object {
         const val MAX_DISPLAY_NAME_LENGTH = 24
+        private const val PREFS = "maptalk.auth"
+        private const val AUTH_CHOICE_KEY = "maptalk.didChooseAuthPath"
     }
 }
 
@@ -277,5 +373,7 @@ sealed class LinkException(message: String) : Exception(message) {
     data object CredentialInUse :
         LinkException("That Google account is already linked to another MapTalk account.")
     data object Cancelled : LinkException("Sign in was cancelled.")
+    data object RequiresRecentLogin :
+        LinkException("Confirm with Google once more to delete this account.")
     class Failed(message: String) : LinkException(message)
 }

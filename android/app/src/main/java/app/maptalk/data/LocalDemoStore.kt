@@ -111,6 +111,14 @@ class LocalDemoStore(context: Context) {
         _photoUrl.value = null
     }
 
+    /** Clears local profile so onboarding runs again (sign-out / delete in demo). */
+    fun clearAccount() {
+        _displayName.value = null
+        prefs.edit().remove(KEY_DISPLAY_NAME).apply()
+        removeAvatar()
+        blocked.keys.toList().forEach { unblock(it) }
+    }
+
     fun blockedPeople(): Flow<List<BlockedPerson>> =
         blockPulse.map { peopleSnapshot() }.onStart { emit(peopleSnapshot()) }
 

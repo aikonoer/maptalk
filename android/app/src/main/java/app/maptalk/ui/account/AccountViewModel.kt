@@ -36,9 +36,15 @@ data class AccountUiState(
     val isLinking: Boolean = false,
     val isSavingName: Boolean = false,
     val isSavingPhoto: Boolean = false,
+    val isEndingSession: Boolean = false,
+    val endingLabel: String = "Working…",
     val statusMessage: String? = null,
     val statusIsError: Boolean = false,
-)
+) {
+    val isLocalDemo: Boolean get() = providerLabel == "Local demo"
+    val canLinkGoogle: Boolean get() = isAnonymous && !isLocalDemo
+    val showsSignOut: Boolean get() = !isAnonymous || isLocalDemo
+}
 
 class AccountViewModel(
     private val context: Context,
@@ -150,6 +156,52 @@ class AccountViewModel(
                 fail(e.message ?: "Google Sign-In failed.")
             }
             _state.update { it.copy(isLinking = false) }
+        }
+    }
+
+    /**
+     * @return true if the session should leave Account (restart to welcome).
+     */
+    suspend fun signOut(): Boolean {
+        val label = if (_state.value.isLocalDemo) "Resetting…" else "Signing out…"
+        _state.update { it.copy(isEndingSession = true, endingLabel = label, statusMessage = null) }
+        return try {
+            authRepository.signOut()
+            true
+        } catch (e: Exception) {
+            fail(e.message ?: "Couldn’t sign out.")
+            false
+        } finally {
+            _state.update { it.copy(isEndingSession = false) }
+        }
+    }
+
+    /**
+     * @return true if the session should leave Account (restart to welcome).
+     */
+    suspend fun deleteAccount(activity: Activity?): Boolean {
+        _state.update {
+            it.copy(isEndingSession = true, endingLabel = "Deleting account…", statusMessage = null)
+        }
+        return try {
+            val linked = !_state.value.isAnonymous && !_state.value.isLocalDemo
+            if (linked) {
+                val act = activity ?: throw LinkException.Failed("Couldn’t open Google Sign-In.")
+                val webClientId = GoogleSignInHelper.webClientId(act)
+                val token = GoogleSignInHelper.idToken(act, webClientId)
+                authRepository.deleteAccount(googleIdToken = token)
+            } else {
+                authRepository.deleteAccount()
+            }
+            true
+        } catch (_: LinkException.Cancelled) {
+            _state.update { it.copy(statusMessage = null) }
+            false
+        } catch (e: Exception) {
+            fail(e.message ?: "Couldn’t delete account.")
+            false
+        } finally {
+            _state.update { it.copy(isEndingSession = false) }
         }
     }
 

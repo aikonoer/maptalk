@@ -54,8 +54,13 @@ class AppContainer(context: Context) {
     }
 
     val authRepository: AuthRepository by lazy {
-        localStore?.let { AuthRepository(it) }
-            ?: AuthRepository(firebase.auth, firebase.firestore, firebase.storage)
+        localStore?.let { AuthRepository(it, appContext) }
+            ?: AuthRepository(
+                auth = firebase.auth,
+                firestore = firebase.firestore,
+                storage = firebase.storage,
+                context = appContext,
+            )
     }
 
     val threadRepository: ThreadRepository by lazy {

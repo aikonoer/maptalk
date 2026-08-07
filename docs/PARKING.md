@@ -1,7 +1,7 @@
 # Parking lot
 
-Deferred work — pick up when ready, not blocking the next ship step
-(device matrix → store release). Setup details for Firebase/R2 live in
+Deferred work — pick up when ready. **Store week:** see
+[`FEATURE_FREEZE.md`](FEATURE_FREEZE.md). Setup details for Firebase/R2 live in
 [`FIREBASE_SETUP.md`](FIREBASE_SETUP.md). Video hardening checklist:
 [`VIDEO_PRODUCTION.md`](VIDEO_PRODUCTION.md).
 
@@ -9,16 +9,10 @@ Deferred work — pick up when ready, not blocking the next ship step
 
 ## Map markers — custom kind icons
 
-The iOS → Android map stretch is ported, so the two apps are level again: title
-cap and 2-line header, the optional opening post, the account page and map
-avatar, kind filters, the placing crosshair, the bottom-leading bubble anchor,
-gestures that yield to a pinch, the peek preload and swipe dismiss, place labels,
-and place search.
-
-Still parked here: replace the emoji glyphs with a custom vector set per
-`ThreadKind` (event / notice / traffic / general), monochrome-friendly on a dark
-map. Touches `LiveThreadBubble` / `ClusterBubbleMarker` / `KindFilterStack` on
-iOS and `ThreadBubble` / `ClusterBubble` / `KindFilterStack` on Android.
+Both apps still use emoji glyphs for `ThreadKind`. Replace with a custom vector
+set (event / notice / traffic / general), monochrome-friendly on a dark map.
+Touches `LiveThreadBubble` / `ClusterBubbleMarker` / `KindFilterStack` on iOS and
+`ThreadBubble` / `ClusterBubble` / `KindFilterStack` on Android.
 
 ---
 
@@ -96,18 +90,13 @@ values and is gitignored — recreate it if deploying Functions from a fresh clo
 
 ## Account — per-post anonymous (later)
 
-**Now:** Anonymous Firebase bootstrap is fine. Account page covers profile (name,
-photo), Continue with Apple, blocked people. Full field + auth catalogue:
-[`ACCOUNT.md`](ACCOUNT.md).
+**Now (both):** Anonymous bootstrap + welcome (Apple/Google or guest). Account is
+production-shaped: profile, provider link, blocked people, Sign out / Delete,
+About (version, Privacy, Terms). Catalogue: [`ACCOUNT.md`](ACCOUNT.md).
+Deploy Firestore rules so `users/{uid}` allows own-document delete.
 
-**Later:** Everyone keeps a real account (linked). Starting a chat or replying
-offers a toggle: show your name vs post anonymously. One `uid` always; anonymity
-is a per-write presentation choice (`authorName` / visibility), not a second
-Firebase user. Don’t invent throwaway auth for anonymous posts.
-
-Still parked: sign-out, account delete, credential merge when Apple/Google is
-already tied to another Firebase user; avatar on R2 (currently Firebase Storage
-for Live).
+**Later:** Per-post anonymous toggle. Credential merge when Apple/Google is
+already tied to another Firebase user; avatar on R2; hosted privacy/terms URLs.
 
 ---
 
@@ -115,3 +104,4 @@ for Live).
 
 App Store / Play submit with Live video. Blocked only on running the device matrix
 in [`VIDEO_PRODUCTION.md`](VIDEO_PRODUCTION.md) § Ship — not on the parked items above.
+Follow [`FEATURE_FREEZE.md`](FEATURE_FREEZE.md) for what not to start.

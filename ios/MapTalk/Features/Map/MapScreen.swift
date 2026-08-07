@@ -1,3 +1,4 @@
+import AVFoundation
 import MapKit
 import SwiftUI
 import UIKit
@@ -18,6 +19,7 @@ struct MapScreen: View {
 
     private let environment: AppEnvironment
     private let author: Author
+    private let onSessionEnded: () -> Void
 
     @State private var model: MapModel
     @State private var camera: MapCameraPosition = Self.startsInDemo
@@ -28,7 +30,8 @@ struct MapScreen: View {
     @State private var isComposing = false
     @State private var isPlacingPin = false
     @State private var previewThread: ChatThread?
-    @State private var previewLatest: Message?
+    @State private var previewLatest: [Message] = []
+    @State private var previewMediaThumb: UIImage?
     @State private var previewLoading = false
     @State private var previewCluster: [ChatThread]?
     @State private var previewTask: Task<Void, Never>?
@@ -48,6 +51,8 @@ struct MapScreen: View {
     @State private var searchTask: Task<Void, Never>?
     @State private var searchLanding: SearchLanding?
     @State private var landTask: Task<Void, Never>?
+    /// User dismissed the empty-nearby tip; show again once chats return then go empty again.
+    @State private var emptyNearbyHintDismissed = false
     @FocusState private var searchFocused: Bool
 
     private var openThreadBinding: Binding<ThreadRoute?> {
@@ -73,9 +78,14 @@ struct MapScreen: View {
         #endif
     }
 
-    init(environment: AppEnvironment, author: Author) {
+    init(
+        environment: AppEnvironment,
+        author: Author,
+        onSessionEnded: @escaping () -> Void = {}
+    ) {
         self.environment = environment
         self.author = author
+        self.onSessionEnded = onSessionEnded
         _model = State(
             initialValue: MapModel(
                 repository: environment.threadRepository,
@@ -108,6 +118,7 @@ struct MapScreen: View {
                             BubblePreviewCard(
                                 thread: thread,
                                 latest: previewLatest,
+                                mediaThumb: previewMediaThumb,
                                 isLoading: previewLoading,
                                 onOpen: { openFromPreview(thread.id) },
                                 onDismiss: { dismissPreview() }
@@ -147,7 +158,14 @@ struct MapScreen: View {
         }
         .sheet(isPresented: $showSettings) {
             NavigationStack {
-                AccountScreen(environment: environment, author: author)
+                AccountScreen(
+                    environment: environment,
+                    author: author,
+                    onSessionEnded: {
+                        showSettings = false
+                        onSessionEnded()
+                    }
+                )
             }
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
@@ -155,7 +173,7 @@ struct MapScreen: View {
             .presentationBackground(Theme.base)
         }
         .sheet(isPresented: $isComposing) {
-            NewThreadSheet(position: model.visibleCenter) { title, body, kind in
+            NewThreadSheet(position: model.visibleCenter) { title, body, kind, image in
                 isComposing = false
                 isPlacingPin = false
                 openThreadId = model.createThread(
@@ -163,10 +181,11 @@ struct MapScreen: View {
                     kind: kind,
                     position: model.visibleCenter,
                     author: author,
-                    openingText: body
+                    openingText: body,
+                    openingImage: image.flatMap(ImageCompressor.prepare)
                 )
             }
-            .presentationDetents([.height(520), .large])
+            .presentationDetents([.height(580), .large])
             .presentationDragIndicator(.visible)
             .presentationCornerRadius(24)
             .presentationBackground(Theme.surface)
@@ -205,6 +224,9 @@ struct MapScreen: View {
             openPendingDeepLink()
         }
         .onChange(of: nearbyChatCount) { _, count in
+            if count > 0 {
+                emptyNearbyHintDismissed = false
+            }
             guard !model.isGlobalView, !model.isLoading else {
                 lastNearbyCount = count
                 return
@@ -384,7 +406,12 @@ struct MapScreen: View {
                         Task { await widenToClosestChat() }
                     },
                     secondaryTitle: "Start the first chat",
-                    onSecondary: { beginPlacingPin() }
+                    onSecondary: { beginPlacingPin() },
+                    onDismiss: {
+                        withAnimation(.spring(duration: 0.28, bounce: 0.12)) {
+                            emptyNearbyHintDismissed = true
+                        }
+                    }
                 )
                 .padding(.top, 28)
                 .transition(.opacity.combined(with: .scale(scale: 0.96)))
@@ -693,7 +720,8 @@ struct MapScreen: View {
     }
 
     private var showEmptyNearbyCTA: Bool {
-        !isPlacingPin && !isComposing && !model.isLoading && !model.isGlobalView
+        !emptyNearbyHintDismissed
+            && !isPlacingPin && !isComposing && !model.isLoading && !model.isGlobalView
             && model.bubbles.isEmpty && !model.isFilterHidingAll
     }
 
@@ -772,14 +800,23 @@ struct MapScreen: View {
     private func presentPreview(_ thread: ChatThread) {
         previewTask?.cancel()
         previewCluster = nil
-        previewLatest = nil
+        previewLatest = []
+        previewMediaThumb = nil
         previewLoading = true
-        // Load the latest line first so the "Latest" card is already in the
-        // peek when it slides — it used to pop in after, looking stuck.
+        // Load tip lines + newest media thumb before the card slides so nothing
+        // pops in after (text used to, then the photo lagged).
         previewTask = Task {
             let messages = await model.peekMessages(threadId: thread.id)
             guard !Task.isCancelled else { return }
-            previewLatest = messages.last
+            let thumb: UIImage?
+            if let tip = messages.last, tip.hasImage || tip.hasVideo {
+                thumb = await PeekMediaThumb.load(for: tip)
+            } else {
+                thumb = nil
+            }
+            guard !Task.isCancelled else { return }
+            previewLatest = messages
+            previewMediaThumb = thumb
             previewLoading = false
             withAnimation(.spring(duration: 0.34, bounce: 0.12)) {
                 previewThread = thread
@@ -790,7 +827,8 @@ struct MapScreen: View {
     private func presentClusterPreview(_ threads: [ChatThread]) {
         previewTask?.cancel()
         previewTask = nil
-        previewLatest = nil
+        previewLatest = []
+        previewMediaThumb = nil
         previewLoading = false
         previewThread = nil
         withAnimation(.spring(duration: 0.34, bounce: 0.12)) {
@@ -807,7 +845,8 @@ struct MapScreen: View {
             previewTask = nil
             previewThread = nil
             previewCluster = nil
-            previewLatest = nil
+            previewLatest = []
+            previewMediaThumb = nil
             previewLoading = false
         }
         openThreadId = threadId
@@ -820,7 +859,8 @@ struct MapScreen: View {
             previewThread = nil
             previewCluster = nil
         }
-        previewLatest = nil
+        previewLatest = []
+        previewMediaThumb = nil
         previewLoading = false
     }
 }
@@ -1030,6 +1070,7 @@ private struct EmptyMapHint: View {
     let onPrimary: () -> Void
     var secondaryTitle: String? = nil
     var onSecondary: (() -> Void)? = nil
+    var onDismiss: (() -> Void)? = nil
 
     var body: some View {
         VStack(spacing: 12) {
@@ -1080,11 +1121,26 @@ private struct EmptyMapHint: View {
         }
         .padding(.horizontal, 22)
         .padding(.vertical, 20)
+        .padding(.top, onDismiss == nil ? 0 : 6)
         .frame(maxWidth: 280)
         .background(Theme.surface.opacity(0.92), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .strokeBorder(Theme.hairline.opacity(0.85), lineWidth: 1)
+        }
+        .overlay(alignment: .topTrailing) {
+            if let onDismiss {
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(Theme.faint)
+                        .frame(width: 28, height: 28)
+                        .background(Theme.raised.opacity(0.9), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .padding(10)
+                .accessibilityLabel("Dismiss")
+            }
         }
         .shadow(color: .black.opacity(0.28), radius: 14, y: 6)
     }
@@ -1123,6 +1179,72 @@ private struct BubbleMarker: View {
     }
 }
 
+/// Tiny latest-media proof inside a single bubble — not a photo-map pin.
+private struct MapBubbleMediaThumb: View {
+    let path: String
+    let isVideo: Bool
+    @State private var image: UIImage?
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Theme.raised)
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image(systemName: isVideo ? "video.fill" : "photo")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Theme.faint)
+            }
+            if isVideo {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 7, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(3)
+                    .background(.black.opacity(0.45), in: Circle())
+            }
+        }
+        .frame(width: 28, height: 28)
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .strokeBorder(Theme.hairline, lineWidth: 1)
+        }
+        .task(id: path) {
+            image = await Self.load(path: path, isVideo: isVideo)
+        }
+    }
+
+    private static func load(path: String, isVideo: Bool) async -> UIImage? {
+        if path.hasPrefix("http://") || path.hasPrefix("https://") {
+            guard let url = URL(string: path) else { return nil }
+            if isVideo { return await videoPoster(url: url) }
+            guard let (data, _) = try? await URLSession.shared.data(from: url) else { return nil }
+            return UIImage(data: data)
+        }
+        let fileURL: URL = {
+            if path.hasPrefix("/") || path.hasPrefix("file:") {
+                return URL(fileURLWithPath: path.replacingOccurrences(of: "file://", with: ""))
+            }
+            return LocalMediaStore.url(forRelativePath: path)
+        }()
+        if isVideo { return await videoPoster(url: fileURL) }
+        return UIImage(contentsOfFile: fileURL.path)
+    }
+
+    private static func videoPoster(url: URL) async -> UIImage? {
+        let asset = AVURLAsset(url: url)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 120, height: 120)
+        let time = CMTime(seconds: 0.05, preferredTimescale: 600)
+        guard let cg = try? await generator.image(at: time).image else { return nil }
+        return UIImage(cgImage: cg)
+    }
+}
+
 private struct LiveThreadBubble: View {
     let thread: ChatThread
     let now: Date
@@ -1136,6 +1258,11 @@ private struct LiveThreadBubble: View {
 
     var body: some View {
         bubbleChip
+            .background {
+                if live {
+                    LiveBubbleAura(shape: shape)
+                }
+            }
             .scaleEffect(flash ? 1.08 : 1, anchor: .bottomLeading)
             .brightness(flash ? 0.08 : 0)
             .onAppear { seenMessageAt = thread.lastMessageAt }
@@ -1151,36 +1278,36 @@ private struct LiveThreadBubble: View {
     private var bubbleChip: some View {
         HStack(spacing: 7) {
             if live {
-                Circle()
-                    .fill(Theme.accent)
-                    .frame(width: 8, height: 8)
+                LiveDot(size: 8)
             }
 
-            Text(thread.kind.glyph)
-                .font(.system(size: 13))
+            if thread.hasMapMediaPreview,
+               let path = thread.lastMediaPath,
+               let kind = thread.lastMediaKind {
+                // Media tip: thumb + title — LiveDot carries activity when live.
+                MapBubbleMediaThumb(path: path, isVideo: kind == .video)
+                Text(thread.title)
+                    .font(.markerTitle)
+                    .foregroundStyle(Theme.text)
+                    .lineLimit(1)
+            } else {
+                Text(thread.kind.glyph)
+                    .font(.system(size: 13))
 
-            Text(thread.title)
-                .font(.markerTitle)
-                .foregroundStyle(Theme.text)
-                .lineLimit(1)
+                Text(thread.title)
+                    .font(.markerTitle)
+                    .foregroundStyle(Theme.text)
+                    .lineLimit(1)
 
-            if thread.messageCount > 0 {
-                Text("\(thread.messageCount)")
+                Text(live ? "Live" : relativeTime(thread.lastMessageAt))
                     .font(.meta)
-                    .foregroundStyle(thread.kind.tint)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(thread.kind.tint.opacity(0.16), in: Capsule())
+                    .foregroundStyle(live ? Theme.accent : Theme.faint)
             }
-
-            Text(live ? "Live" : relativeTime(thread.lastMessageAt))
-                .font(.meta)
-                .foregroundStyle(live ? Theme.accent : Theme.faint)
         }
         .padding(.leading, 10)
         .padding(.trailing, 9)
         .padding(.vertical, 8)
-        .frame(maxWidth: 200)
+        .frame(maxWidth: thread.hasMapMediaPreview ? 180 : 200)
         .background(Theme.surface, in: shape)
         .overlay {
             shape.strokeBorder(
@@ -1193,6 +1320,16 @@ private struct LiveThreadBubble: View {
             radius: flash ? 12 : (live ? 8 : 6),
             y: 3
         )
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var accessibilityLabel: String {
+        var parts = [thread.title, thread.kind.label]
+        if live { parts.append("Live") }
+        if thread.hasMapMediaPreview {
+            parts.append(thread.lastMediaKind == .video ? "Has video" : "Has photo")
+        }
+        return parts.joined(separator: ", ")
     }
 
     private func triggerFlash() {
@@ -1256,9 +1393,7 @@ private struct ClusterBubbleMarker: View {
                     .foregroundStyle(Theme.text)
                     .padding(.leading, 8)
             } else if anyLive {
-                Circle()
-                    .fill(Theme.accent)
-                    .frame(width: 7, height: 7)
+                LiveDot(size: 7)
                     .padding(.leading, 8)
             }
         }
@@ -1266,6 +1401,11 @@ private struct ClusterBubbleMarker: View {
         .padding(.trailing, 10)
         .padding(.vertical, 7)
         .background(Theme.surface, in: shape)
+        .background {
+            if anyLive {
+                LiveBubbleAura(shape: shape)
+            }
+        }
         .overlay {
             shape.strokeBorder(
                 anyLive ? Theme.accent.opacity(0.7) : Theme.hairline,

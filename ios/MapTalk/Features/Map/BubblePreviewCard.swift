@@ -1,10 +1,15 @@
+import AVFoundation
 import SwiftUI
+import UIKit
 
-/// Peek card for a single map bubble: thread stats (instant) + latest message (loaded).
+/// Peek card for a single map bubble: thread stats (instant) + last few messages (loaded).
 /// Tap or swipe up to open · swipe down to dismiss.
 struct BubblePreviewCard: View {
     let thread: ChatThread
-    let latest: Message?
+    /// Oldest → newest tip lines (up to 3). Older rows fade.
+    let latest: [Message]
+    /// Preloaded thumb for the newest tip media so it rides in with the card.
+    var mediaThumb: UIImage? = nil
     let isLoading: Bool
     let onOpen: () -> Void
     let onDismiss: () -> Void
@@ -80,9 +85,7 @@ struct BubblePreviewCard: View {
 
                 HStack(spacing: 5) {
                     if live {
-                        Circle()
-                            .fill(Theme.accent)
-                            .frame(width: 6, height: 6)
+                        LiveDot(size: 6)
                         Text("Live")
                             .foregroundStyle(Theme.accent)
                     }
@@ -147,39 +150,87 @@ struct BubblePreviewCard: View {
             if isLoading {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(Theme.raised)
-                    .frame(height: 40)
+                    .frame(height: 56)
                     .redacted(reason: .placeholder)
-            } else if let latest {
-                HStack(alignment: .top, spacing: 10) {
-                    InitialAvatar(name: latest.authorName, seed: latest.authorId, size: 28)
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Text(latest.authorName)
-                                .font(.meta)
-                                .foregroundStyle(Theme.subtle)
-                                .lineLimit(1)
-                            Spacer(minLength: 4)
-                            Text(relativeTime(latest.createdAt))
-                                .font(.meta)
-                                .foregroundStyle(Theme.faint)
-                        }
-                        Text(messagePreviewLine(latest))
-                            .font(.subheadline)
-                            .foregroundStyle(Theme.text)
-                            .lineLimit(2)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-            } else {
+            } else if latest.isEmpty {
                 Text("Nobody has said anything yet")
                     .font(.subheadline)
                     .foregroundStyle(Theme.faint)
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(Array(latest.enumerated()), id: \.element.id) { index, message in
+                        PeekLatestRow(
+                            message: message,
+                            showMedia: index == latest.count - 1,
+                            mediaThumb: index == latest.count - 1 ? mediaThumb : nil,
+                            opacity: Self.fadeOpacity(index: index, count: latest.count)
+                        )
+                    }
+                }
+                .mask {
+                    if latest.count > 1 {
+                        LinearGradient(
+                            stops: [
+                                .init(color: .black.opacity(0.25), location: 0),
+                                .init(color: .black.opacity(0.65), location: 0.28),
+                                .init(color: .black, location: 0.62),
+                                .init(color: .black, location: 1),
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    } else {
+                        Rectangle()
+                    }
+                }
             }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.raised.opacity(0.85), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    /// Oldest tip rows fade; the newest stays full strength.
+    private static func fadeOpacity(index: Int, count: Int) -> Double {
+        guard count > 1 else { return 1 }
+        let t = Double(index) / Double(count - 1)
+        return 0.38 + t * 0.62
+    }
+}
+
+private struct PeekLatestRow: View {
+    let message: Message
+    let showMedia: Bool
+    var mediaThumb: UIImage? = nil
+    let opacity: Double
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            InitialAvatar(name: message.authorName, seed: message.authorId, size: 26)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(message.authorName)
+                        .font(.meta)
+                        .foregroundStyle(Theme.subtle)
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    Text(relativeTime(message.createdAt))
+                        .font(.meta)
+                        .foregroundStyle(Theme.faint)
+                }
+                Text(messagePreviewLine(message))
+                    .font(.subheadline)
+                    .foregroundStyle(Theme.text)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if showMedia, message.hasImage || message.hasVideo {
+                PeekMediaThumb(message: message, preloaded: mediaThumb)
+            }
+        }
+        .opacity(opacity)
     }
 }
 
@@ -203,9 +254,95 @@ extension Comparable {
 func messagePreviewLine(_ message: Message) -> String {
     if message.isSticker { return message.text }
     if message.hasVoice { return "Voice note" }
-    if message.hasVideo { return "Video" }
+    if message.hasVideo { return message.text.isEmpty ? "Video" : message.text }
     if message.hasImage && message.text.isEmpty { return "Photo" }
     if message.hasImage { return message.text }
     if message.text.isEmpty { return "Message" }
     return message.text
+}
+
+/// Compact photo / video thumb for peek — same visual weight as the text line.
+struct PeekMediaThumb: View {
+    let message: Message
+    var preloaded: UIImage? = nil
+    @State private var image: UIImage?
+
+    private var path: String? {
+        if message.hasImage { return message.imagePath }
+        if message.hasVideo { return message.videoPath }
+        return nil
+    }
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Theme.raised)
+            if let image = image ?? preloaded {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else if message.hasVideo {
+                Image(systemName: "video.fill")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Theme.faint)
+            } else {
+                Image(systemName: "photo")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Theme.faint)
+            }
+            if message.hasVideo {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(6)
+                    .background(.black.opacity(0.45), in: Circle())
+            }
+        }
+        .frame(width: 56, height: 56)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .task(id: path) {
+            if preloaded != nil {
+                image = preloaded
+                return
+            }
+            image = await Self.loadThumb(path: path, isVideo: message.hasVideo)
+        }
+    }
+
+    static func load(for message: Message) async -> UIImage? {
+        let path = message.hasImage ? message.imagePath : message.videoPath
+        return await loadThumb(path: path, isVideo: message.hasVideo)
+    }
+
+    private static func loadThumb(path: String?, isVideo: Bool) async -> UIImage? {
+        guard let path else { return nil }
+        if path.hasPrefix("http://") || path.hasPrefix("https://") {
+            guard let url = URL(string: path) else { return nil }
+            if isVideo {
+                return await videoPoster(url: url)
+            }
+            guard let (data, _) = try? await URLSession.shared.data(from: url) else { return nil }
+            return UIImage(data: data)
+        }
+        let fileURL: URL = {
+            if path.hasPrefix("/") || path.hasPrefix("file:") {
+                return URL(fileURLWithPath: path.replacingOccurrences(of: "file://", with: ""))
+            }
+            return LocalMediaStore.url(forRelativePath: path)
+        }()
+        if isVideo {
+            return await videoPoster(url: fileURL)
+        }
+        return UIImage(contentsOfFile: fileURL.path)
+    }
+
+    private static func videoPoster(url: URL) async -> UIImage? {
+        let asset = AVURLAsset(url: url)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 240, height: 240)
+        let time = CMTime(seconds: 0.05, preferredTimescale: 600)
+        guard let cg = try? await generator.image(at: time).image else { return nil }
+        return UIImage(cgImage: cg)
+    }
 }

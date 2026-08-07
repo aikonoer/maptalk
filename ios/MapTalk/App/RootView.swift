@@ -22,12 +22,28 @@ struct RootView: View {
             StartupView(message: nil)
         case let .failed(message):
             StartupView(message: message)
+        case .needsAuthChoice:
+            WelcomeAuthView(
+                allowsApple: session.allowsAppleSignIn,
+                isBusy: session.isAuthBusy,
+                errorMessage: session.authError,
+                onContinueAsGuest: { session.continueAsGuest() },
+                onContinueWithApple: {
+                    Task { await session.continueWithApple() }
+                }
+            )
         case .needsDisplayName:
             DisplayNameView(isSaving: session.isSavingName) { name in
                 await session.saveDisplayName(name)
             }
         case let .ready(author):
-            MapScreen(environment: environment, author: author)
+            MapScreen(
+                environment: environment,
+                author: author,
+                onSessionEnded: {
+                    Task { await session.restart() }
+                }
+            )
                 .task {
                     await PushRegistrar.start(push: environment.pushRepository)
                 }

@@ -2,20 +2,29 @@ import PhotosUI
 import SwiftUI
 import UIKit
 
-/// Standard account settings — profile, sign-in, posting prefs, safety.
+/// Production account settings — profile, sign-in, safety, account lifecycle, About.
 /// Spec: `docs/ACCOUNT.md`.
 struct AccountScreen: View {
     private let author: Author
+    private let onSessionEnded: () -> Void
+
     @State private var model: AccountModel
     @State private var showEditName = false
     @State private var draftName = ""
     @State private var photoItem: PhotosPickerItem?
     @State private var showPhotoActions = false
     @State private var showPhotoPicker = false
+    @State private var confirmSignOut = false
+    @State private var confirmDelete = false
     @Environment(\.dismiss) private var dismiss
 
-    init(environment: AppEnvironment, author: Author) {
+    init(
+        environment: AppEnvironment,
+        author: Author,
+        onSessionEnded: @escaping () -> Void = {}
+    ) {
         self.author = author
+        self.onSessionEnded = onSessionEnded
         _model = State(
             initialValue: AccountModel(
                 safety: environment.safetyRepository,
@@ -26,14 +35,20 @@ struct AccountScreen: View {
         _draftName = State(initialValue: author.displayName)
     }
 
+    private var appVersion: String {
+        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+        return "\(short) (\(build))"
+    }
+
     var body: some View {
         List {
             profileHeaderSection
             profileFieldsSection
             signInSection
-            postingSection
             safetySection
             accountActionsSection
+            aboutSection
         }
         .scrollContentBackground(.hidden)
         .background(Theme.base)
@@ -44,8 +59,10 @@ struct AccountScreen: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Button("Done") { dismiss() }
                     .foregroundStyle(Theme.accent)
+                    .disabled(model.isEndingSession)
             }
         }
+        .interactiveDismissDisabled(model.isEndingSession)
         .sheet(isPresented: $showEditName) { editNameSheet }
         .confirmationDialog("Profile photo", isPresented: $showPhotoActions, titleVisibility: .visible) {
             Button("Choose photo") { showPhotoPicker = true }
@@ -61,6 +78,55 @@ struct AccountScreen: View {
             guard let item else { return }
             Task { await model.setPhoto(from: item) }
             photoItem = nil
+        }
+        .confirmationDialog(
+            "Sign out?",
+            isPresented: $confirmSignOut,
+            titleVisibility: .visible
+        ) {
+            Button("Sign out", role: .destructive) {
+                Task {
+                    if await model.signOut() {
+                        onSessionEnded()
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                model.isLocalDemo
+                    ? "Clears your demo name and photo on this phone."
+                    : "You’ll keep exploring as a guest. Link Apple again later to return to a saved account."
+            )
+        }
+        .confirmationDialog(
+            "Delete account?",
+            isPresented: $confirmDelete,
+            titleVisibility: .visible
+        ) {
+            Button("Delete account", role: .destructive) {
+                Task {
+                    if await model.deleteAccount() {
+                        onSessionEnded()
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                "Removes your profile and sign-in. Public chats you already posted may stay on the map with the name you used."
+            )
+        }
+        .overlay {
+            if model.isEndingSession {
+                ZStack {
+                    Color.black.opacity(0.35).ignoresSafeArea()
+                    ProgressView(model.endingLabel)
+                        .padding(20)
+                        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .foregroundStyle(Theme.text)
+                }
+            }
         }
         .onAppear { model.start() }
         .onDisappear { model.stop() }
@@ -145,7 +211,7 @@ struct AccountScreen: View {
     @ViewBuilder
     private var signInSection: some View {
         Section {
-            if model.isAnonymous {
+            if model.canLinkApple {
                 Button {
                     Task { await model.linkWithApple() }
                 } label: {
@@ -158,7 +224,7 @@ struct AccountScreen: View {
                     .font(.body)
                     .foregroundStyle(Theme.text)
                 }
-                .disabled(model.isLinking)
+                .disabled(model.isLinking || model.isEndingSession)
                 .listRowBackground(Theme.raised)
             } else if !model.linkedProviders.isEmpty {
                 ForEach(model.linkedProviders, id: \.self) { provider in
@@ -173,41 +239,28 @@ struct AccountScreen: View {
                     .font(.body)
                     .listRowBackground(Theme.raised)
                 }
+            } else if model.isLocalDemo {
+                Text("Apple Sign In is available on Live builds.")
+                    .font(.subheadline)
+                    .foregroundStyle(Theme.faint)
+                    .listRowBackground(Theme.raised)
             }
         } header: {
             Text("Sign-in")
                 .foregroundStyle(Theme.subtle)
         } footer: {
-            Text(
-                model.isAnonymous
-                    ? "You’re on an anonymous account. Save it with Apple so chats stick across reinstalls. Google sign-in is on Android."
-                    : "Your account stays the same when you reinstall on this Apple ID."
-            )
-            .foregroundStyle(Theme.faint)
+            Text(signInFooter)
+                .foregroundStyle(Theme.faint)
         }
     }
 
-    private var postingSection: some View {
-        Section {
-            HStack {
-                Text("Post anonymously by default")
-                    .foregroundStyle(Theme.text)
-                Spacer()
-                Text("Soon")
-                    .font(.meta)
-                    .foregroundStyle(Theme.faint)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Theme.base.opacity(0.8), in: Capsule())
-            }
-            .font(.body)
-            .listRowBackground(Theme.raised)
-        } header: {
-            Text("Posting")
-                .foregroundStyle(Theme.subtle)
-        } footer: {
-            Text("Later you’ll choose for each chat or reply whether to show your name or stay anonymous — while keeping one account.")
-                .foregroundStyle(Theme.faint)
+    private var signInFooter: String {
+        if model.isLocalDemo {
+            "Local demo keeps your name on this phone only."
+        } else if model.isAnonymous {
+            "You’re exploring as a guest. Save with Apple so this account survives reinstalls."
+        } else {
+            "This Apple ID keeps your account when you reinstall MapTalk."
         }
     }
 
@@ -216,26 +269,94 @@ struct AccountScreen: View {
             NavigationLink {
                 BlockedPeopleScreen(model: model)
             } label: {
-                Text("Blocked people")
-                    .foregroundStyle(Theme.text)
+                HStack {
+                    Text("Blocked people")
+                        .foregroundStyle(Theme.text)
+                    Spacer()
+                    Text(
+                        model.isLoadingBlocked
+                            ? "…"
+                            : (model.blocked.isEmpty ? "None" : "\(model.blocked.count)")
+                    )
+                    .foregroundStyle(Theme.faint)
+                }
+                .font(.body)
             }
             .listRowBackground(Theme.raised)
         } header: {
             Text("Safety")
                 .foregroundStyle(Theme.subtle)
+        } footer: {
+            Text("Blocked authors’ chats stay hidden for you. Long-press a message to block.")
+                .foregroundStyle(Theme.faint)
         }
     }
 
     private var accountActionsSection: some View {
         Section {
-            soonRow(title: "Sign out")
-            soonRow(title: "Delete account", destructive: true)
+            if model.showsSignOut {
+                Button {
+                    confirmSignOut = true
+                } label: {
+                    Text(model.isLocalDemo ? "Reset demo profile" : "Sign out")
+                        .foregroundStyle(Theme.text)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .disabled(model.isEndingSession)
+                .listRowBackground(Theme.raised)
+            }
+
+            Button(role: .destructive) {
+                confirmDelete = true
+            } label: {
+                Text("Delete account")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .disabled(model.isEndingSession)
+            .listRowBackground(Theme.raised)
         } header: {
             Text("Account")
                 .foregroundStyle(Theme.subtle)
         } footer: {
-            Text("Sign out and delete are coming next. See docs/ACCOUNT.md for the full field list.")
-                .foregroundStyle(Theme.faint)
+            Text(
+                model.isAnonymous && !model.isLocalDemo
+                    ? "Delete removes this guest profile from our servers."
+                    : "Delete removes your profile and sign-in. Old public posts may remain on the map."
+            )
+            .foregroundStyle(Theme.faint)
+        }
+    }
+
+    private var aboutSection: some View {
+        Section {
+            HStack {
+                Text("Version")
+                    .foregroundStyle(Theme.text)
+                Spacer()
+                Text(appVersion)
+                    .foregroundStyle(Theme.faint)
+            }
+            .font(.body)
+            .listRowBackground(Theme.raised)
+
+            NavigationLink {
+                LegalDocumentView(document: .privacy)
+            } label: {
+                Text("Privacy Policy")
+                    .foregroundStyle(Theme.text)
+            }
+            .listRowBackground(Theme.raised)
+
+            NavigationLink {
+                LegalDocumentView(document: .terms)
+            } label: {
+                Text("Terms of Use")
+                    .foregroundStyle(Theme.text)
+            }
+            .listRowBackground(Theme.raised)
+        } header: {
+            Text("About")
+                .foregroundStyle(Theme.subtle)
         }
     }
 
@@ -252,19 +373,6 @@ struct AccountScreen: View {
                 .foregroundStyle(Theme.faint)
         }
         .font(.body)
-    }
-
-    private func soonRow(title: String, destructive: Bool = false) -> some View {
-        HStack {
-            Text(title)
-                .foregroundStyle(destructive ? Theme.danger : Theme.text)
-            Spacer()
-            Text("Soon")
-                .font(.meta)
-                .foregroundStyle(Theme.faint)
-        }
-        .font(.body)
-        .listRowBackground(Theme.raised)
     }
 
     private var editNameSheet: some View {
@@ -392,6 +500,8 @@ final class AccountModel {
     private(set) var isLinking = false
     private(set) var isSavingName = false
     private(set) var isSavingPhoto = false
+    private(set) var isEndingSession = false
+    private(set) var endingLabel = "Working…"
     private(set) var statusMessage: String?
     private(set) var statusIsError = false
 
@@ -411,6 +521,11 @@ final class AccountModel {
         isAnonymous = auth.isAnonymous
         linkedProviders = auth.linkedProviderNames
     }
+
+    var isLocalDemo: Bool { !auth.allowsAppleSignIn }
+    var canLinkApple: Bool { isAnonymous && auth.allowsAppleSignIn }
+    /// Sign out for linked Apple accounts, or reset local demo profile.
+    var showsSignOut: Bool { !isAnonymous || isLocalDemo }
 
     func start() {
         refreshIdentity()
@@ -513,6 +628,49 @@ final class AccountModel {
         isLinking = false
     }
 
+    @discardableResult
+    func signOut() async -> Bool {
+        endingLabel = isLocalDemo ? "Resetting…" : "Signing out…"
+        isEndingSession = true
+        statusMessage = nil
+        defer { isEndingSession = false }
+        do {
+            try await auth.signOut()
+            return true
+        } catch {
+            statusIsError = true
+            statusMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    @discardableResult
+    func deleteAccount() async -> Bool {
+        endingLabel = "Deleting account…"
+        isEndingSession = true
+        statusMessage = nil
+        defer { isEndingSession = false }
+        do {
+            if !isAnonymous && !isLocalDemo {
+                let result = try await apple.signIn()
+                try await auth.deleteAccount(
+                    appleIdToken: result.idToken,
+                    appleRawNonce: result.rawNonce
+                )
+            } else {
+                try await auth.deleteAccount()
+            }
+            return true
+        } catch let error as AuthRepository.LinkError where error == .cancelled {
+            statusMessage = nil
+            return false
+        } catch {
+            statusIsError = true
+            statusMessage = error.localizedDescription
+            return false
+        }
+    }
+
     private func refreshIdentity() {
         providerLabel = auth.providerLabel
         isAnonymous = auth.isAnonymous
@@ -526,7 +684,8 @@ extension AuthRepository.LinkError: Equatable {
         case (.notSignedIn, .notSignedIn),
              (.alreadyLinked, .alreadyLinked),
              (.credentialInUse, .credentialInUse),
-             (.cancelled, .cancelled):
+             (.cancelled, .cancelled),
+             (.requiresRecentLogin, .requiresRecentLogin):
             true
         case let (.failed(a), .failed(b)):
             a == b

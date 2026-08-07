@@ -144,20 +144,26 @@ final class MapModel {
         kind: ThreadKind,
         position: GeoPoint,
         author: Author,
-        openingText: String = ""
+        openingText: String = "",
+        openingImage: PreparedImage? = nil
     ) -> String {
         let id = repository.createThread(title: title, kind: kind, position: position, author: author)
         let opening = openingText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !opening.isEmpty {
-            repository.postMessage(threadId: id, text: opening, author: author)
+        if openingImage != nil || !opening.isEmpty {
+            repository.postMessage(
+                threadId: id,
+                text: opening,
+                author: author,
+                image: openingImage
+            )
         }
         return id
     }
 
-    /// Latest messages for the long-press bubble peek (caller uses `.last`).
+    /// Up to three tip messages for the long-press bubble peek (oldest → newest).
     func peekMessages(threadId: String) async -> [Message] {
         for await messages in repository.messages(threadId: threadId) {
-            return Array(messages.suffix(1))
+            return Array(messages.suffix(3))
         }
         return []
     }

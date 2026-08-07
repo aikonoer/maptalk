@@ -21,6 +21,8 @@ A public conversation pinned to a single point on the map.
 | `createdAt`     | timestamp | Server timestamp, must equal `request.time`.                 |
 | `lastMessageAt` | timestamp | Server timestamp, bumped on every new message.               |
 | `messageCount`  | number    | Starts at 0, only ever incremented by exactly 1.             |
+| `lastMediaPath` | string?   | Denormalised tip media URL/path for map bubble thumbs. Set on image/video posts; deleted on text/voice/sticker. |
+| `lastMediaKind` | string?   | `image` or `video` when `lastMediaPath` is set.              |
 
 ### `threads/{threadId}/messages/{messageId}`
 

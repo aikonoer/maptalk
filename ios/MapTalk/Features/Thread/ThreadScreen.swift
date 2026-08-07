@@ -25,8 +25,7 @@ struct ThreadScreen: View {
     @State private var retryPreparedVideo: PreparedVideo?
     @State private var retryVideoCaption = ""
     @State private var showStickers = false
-    /// Messenger-style: media buttons collapse into a chevron once you start typing.
-    @State private var mediaExpanded = true
+    /// Messenger-style collapse removed — text and media stay equally available.
     @State private var longPressTarget: Message?
     @State private var longPressFrame: CGRect = .zero
     @State private var bubbleFrames: [String: CGRect] = [:]
@@ -83,11 +82,6 @@ struct ThreadScreen: View {
 
     private var trimmedDraft: String {
         draft.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    /// Full media tray when the field is empty, or after tapping the chevron.
-    private var mediaTrayVisible: Bool {
-        trimmedDraft.isEmpty || mediaExpanded
     }
 
     private static let composerSpring = Animation.spring(response: 0.42, dampingFraction: 0.78)
@@ -264,9 +258,7 @@ struct ThreadScreen: View {
             if let thread = model.thread {
                 HStack(spacing: 5) {
                     if LiveNow.isLive(thread.lastMessageAt) {
-                        Circle()
-                            .fill(Theme.accent)
-                            .frame(width: 6, height: 6)
+                        LiveDot(size: 6)
                         Text("Live")
                             .foregroundStyle(Theme.accent)
                     }
@@ -391,7 +383,7 @@ struct ThreadScreen: View {
                 Text("Nobody has said anything yet")
                     .font(.cardTitle)
                     .foregroundStyle(Theme.subtle)
-                Text("Go first \u{2014} photos, stickers, voice, the lot.")
+                Text("Go first — say something or show a photo.")
                     .font(.subheadline)
                     .foregroundStyle(Theme.faint)
                     .multilineTextAlignment(.center)
@@ -642,7 +634,6 @@ struct ThreadScreen: View {
             } else {
                 HStack(alignment: .bottom, spacing: 8) {
                     ComposerMediaControls(
-                        expanded: mediaTrayVisible,
                         showStickers: showStickers,
                         isPreparingImage: isPreparingImage,
                         isPreparingVideo: isPreparingVideo,
@@ -650,12 +641,7 @@ struct ThreadScreen: View {
                         pendingVideo: pendingVideo != nil,
                         pickerItem: $pickerItem,
                         videoPickerItem: $videoPickerItem,
-                        onToggleStickers: { showStickers.toggle() },
-                        onExpand: {
-                            withAnimation(Self.composerSpring) {
-                                mediaExpanded = true
-                            }
-                        }
+                        onToggleStickers: { showStickers.toggle() }
                     )
 
                     TextField(
@@ -681,25 +667,6 @@ struct ThreadScreen: View {
                     .onChange(of: draft) { _, newValue in
                         if newValue.count > ThreadModel.maxMessageLength {
                             draft = String(newValue.prefix(ThreadModel.maxMessageLength))
-                        }
-                        let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                        withAnimation(Self.composerSpring) {
-                            if trimmed.isEmpty {
-                                mediaExpanded = true
-                            } else if mediaExpanded {
-                                // Any keystroke while the tray is open tucks it away again
-                                // (including after reopening via the chevron).
-                                mediaExpanded = false
-                                showStickers = false
-                            }
-                        }
-                    }
-                    .onChange(of: isComposing) { _, focused in
-                        // Tapping back into the field while you have text collapses the tray again.
-                        guard focused, !trimmedDraft.isEmpty else { return }
-                        withAnimation(Self.composerSpring) {
-                            mediaExpanded = false
-                            showStickers = false
                         }
                     }
 
@@ -1659,9 +1626,8 @@ private struct FullscreenImageViewer: View {
     private static let dismissThreshold: CGFloat = 110
 }
 
-/// Stickers / photo / video — collapses into a chevron once you start typing (Messenger-style).
+/// Stickers / photo / video — always visible so text and media stay equal.
 private struct ComposerMediaControls: View {
-    let expanded: Bool
     let showStickers: Bool
     let isPreparingImage: Bool
     let isPreparingVideo: Bool
@@ -1670,75 +1636,35 @@ private struct ComposerMediaControls: View {
     @Binding var pickerItem: PhotosPickerItem?
     @Binding var videoPickerItem: PhotosPickerItem?
     let onToggleStickers: () -> Void
-    let onExpand: () -> Void
 
     var body: some View {
-        ZStack(alignment: .leading) {
-            HStack(spacing: 2) {
-                mediaButton(delay: 0) {
-                    Button(action: onToggleStickers) {
-                        Image(systemName: showStickers ? "face.smiling.fill" : "face.smiling")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(Theme.subtle)
-                            .frame(width: 36, height: 40)
-                    }
-                    .accessibilityLabel("Stickers")
-                }
-
-                mediaButton(delay: 0.04) {
-                    PhotosPicker(selection: $pickerItem, matching: .images, photoLibrary: .shared()) {
-                        Image(systemName: "photo")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(Theme.subtle)
-                            .frame(width: 36, height: 40)
-                    }
-                    .accessibilityLabel("Add a photo")
-                    .disabled(isPreparingImage || isPreparingVideo || pendingVideo)
-                }
-
-                mediaButton(delay: 0.08) {
-                    PhotosPicker(selection: $videoPickerItem, matching: .videos, photoLibrary: .shared()) {
-                        Image(systemName: "video")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(isPreparingVideo ? Theme.faint : Theme.subtle)
-                            .frame(width: 36, height: 40)
-                    }
-                    .accessibilityLabel("Add a video")
-                    .disabled(isPreparingImage || isPreparingVideo || pendingImage || pendingVideo)
-                }
-            }
-            .opacity(expanded ? 1 : 0)
-            .offset(x: expanded ? 0 : -18)
-            .allowsHitTesting(expanded)
-
-            Button(action: onExpand) {
-                Image(systemName: "chevron.forward")
-                    .font(.system(size: 15, weight: .bold))
+        HStack(spacing: 2) {
+            Button(action: onToggleStickers) {
+                Image(systemName: showStickers ? "face.smiling.fill" : "face.smiling")
+                    .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(Theme.subtle)
-                    .frame(width: 32, height: 40)
-                    .contentShape(Rectangle())
+                    .frame(width: 36, height: 40)
             }
-            .accessibilityLabel("Show media options")
-            .opacity(expanded ? 0 : 1)
-            .scaleEffect(expanded ? 0.45 : 1, anchor: .leading)
-            .offset(x: expanded ? 10 : 0)
-            .allowsHitTesting(!expanded)
-            .symbolEffect(.bounce.up.byLayer, value: expanded == false)
-        }
-        .frame(width: expanded ? 112 : 32, alignment: .leading)
-        .animation(.spring(response: 0.42, dampingFraction: 0.78), value: expanded)
-    }
+            .accessibilityLabel("Stickers")
 
-    @ViewBuilder
-    private func mediaButton<Content: View>(delay: Double, @ViewBuilder content: () -> Content) -> some View {
-        content()
-            .scaleEffect(expanded ? 1 : 0.55, anchor: .leading)
-            .opacity(expanded ? 1 : 0)
-            .animation(
-                .spring(response: 0.42, dampingFraction: 0.78)
-                    .delay(expanded ? delay : max(0, 0.08 - delay)),
-                value: expanded
-            )
+            PhotosPicker(selection: $pickerItem, matching: .images, photoLibrary: .shared()) {
+                Image(systemName: "photo")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(Theme.subtle)
+                    .frame(width: 36, height: 40)
+            }
+            .accessibilityLabel("Add a photo")
+            .disabled(isPreparingImage || isPreparingVideo || pendingVideo)
+
+            PhotosPicker(selection: $videoPickerItem, matching: .videos, photoLibrary: .shared()) {
+                Image(systemName: "video")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(isPreparingVideo ? Theme.faint : Theme.subtle)
+                    .frame(width: 36, height: 40)
+            }
+            .accessibilityLabel("Add a video")
+            .disabled(isPreparingImage || isPreparingVideo || pendingImage || pendingVideo)
+        }
     }
 }
 

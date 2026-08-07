@@ -680,6 +680,7 @@ fun MapScreen(
             AccountScreen(
                 author = author,
                 onBack = { showAccount = false },
+                onSessionEnded = { showAccount = false },
                 modifier = Modifier
                     .fillMaxWidth()
                     .fillMaxHeight(0.92f),

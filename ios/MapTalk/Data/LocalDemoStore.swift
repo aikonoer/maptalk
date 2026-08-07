@@ -105,6 +105,20 @@ final class LocalDemoStore {
         publishProfile()
     }
 
+    /// Clears local profile so onboarding runs again (sign-out / delete in demo).
+    func clearAccount() {
+        displayName = nil
+        UserDefaults.standard.removeObject(forKey: Self.displayNameKey)
+        removeAvatar()
+        blocked.removeAll()
+        UserDefaults.standard.removeObject(forKey: Self.blocksKey)
+        for continuation in displayNameListeners.values {
+            continuation.yield(nil)
+        }
+        publishProfile()
+        publishBlocks()
+    }
+
     private func publishProfile() {
         let snapshot = (displayName, photoURL)
         for continuation in profileListeners.values {
@@ -230,7 +244,9 @@ final class LocalDemoStore {
             authorName: author.displayName,
             createdAt: now,
             lastMessageAt: now,
-            messageCount: 0
+            messageCount: 0,
+            lastMediaPath: nil,
+            lastMediaKind: nil
         )
         threads[id] = thread
         messages[id] = []
@@ -314,6 +330,19 @@ final class LocalDemoStore {
             reply: reply
         )
         messages[threadId, default: []].append(message)
+        let previewPath: String?
+        let previewKind: MessageKind?
+        switch kind {
+        case .image:
+            previewPath = imagePath
+            previewKind = .image
+        case .video:
+            previewPath = videoPath
+            previewKind = .video
+        default:
+            previewPath = nil
+            previewKind = nil
+        }
         threads[threadId] = ChatThread(
             id: existing.id,
             title: existing.title,
@@ -324,7 +353,9 @@ final class LocalDemoStore {
             authorName: existing.authorName,
             createdAt: existing.createdAt,
             lastMessageAt: now,
-            messageCount: existing.messageCount + 1
+            messageCount: existing.messageCount + 1,
+            lastMediaPath: previewPath,
+            lastMediaKind: previewKind
         )
         publishAllThreadLists()
         publishThread(threadId)
@@ -476,7 +507,9 @@ private extension LocalDemoStore {
                 authorName: author,
                 createdAt: created,
                 lastMessageAt: lastMessageAt,
-                messageCount: replies.count
+                messageCount: replies.count,
+                lastMediaPath: nil,
+                lastMediaKind: nil
             )
             let messages = replies.enumerated().map { index, reply in
                 Message(

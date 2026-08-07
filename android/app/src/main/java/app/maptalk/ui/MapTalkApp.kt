@@ -1,6 +1,7 @@
 package app.maptalk.ui
 
 import android.Manifest
+import android.app.Activity
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -32,16 +33,20 @@ import app.maptalk.data.Session
 import app.maptalk.push.PushRegistrar
 import app.maptalk.ui.map.MapScreen
 import app.maptalk.ui.onboarding.DisplayNameScreen
+import app.maptalk.ui.onboarding.WelcomeAuthScreen
 import app.maptalk.ui.theme.MapTalkColors
 import app.maptalk.ui.theme.MapTalkShapes
 
 @Composable
 fun MapTalkApp() {
     val context = LocalContext.current
+    val activity = context as? Activity
     val container = context.appContainer
     val sessionViewModel: SessionViewModel = viewModel(factory = SessionViewModel.factory(container))
     val session by sessionViewModel.session.collectAsStateWithLifecycle()
     val signInError by sessionViewModel.signInError.collectAsStateWithLifecycle()
+    val authBusy by sessionViewModel.authBusy.collectAsStateWithLifecycle()
+    val authError by sessionViewModel.authError.collectAsStateWithLifecycle()
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -53,6 +58,16 @@ fun MapTalkApp() {
 
     when (val current = session) {
         null, Session.SignedOut -> StartupScreen(message = signInError)
+
+        is Session.NeedsAuthChoice -> WelcomeAuthScreen(
+            allowsGoogle = sessionViewModel.allowsGoogleSignIn,
+            isBusy = authBusy,
+            errorMessage = authError,
+            onContinueAsGuest = sessionViewModel::continueAsGuest,
+            onContinueWithGoogle = {
+                activity?.let(sessionViewModel::continueWithGoogle)
+            },
+        )
 
         is Session.NeedsDisplayName -> DisplayNameScreen(
             onSubmit = sessionViewModel::saveDisplayName,

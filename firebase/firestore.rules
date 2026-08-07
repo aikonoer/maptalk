@@ -189,7 +189,8 @@ service cloud.firestore {
             || request.resource.data.photoURL is string)
         && (!('photoPath' in request.resource.data)
             || request.resource.data.photoPath is string);
-      allow delete: if false;
+      // Account deletion — own profile only. Subcollections deleted by the client first.
+      allow delete: if signedIn() && request.auth.uid == userId;
 
       // Private block list — hides that author's threads and messages for this viewer.
       match /blocks/{blockedUid} {
@@ -253,6 +254,21 @@ service cloud.firestore {
       }
     }
 
+    function lastMediaPreviewOk() {
+      let data = request.resource.data;
+      let hasPath = 'lastMediaPath' in data;
+      let hasKind = 'lastMediaKind' in data;
+      return (!hasPath && !hasKind)
+        || (
+          hasPath && hasKind
+          && data.lastMediaKind in ['image', 'video']
+          && data.lastMediaPath is string
+          && data.lastMediaPath.size() > 0
+          && data.lastMediaPath.size() <= 2048
+          && isAllowedMediaUrl(data.lastMediaPath)
+        );
+    }
+
     match /threads/{threadId} {
       allow read: if signedIn();
 
@@ -284,9 +300,10 @@ service cloud.firestore {
 
       allow update: if signedIn()
         && request.resource.data.diff(resource.data).affectedKeys()
-             .hasOnly(['lastMessageAt', 'messageCount'])
+             .hasOnly(['lastMessageAt', 'messageCount', 'lastMediaPath', 'lastMediaKind'])
         && request.resource.data.messageCount == resource.data.messageCount + 1
-        && request.resource.data.lastMessageAt == request.time;
+        && request.resource.data.lastMessageAt == request.time
+        && lastMediaPreviewOk();
 
       allow delete: if false;
 

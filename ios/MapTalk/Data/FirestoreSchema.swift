@@ -19,6 +19,8 @@ enum Fs {
     static let createdAt = "createdAt"
     static let lastMessageAt = "lastMessageAt"
     static let messageCount = "messageCount"
+    static let lastMediaPath = "lastMediaPath"
+    static let lastMediaKind = "lastMediaKind"
     static let text = "text"
     static let displayName = "displayName"
     static let photoURL = "photoURL"
@@ -73,7 +75,9 @@ extension DocumentSnapshot {
             authorName: self[Fs.authorName] as? String ?? "",
             createdAt: estimatedDate(Fs.createdAt),
             lastMessageAt: estimatedDate(Fs.lastMessageAt),
-            messageCount: (self[Fs.messageCount] as? NSNumber)?.intValue ?? 0
+            messageCount: (self[Fs.messageCount] as? NSNumber)?.intValue ?? 0,
+            lastMediaPath: self[Fs.lastMediaPath] as? String,
+            lastMediaKind: (self[Fs.lastMediaKind] as? String).flatMap(MessageKind.init(rawValue:))
         )
     }
 
