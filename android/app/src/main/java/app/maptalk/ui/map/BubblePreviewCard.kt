@@ -8,16 +8,15 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -28,13 +27,13 @@ import app.maptalk.ui.relativeTime
 import app.maptalk.ui.theme.MapTalkColors
 
 /**
- * Peek card for a single map bubble: stats + latest.
+ * Peek card for a single map bubble: meta line + latest tip messages.
  * Tap or swipe up to open · swipe down to dismiss.
  */
 @Composable
 fun BubblePreviewCard(
     thread: ChatThread,
-    latest: Message?,
+    latest: List<Message>,
     isLoading: Boolean,
     onOpen: () -> Unit,
     onDismiss: () -> Unit,
@@ -70,18 +69,36 @@ fun BubblePreviewCard(
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    Text(
-                        text = buildString {
-                            if (live) append("Live · ")
-                            append(thread.kind.label)
-                            append(" · ")
-                            append(thread.authorName)
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (live) MapTalkColors.Accent else MapTalkColors.Faint,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        modifier = Modifier.padding(top = 2.dp),
+                    ) {
+                        if (live) {
+                            LiveDot(size = 6.dp)
+                            Text(
+                                text = "Live",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MapTalkColors.Accent,
+                            )
+                        }
+                        Text(
+                            text = buildString {
+                                if (!live) {
+                                    append(relativeTime(thread.lastMessageAt))
+                                    append(" · ")
+                                }
+                                append(thread.kind.label)
+                                append(" · ")
+                                append(thread.authorName)
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (live) MapTalkColors.Accent else MapTalkColors.Faint,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                    }
                 }
                 Text(
                     text = "Open",
@@ -93,43 +110,13 @@ fun BubblePreviewCard(
                 )
             }
 
-            Row(
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(MapTalkColors.Raised.copy(alpha = 0.9f), RoundedCornerShape(14.dp))
-                    .padding(vertical = 10.dp, horizontal = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                    .background(MapTalkColors.Raised.copy(alpha = 0.85f), RoundedCornerShape(14.dp))
+                    .padding(12.dp),
             ) {
-                StatChip(
-                    value = if (thread.messageCount == 0L) "—" else thread.messageCount.toString(),
-                    label = if (thread.messageCount == 1L) "message" else "messages",
-                    modifier = Modifier.weight(1f),
-                )
-                HorizontalDivider(
-                    modifier = Modifier
-                        .height(28.dp)
-                        .width(1.dp),
-                    color = MapTalkColors.Hairline,
-                )
-                StatChip(
-                    value = relativeTime(thread.lastMessageAt),
-                    label = if (live) "live now" else "last active",
-                    modifier = Modifier.weight(1f),
-                )
-                HorizontalDivider(
-                    modifier = Modifier
-                        .height(28.dp)
-                        .width(1.dp),
-                    color = MapTalkColors.Hairline,
-                )
-                StatChip(
-                    value = relativeTime(thread.createdAt),
-                    label = "started",
-                    modifier = Modifier.weight(1f),
-                )
-            }
-
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(
                     text = "Latest",
                     style = MaterialTheme.typography.labelSmall,
@@ -140,11 +127,11 @@ fun BubblePreviewCard(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(36.dp)
-                                .background(MapTalkColors.Raised, RoundedCornerShape(6.dp)),
+                                .height(56.dp)
+                                .background(MapTalkColors.Raised, RoundedCornerShape(8.dp)),
                         )
                     }
-                    latest == null -> {
+                    latest.isEmpty() -> {
                         Text(
                             text = "Nobody has said anything yet",
                             style = MaterialTheme.typography.bodyMedium,
@@ -152,27 +139,36 @@ fun BubblePreviewCard(
                         )
                     }
                     else -> {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text(
-                                text = latest.authorName,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MapTalkColors.Subtle,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Text(
-                                text = messagePreviewLine(latest),
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MapTalkColors.Text,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f),
-                            )
-                            Text(
-                                text = relativeTime(latest.createdAt),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MapTalkColors.Faint,
-                            )
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            latest.forEachIndexed { index, message ->
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.alpha(
+                                        fadeOpacity(index = index, count = latest.size),
+                                    ),
+                                ) {
+                                    Text(
+                                        text = message.authorName,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MapTalkColors.Subtle,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        text = messagePreviewLine(message),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MapTalkColors.Text,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    Text(
+                                        text = relativeTime(message.createdAt),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MapTalkColors.Faint,
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -188,31 +184,11 @@ fun BubblePreviewCard(
     }
 }
 
-@Composable
-private fun StatChip(
-    value: String,
-    label: String,
-    modifier: Modifier = Modifier,
-) {
-    Column(
-        modifier = modifier,
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(2.dp),
-    ) {
-        Text(
-            text = value,
-            style = MaterialTheme.typography.labelLarge,
-            color = MapTalkColors.Text,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MapTalkColors.Faint,
-            maxLines = 1,
-        )
-    }
+/** Oldest tip rows fade; the newest stays full strength. */
+private fun fadeOpacity(index: Int, count: Int): Float {
+    if (count <= 1) return 1f
+    val t = index.toFloat() / (count - 1).toFloat()
+    return 0.38f + t * 0.62f
 }
 
 fun messagePreviewLine(message: Message): String = when {

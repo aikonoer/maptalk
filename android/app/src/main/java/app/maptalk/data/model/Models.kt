@@ -31,7 +31,15 @@ data class ChatThread(
     val createdAt: Instant?,
     val lastMessageAt: Instant?,
     val messageCount: Long,
-)
+    /** Latest message media for the map bubble thumb — image/video path, or null. */
+    val lastMediaPath: String? = null,
+    /** [MessageKind.IMAGE] or [MessageKind.VIDEO] when [lastMediaPath] is set; cleared for text/voice/sticker. */
+    val lastMediaKind: MessageKind? = null,
+) {
+    val hasMapMediaPreview: Boolean
+        get() = lastMediaPath != null &&
+            (lastMediaKind == MessageKind.IMAGE || lastMediaKind == MessageKind.VIDEO)
+}
 
 enum class MessageKind(val id: String) {
     TEXT("text"),

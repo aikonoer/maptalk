@@ -29,6 +29,8 @@ object Fs {
     const val CREATED_AT = "createdAt"
     const val LAST_MESSAGE_AT = "lastMessageAt"
     const val MESSAGE_COUNT = "messageCount"
+    const val LAST_MEDIA_PATH = "lastMediaPath"
+    const val LAST_MEDIA_KIND = "lastMediaKind"
     const val TEXT = "text"
     const val DISPLAY_NAME = "displayName"
     const val PHOTO_URL = "photoURL"
@@ -91,6 +93,8 @@ fun DocumentSnapshot.toChatThread(): ChatThread? {
         createdAt = estimatedInstant(Fs.CREATED_AT),
         lastMessageAt = estimatedInstant(Fs.LAST_MESSAGE_AT),
         messageCount = getLong(Fs.MESSAGE_COUNT) ?: 0L,
+        lastMediaPath = getString(Fs.LAST_MEDIA_PATH),
+        lastMediaKind = getString(Fs.LAST_MEDIA_KIND)?.let { MessageKind.fromId(it) },
     )
 }
 
