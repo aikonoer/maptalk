@@ -172,7 +172,17 @@ map looks the same on either platform. The prefix length comes from the visible 
 | <= 1 km        | none           | individual threads    |
 
 A cluster is drawn at the average position of its members and shows the member count.
-Tapping a cluster zooms in; tapping a single thread opens the chat.
+Tapping a single thread opens the chat.
+
+Tapping a cluster moves the camera to the box holding its own members, widened for the room a
+bubble takes up and to the right of the point it marks, so every chat that was under the marker
+is still on screen afterwards. A blind zoom step is what used to throw members outside the
+viewport and make a group feel lost.
+
+When that move cannot help, the chats are listed instead and the camera stays put. Two cases
+reach it: members sitting within about 30 m of each other, who overlap at any zoom, and members
+whose fitted view would still be wide enough to group them under one prefix from the table above,
+where the camera would land back on the same single marker. Both apps decide this in `drillFit`.
 
 Reference implementations, which must stay in sync:
 

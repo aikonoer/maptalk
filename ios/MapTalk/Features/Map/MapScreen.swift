@@ -56,6 +56,10 @@ struct MapScreen: View {
             set: { openThreadId = $0?.id }
         )
     }
+    /// A group standing in a straight line has no width on one axis; keep the region from
+    /// collapsing to nothing there.
+    private static let minFitSpan = 0.0015
+
     /// Local / emulator / live Debug all open on Cebu (seeded neighbourhood). Release live
     /// centres on the user once location arrives.
     private static var startsInDemo: Bool {
@@ -742,14 +746,30 @@ struct MapScreen: View {
             openThreadId = thread.id
             return
         }
-        // Tapping a cluster drills into it.
+        // Tapping a group moves to the chats' own bounds, so every one of them is still on screen
+        // afterwards. When no camera move would separate them, list them instead of moving.
+        guard let fit = Viewport.drillFit(
+            bubble.items,
+            geohash: \.geohash,
+            position: \.position
+        ) else {
+            presentClusterPreview(bubble.items)
+            return
+        }
+        let box = fit.withRoomForBubbles()
         withAnimation {
             camera = .region(
                 MKCoordinateRegion(
-                    center: bubble.position.coordinate,
+                    center: box.center.coordinate,
                     span: MKCoordinateSpan(
-                        latitudeDelta: max(0.005, model.visibleRadiusKm / 111 / 4),
-                        longitudeDelta: max(0.005, model.visibleRadiusKm / 111 / 4)
+                        latitudeDelta: max(
+                            box.latitudeSpan * GeoBounds.screenPaddingSlack,
+                            Self.minFitSpan
+                        ),
+                        longitudeDelta: max(
+                            box.longitudeSpan * GeoBounds.screenPaddingSlack,
+                            Self.minFitSpan
+                        )
                     )
                 )
             )

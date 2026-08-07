@@ -96,6 +96,8 @@ import app.maptalk.data.model.ChatThread
 import app.maptalk.data.model.Message
 import app.maptalk.data.model.ThreadKind
 import app.maptalk.geo.GeoPoint
+import app.maptalk.geo.Viewport
+import app.maptalk.geo.withRoomForBubbles
 import app.maptalk.location.LocationProvider
 import app.maptalk.ui.InitialAvatar
 import app.maptalk.ui.PlaceSearch
@@ -107,6 +109,7 @@ import app.maptalk.ui.thread.ThreadScreen
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
+import com.google.android.gms.maps.model.LatLngBounds
 import com.google.android.gms.maps.model.MapStyleOptions
 import com.google.maps.android.compose.GoogleMap
 import com.google.maps.android.compose.MapProperties
@@ -120,7 +123,6 @@ private val WorldCenter = LatLng(20.0, 10.0)
 private val CebuCenter = LatLng(LocalDemoStore.CEBU.lat, LocalDemoStore.CEBU.lng)
 private const val WORLD_ZOOM = 2.2f
 private const val NEARBY_ZOOM = 14f
-private const val CLUSTER_ZOOM_STEP = 3f
 private const val SEARCH_DEBOUNCE_MS = 320L
 private const val SEARCH_LANDING_MS = 1_800L
 private val GLYPH_SIZE = 28.dp
@@ -179,11 +181,13 @@ fun MapScreen(
         }
     }
 
-    // The projection is what tells us how much ground is visible, and it only exists once the
-    // map has been laid out, so the camera is reported from there rather than from the zoom.
+    // How much ground is visible comes from the projection, but `projection` is a plain getter
+    // over the attached map — it never changes on its own, so watching it would report the camera
+    // once and then go quiet, freezing the viewport query and the cluster size. Move is the signal;
+    // the projection is only read once a move says there is something new to measure.
     LaunchedEffect(cameraPositionState) {
-        snapshotFlow { cameraPositionState.projection }
-            .collect { projection ->
+        snapshotFlow { cameraPositionState.position to cameraPositionState.projection }
+            .collect { (_, projection) ->
                 val bounds = projection?.visibleRegion?.latLngBounds ?: return@collect
                 val center = GeoPoint(bounds.center.latitude, bounds.center.longitude)
                 val corner = GeoPoint(bounds.northeast.latitude, bounds.northeast.longitude)
@@ -225,6 +229,13 @@ fun MapScreen(
         previewCluster = null
         previewLatest = null
         previewLoading = false
+    }
+
+    fun listCluster(threads: List<ChatThread>) {
+        previewThread = null
+        previewLatest = null
+        previewLoading = false
+        previewCluster = threads
     }
 
     if (isPlacingPin && !showNewThreadSheet) {
@@ -279,6 +290,8 @@ fun MapScreen(
             // long-press have to live in Compose rather than in the Maps SDK.
             val projection = cameraPositionState.projection
             val density = LocalDensity.current
+            // Keeps the fitted group clear of the status pill and the compose button.
+            val clusterFitPadding = with(density) { 32.dp.roundToPx() }
             // Recompose hit targets when the camera moves.
             @Suppress("UNUSED_VARIABLE")
             val cameraTick = cameraPositionState.position
@@ -312,16 +325,28 @@ fun MapScreen(
                                     onTap = {
                                         if (single != null) {
                                             openThreadId = single.id
+                                            return@bubbleGestures
+                                        }
+                                        // Move to the chats' own bounds so none of them end up
+                                        // off screen; list them when no camera move would separate
+                                        // them.
+                                        val fit = Viewport.drillFit(
+                                            items = bubble.items,
+                                            geohashOf = ChatThread::geohash,
+                                            positionOf = ChatThread::position,
+                                        )
+                                        if (fit == null) {
+                                            listCluster(bubble.items)
                                         } else {
+                                            val box = fit.withRoomForBubbles()
                                             scope.launch {
                                                 cameraPositionState.animate(
-                                                    CameraUpdateFactory.newLatLngZoom(
-                                                        LatLng(
-                                                            bubble.position.lat,
-                                                            bubble.position.lng,
+                                                    CameraUpdateFactory.newLatLngBounds(
+                                                        LatLngBounds(
+                                                            LatLng(box.southwest.lat, box.southwest.lng),
+                                                            LatLng(box.northeast.lat, box.northeast.lng),
                                                         ),
-                                                        cameraPositionState.position.zoom +
-                                                            CLUSTER_ZOOM_STEP,
+                                                        clusterFitPadding,
                                                     ),
                                                 )
                                             }
@@ -342,10 +367,7 @@ fun MapScreen(
                                                 previewThread = single
                                             }
                                         } else {
-                                            previewThread = null
-                                            previewLatest = null
-                                            previewLoading = false
-                                            previewCluster = bubble.items
+                                            listCluster(bubble.items)
                                         }
                                     },
                                 ),
@@ -657,6 +679,7 @@ private fun Modifier.bubbleGestures(
 
         var longPressed = false
         var abandoned = false
+        var lifted = false
         try {
             withTimeout(viewConfiguration.longPressTimeoutMillis) {
                 while (true) {
@@ -666,7 +689,10 @@ private fun Modifier.bubbleGestures(
                         return@withTimeout
                     }
                     val change = event.changes.firstOrNull { it.id == down.id }
-                    if (change == null || !change.pressed) return@withTimeout
+                    if (change == null || !change.pressed) {
+                        lifted = true
+                        return@withTimeout
+                    }
                     if ((change.position - down.position).getDistance() > viewConfiguration.touchSlop) {
                         abandoned = true
                         return@withTimeout
@@ -686,8 +712,10 @@ private fun Modifier.bubbleGestures(
             onTap()
         }
 
-        // Swallow the rest of this gesture so the Maps SDK doesn't also see a marker click.
-        while (true) {
+        // A long press fires with the finger still down, so swallow the rest of that gesture and
+        // keep the map from panning under it. A tap is already over — waiting for more events here
+        // would eat the *next* gesture instead of this one.
+        while (!lifted) {
             val event = awaitPointerEvent()
             event.changes.forEach { it.consume() }
             if (event.changes.none { it.pressed }) break

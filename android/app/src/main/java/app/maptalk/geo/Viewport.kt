@@ -1,6 +1,22 @@
 package app.maptalk.geo
 
 /**
+ * A bubble is up to about half a screen wide and hangs up and right of the point it marks, so the
+ * outermost chat needs close to another box width on that side to stay whole. Read by
+ * [Viewport.drillFit], which has to predict how wide the camera will end up.
+ */
+private const val BUBBLE_ROOM = 0.9
+
+/** Enough to keep the trailing edge of the group off the very edge of the screen. */
+private const val EDGE_ROOM = 0.08
+
+/** A group in a straight line has no width on one axis; about 90 m keeps the box usable. */
+private const val MIN_ROOM_BASIS_DEGREES = 0.0008
+
+/** The margin the map itself leaves around a fitted box, as a share of the box. */
+private const val SCREEN_PADDING_SLACK = 1.1
+
+/**
  * How the map turns a camera position into a query and into markers.
  *
  * The thresholds here are a contract shared with iOS (`ios/MapTalk/Core/Viewport.swift`)
@@ -37,6 +53,85 @@ object Viewport {
         radiusKm > 1 -> 6
         else -> null
     }
+
+    /**
+     * Chats packed tighter than this still draw on top of each other at the deepest zoom, so
+     * moving the camera cannot pull them apart.
+     */
+    const val MIN_DRILL_SPREAD_KM = 0.03
+
+    /**
+     * How much wider the camera ends up than the members' bare box: the room left for the bubbles
+     * themselves plus the screen padding around them. Predicting the fitted view too tightly would
+     * promise a group can be spread out when the camera actually lands back on the same marker.
+     */
+    private const val FIT_SLACK = (1 + BUBBLE_ROOM + EDGE_ROOM) * SCREEN_PADDING_SLACK
+
+    /**
+     * Where to put the camera when a grouped marker is tapped, or null when the group cannot be
+     * opened up by moving the camera and the caller should list its chats instead.
+     *
+     * Fitting the members' own bounds is what keeps the group findable: every chat that was under
+     * the marker is still on screen afterwards, rather than scattered outside it by a blind zoom
+     * step. Null comes back when the members sit almost on the same spot, or when the fitted view
+     * would still be wide enough to group them under one geohash prefix — in both cases the camera
+     * would land on the same single marker and the chats would look lost.
+     */
+    fun <T> drillFit(
+        items: List<T>,
+        geohashOf: (T) -> String,
+        positionOf: (T) -> GeoPoint,
+    ): GeoBounds? {
+        if (items.size < 2) return null
+        val bounds = boundsOf(items.map(positionOf))
+        if (bounds.radiusKm < MIN_DRILL_SPREAD_KM) return null
+        val prefix = clusterPrefixLength(bounds.radiusKm * FIT_SLACK)
+        if (prefix != null && items.distinctBy { geohashOf(it).take(prefix) }.size < 2) return null
+        return bounds
+    }
+}
+
+/**
+ * The corners of the smallest box holding every given point. Local to a cluster, so it does not
+ * try to reason about the antimeridian.
+ */
+data class GeoBounds(val southwest: GeoPoint, val northeast: GeoPoint) {
+    val center: GeoPoint
+        get() = GeoPoint(
+            lat = (southwest.lat + northeast.lat) / 2,
+            lng = (southwest.lng + northeast.lng) / 2,
+        )
+
+    /** Centre to corner, the same measure the map reports for the visible region. */
+    val radiusKm: Double get() = center.distanceTo(northeast) / 1_000
+}
+
+fun boundsOf(points: List<GeoPoint>): GeoBounds = GeoBounds(
+    southwest = GeoPoint(points.minOf { it.lat }, points.minOf { it.lng }),
+    northeast = GeoPoint(points.maxOf { it.lat }, points.maxOf { it.lng }),
+)
+
+/**
+ * The same box with room added up and to the right, where a bubble hangs from the corner that sits
+ * on its coordinate. Fitting the bare box puts every chat on screen but runs the outermost label
+ * off the edge, which is half of what makes a group feel lost.
+ */
+fun GeoBounds.withRoomForBubbles(): GeoBounds {
+    val basis = maxOf(
+        northeast.lat - southwest.lat,
+        northeast.lng - southwest.lng,
+        MIN_ROOM_BASIS_DEGREES,
+    )
+    return GeoBounds(
+        southwest = GeoPoint(
+            lat = southwest.lat - basis * EDGE_ROOM,
+            lng = southwest.lng - basis * EDGE_ROOM,
+        ),
+        northeast = GeoPoint(
+            lat = northeast.lat + basis * BUBBLE_ROOM,
+            lng = northeast.lng + basis * BUBBLE_ROOM,
+        ),
+    )
 }
 
 sealed interface ViewportQuery {

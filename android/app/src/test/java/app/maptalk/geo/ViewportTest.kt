@@ -37,6 +37,81 @@ class ViewportTest {
     }
 }
 
+class DrillFitTest {
+
+    private data class Pin(val geohash: String, val position: GeoPoint)
+
+    private fun fit(vararg pins: Pin) =
+        Viewport.drillFit(pins.toList(), geohashOf = Pin::geohash, positionOf = Pin::position)
+
+    /** Roughly a kilometre apart, in cells that differ well before the deepest prefix. */
+    private val spreadOut = arrayOf(
+        Pin("r3gx11", GeoPoint(-33.870, 151.200)),
+        Pin("r3gx22", GeoPoint(-33.880, 151.212)),
+    )
+
+    @Test
+    fun `a group that can be spread out reports the box holding all of it`() {
+        val bounds = fit(*spreadOut)!!
+        assertEquals(-33.880, bounds.southwest.lat, 1e-9)
+        assertEquals(151.200, bounds.southwest.lng, 1e-9)
+        assertEquals(-33.870, bounds.northeast.lat, 1e-9)
+        assertEquals(151.212, bounds.northeast.lng, 1e-9)
+    }
+
+    @Test
+    fun `chats on the same doorstep are left to the list because no zoom separates them`() {
+        assertNull(
+            fit(
+                Pin("r3gx2f303j", GeoPoint(-33.8700, 151.2000)),
+                Pin("r3gx2f303k", GeoPoint(-33.8701, 151.2001)),
+            ),
+        )
+    }
+
+    @Test
+    fun `a group still sharing one cell at the fitted view is left to the list`() {
+        // Over a kilometre apart, so the fitted view stays wide enough to keep grouping them by
+        // the cell they share: the camera would land on the very marker it started from.
+        assertNull(
+            fit(
+                Pin("r3gx2f", GeoPoint(-33.8700, 151.2000)),
+                Pin("r3gx2f", GeoPoint(-33.8800, 151.2100)),
+            ),
+        )
+    }
+
+    @Test
+    fun `a marker holding a single chat has nothing to spread out`() {
+        assertNull(fit(Pin("r3gx11", GeoPoint(-33.87, 151.20))))
+    }
+}
+
+class GeoBoundsTest {
+
+    @Test
+    fun `bounds cover every point and centre between the corners`() {
+        val bounds = boundsOf(
+            listOf(
+                GeoPoint(-34.0, 151.0),
+                GeoPoint(-33.0, 152.0),
+                GeoPoint(-33.5, 151.5),
+            ),
+        )
+        assertEquals(GeoPoint(-34.0, 151.0), bounds.southwest)
+        assertEquals(GeoPoint(-33.0, 152.0), bounds.northeast)
+        assertEquals(-33.5, bounds.center.lat, 1e-9)
+        assertEquals(151.5, bounds.center.lng, 1e-9)
+    }
+
+    @Test
+    fun `the radius is the centre to corner distance the camera also reports`() {
+        val bounds = boundsOf(listOf(GeoPoint(0.0, 0.0), GeoPoint(0.0, 1.0)))
+        // Half a degree of longitude at the equator, about 55.6 km.
+        assertEquals(55.6, bounds.radiusKm, 0.5)
+    }
+}
+
 class ClusterTest {
 
     private data class Pin(val id: String, val geohash: String, val position: GeoPoint)

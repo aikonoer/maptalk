@@ -37,6 +37,81 @@ struct ViewportTests {
     }
 }
 
+/// Mirrors `DrillFitTest` on Android: tapping a group has to make the same choice on both apps.
+struct DrillFitTests {
+
+    private struct Pin {
+        let geohash: String
+        let position: GeoPoint
+    }
+
+    private func fit(_ pins: Pin...) -> GeoBounds? {
+        Viewport.drillFit(pins, geohash: \.geohash, position: \.position)
+    }
+
+    @Test
+    func aGroupThatCanBeSpreadOutReportsTheBoxHoldingAllOfIt() throws {
+        let bounds = try #require(
+            fit(
+                Pin(geohash: "r3gx11", position: GeoPoint(lat: -33.870, lng: 151.200)),
+                Pin(geohash: "r3gx22", position: GeoPoint(lat: -33.880, lng: 151.212))
+            )
+        )
+        #expect(bounds.southwest == GeoPoint(lat: -33.880, lng: 151.200))
+        #expect(bounds.northeast == GeoPoint(lat: -33.870, lng: 151.212))
+    }
+
+    @Test
+    func chatsOnTheSameDoorstepAreLeftToTheListBecauseNoZoomSeparatesThem() {
+        #expect(
+            fit(
+                Pin(geohash: "r3gx2f303j", position: GeoPoint(lat: -33.8700, lng: 151.2000)),
+                Pin(geohash: "r3gx2f303k", position: GeoPoint(lat: -33.8701, lng: 151.2001))
+            ) == nil
+        )
+    }
+
+    @Test
+    func aGroupStillSharingOneCellAtTheFittedViewIsLeftToTheList() {
+        // Over a kilometre apart, so the fitted view stays wide enough to keep grouping them by
+        // the cell they share: the camera would land on the very marker it started from.
+        #expect(
+            fit(
+                Pin(geohash: "r3gx2f", position: GeoPoint(lat: -33.8700, lng: 151.2000)),
+                Pin(geohash: "r3gx2f", position: GeoPoint(lat: -33.8800, lng: 151.2100))
+            ) == nil
+        )
+    }
+
+    @Test
+    func aMarkerHoldingASingleChatHasNothingToSpreadOut() {
+        #expect(fit(Pin(geohash: "r3gx11", position: GeoPoint(lat: -33.87, lng: 151.20))) == nil)
+    }
+}
+
+struct GeoBoundsTests {
+
+    @Test
+    func boundsCoverEveryPointAndCentreBetweenTheCorners() {
+        let bounds = GeoBounds(containing: [
+            GeoPoint(lat: -34, lng: 151),
+            GeoPoint(lat: -33, lng: 152),
+            GeoPoint(lat: -33.5, lng: 151.5)
+        ])
+        #expect(bounds.southwest == GeoPoint(lat: -34, lng: 151))
+        #expect(bounds.northeast == GeoPoint(lat: -33, lng: 152))
+        #expect(abs(bounds.center.lat - -33.5) < 1e-9)
+        #expect(abs(bounds.center.lng - 151.5) < 1e-9)
+    }
+
+    @Test
+    func theRadiusIsTheCentreToCornerDistanceTheCameraAlsoReports() {
+        let bounds = GeoBounds(containing: [GeoPoint(lat: 0, lng: 0), GeoPoint(lat: 0, lng: 1)])
+        // Half a degree of longitude at the equator, about 55.6 km.
+        #expect(abs(bounds.radiusKm - 55.6) < 0.5)
+    }
+}
+
 struct ClusterTests {
 
     private struct Pin {
