@@ -148,7 +148,6 @@ fun MapScreen(
     val container = context.appContainer
     val viewModel: MapViewModel = viewModel(factory = MapViewModel.factory(container))
     val state by viewModel.state.collectAsStateWithLifecycle()
-    val startLocation by viewModel.startLocation.collectAsStateWithLifecycle()
     val kindFilter by viewModel.kindFilter.collectAsStateWithLifecycle()
     val profile by viewModel.profile.collectAsStateWithLifecycle()
     val findingClosest by viewModel.findingClosest.collectAsStateWithLifecycle()
@@ -169,7 +168,8 @@ fun MapScreen(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { grants ->
         hasLocationPermission = grants.values.any { it }
-        if (hasLocationPermission && !startsInDemo) viewModel.locateMe()
+        // Always fly after grant — opensOnCebu only sets the *initial* camera.
+        if (hasLocationPermission) viewModel.locateMe()
     }
 
     LaunchedEffect(Unit) {
@@ -182,12 +182,13 @@ fun MapScreen(
     }
 
     LaunchedEffect(hasLocationPermission) {
+        // Auto-center once when permission already exists and we aren't seeded on Cebu.
         if (hasLocationPermission && !startsInDemo) viewModel.locateMe()
     }
 
-    LaunchedEffect(startLocation) {
-        if (startsInDemo) return@LaunchedEffect
-        startLocation?.let { point ->
+    // SharedFlow so every locate tap animates, even if the fix hasn't moved.
+    LaunchedEffect(Unit) {
+        viewModel.centerOnMe.collect { point ->
             cameraPositionState.animate(
                 CameraUpdateFactory.newLatLngZoom(LatLng(point.lat, point.lng), NEARBY_ZOOM),
             )
@@ -1110,7 +1111,9 @@ private fun KindFilterStack(
                                 if (filterActive && selected) {
                                     kind.tint.copy(alpha = 0.75f)
                                 } else {
-                                    MapTalkColors.Surface
+                                    // Near-black ring like iOS Theme.surface — Surface
+                                    // blends into the capsule and disappears.
+                                    MapTalkColors.Base
                                 },
                                 CircleShape,
                             )

@@ -41,7 +41,15 @@ object PlaceSearch {
         val trimmed = query.trim()
         if (trimmed.length < MIN_QUERY_LENGTH || !Geocoder.isPresent()) return emptyList()
 
-        val addresses = runCatching { lookup(context, trimmed, near) }.getOrNull().orEmpty()
+        // Bias toward the camera first (nearby streets / POIs). Android's Geocoder
+        // treats the box as a hard filter — unlike MKLocalSearch — so if nothing
+        // lands inside it (e.g. "melbourne" while looking at Cebu), fall back to
+        // an unbounded lookup.
+        val biased = runCatching { lookup(context, trimmed, near) }.getOrNull().orEmpty()
+        val addresses = biased.ifEmpty {
+            if (near == null) emptyList()
+            else runCatching { lookup(context, trimmed, near = null) }.getOrNull().orEmpty()
+        }
         return addresses.mapNotNull(::hit).distinctBy { it.id }
     }
 

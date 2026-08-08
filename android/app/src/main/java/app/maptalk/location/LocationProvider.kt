@@ -22,7 +22,8 @@ class LocationProvider(private val context: Context) {
     suspend fun currentLocation(): GeoPoint? {
         if (!hasPermission()) return null
         return runCatching {
-            client.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, null).await()
+            client.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await()
+                ?: client.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, null).await()
                 ?: client.lastLocation.await()
         }.getOrNull()?.let { GeoPoint(it.latitude, it.longitude) }
     }

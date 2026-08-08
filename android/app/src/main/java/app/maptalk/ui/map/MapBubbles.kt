@@ -1,8 +1,13 @@
 package app.maptalk.ui.map
 
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -20,16 +25,18 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.material3.Icon
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -37,6 +44,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.graphics.drawable.toBitmap
 import app.maptalk.R
 import app.maptalk.appContainer
 import app.maptalk.core.ActivityHeat
@@ -47,13 +55,18 @@ import app.maptalk.ui.relativeTime
 import app.maptalk.ui.theme.MapTalkColors
 import app.maptalk.ui.theme.MapTalkShapes
 import app.maptalk.ui.theme.tint
-import coil.compose.AsyncImage
+import coil.imageLoader
+import coil.request.ImageRequest
+import coil.request.SuccessResult
 import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.GoogleMapComposable
 import com.google.maps.android.compose.MarkerComposable
 import com.google.maps.android.compose.rememberUpdatedMarkerState
+import java.io.File
 import java.time.Instant
 import kotlin.math.roundToInt
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * A marker drawn as a chat bubble: title when alone, stacked kind glyphs when clustered.
@@ -63,8 +76,9 @@ import kotlin.math.roundToInt
  * Returning true from [MarkerComposable]'s own click keeps the SDK from recentring the camera if
  * one ever slips through.
  *
- * [playAppear] grows the bubble in from the anchor corner. Scale is keyed into
- * [MarkerComposable] so each frame refreshes the bitmap (markers cannot animate otherwise).
+ * [playAppear] grows the bubble in from the anchor corner. Tip fields and thumb readiness are
+ * keyed into [MarkerComposable] so the bitmap refreshes when activity or media changes
+ * (markers cannot animate or load Coil asynchronously otherwise).
  */
 @Composable
 @GoogleMapComposable
@@ -73,6 +87,28 @@ fun ThreadBubbleMarker(
     playAppear: Boolean = false,
 ) {
     val thread = bubble.single
+    val context = LocalContext.current
+    val tipEpoch = bubble.items.maxOfOrNull { it.lastMessageAt?.toEpochMilli() ?: 0L } ?: 0L
+    val mediaPath = thread?.lastMediaPath.orEmpty()
+    val mediaKindId = thread?.lastMediaKind?.id.orEmpty()
+    val isVideo = thread?.lastMediaKind == MessageKind.VIDEO
+    val needsThumb = thread?.hasMapMediaPreview == true
+
+    // Load outside MarkerComposable — maps-compose one-shots the content into a bitmap,
+    // so AsyncImage never finishes painting inside the marker.
+    val thumbBitmap by produceState<Bitmap?>(
+        initialValue = null,
+        mediaPath,
+        mediaKindId,
+        needsThumb,
+    ) {
+        value = if (needsThumb && mediaPath.isNotEmpty()) {
+            loadMapBubbleThumb(context, mediaPath, isVideo)
+        } else {
+            null
+        }
+    }
+
     val appearScale = remember { Animatable(if (playAppear) 0.4f else 1f) }
     LaunchedEffect(playAppear) {
         if (playAppear) {
@@ -91,6 +127,10 @@ fun ThreadBubbleMarker(
         bubble.key,
         bubble.size,
         thread?.title.orEmpty(),
+        tipEpoch,
+        mediaPath,
+        mediaKindId,
+        thumbBitmap != null,
         scaleTick,
         state = rememberUpdatedMarkerState(
             position = LatLng(bubble.position.lat, bubble.position.lng),
@@ -111,7 +151,7 @@ fun ThreadBubbleMarker(
             if (thread == null) {
                 ClusterBubble(threads = bubble.items)
             } else {
-                ThreadBubble(thread = thread)
+                ThreadBubble(thread = thread, thumbBitmap = thumbBitmap)
             }
         }
     }
@@ -186,10 +226,11 @@ fun SearchLandingMarker(title: String, latitude: Double, longitude: Double) {
 }
 
 @Composable
-private fun ThreadBubble(thread: ChatThread) {
+private fun ThreadBubble(thread: ChatThread, thumbBitmap: Bitmap?) {
     val heat = ActivityHeat.of(thread.lastMessageAt)
     val live = heat == ActivityHeat.HOT
     val mediaPreview = thread.hasMapMediaPreview
+    val isVideo = thread.lastMediaKind == MessageKind.VIDEO
     ActivityGlowBubble(heat = heat, live = live) {
         Row(
             modifier = Modifier
@@ -200,8 +241,8 @@ private fun ThreadBubble(thread: ChatThread) {
         ) {
             if (mediaPreview) {
                 MapBubbleMediaThumb(
-                    path = thread.lastMediaPath!!,
-                    isVideo = thread.lastMediaKind == MessageKind.VIDEO,
+                    bitmap = thumbBitmap,
+                    isVideo = isVideo,
                 )
                 Text(
                     text = thread.title,
@@ -234,14 +275,7 @@ private fun ThreadBubble(thread: ChatThread) {
 }
 
 @Composable
-private fun MapBubbleMediaThumb(path: String, isVideo: Boolean) {
-    val context = LocalContext.current
-    val model = remember(path) {
-        when {
-            path.startsWith("http") -> path
-            else -> context.appContainer.resolveLocalMedia(path)
-        }
-    }
+private fun MapBubbleMediaThumb(bitmap: Bitmap?, isVideo: Boolean) {
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
@@ -250,9 +284,9 @@ private fun MapBubbleMediaThumb(path: String, isVideo: Boolean) {
             .background(MapTalkColors.Raised)
             .border(1.dp, MapTalkColors.Hairline, RoundedCornerShape(6.dp)),
     ) {
-        if (model != null) {
-            AsyncImage(
-                model = model,
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap.asImageBitmap(),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.size(28.dp),
@@ -285,6 +319,51 @@ private fun MapBubbleMediaThumb(path: String, isVideo: Boolean) {
     }
 }
 
+/** Decode a software bitmap for map markers (Coil async inside MarkerComposable never paints). */
+private suspend fun loadMapBubbleThumb(
+    context: Context,
+    path: String,
+    isVideo: Boolean,
+): Bitmap? = withContext(Dispatchers.IO) {
+    val localFile: File? = when {
+        path.startsWith("http://") || path.startsWith("https://") -> null
+        path.startsWith("/") -> File(path).takeIf { it.exists() }
+        else -> context.appContainer.resolveLocalMedia(path)
+    }
+    if (isVideo) {
+        return@withContext loadMapBubbleVideoPoster(path, localFile)
+    }
+    if (localFile != null) {
+        return@withContext BitmapFactory.decodeFile(localFile.absolutePath)
+    }
+    if (!path.startsWith("http://") && !path.startsWith("https://")) return@withContext null
+    val request = ImageRequest.Builder(context)
+        .data(path)
+        .size(96)
+        .allowHardware(false)
+        .build()
+    val result = context.imageLoader.execute(request)
+    (result as? SuccessResult)?.drawable?.toBitmap()
+}
+
+private fun loadMapBubbleVideoPoster(path: String, file: File?): Bitmap? {
+    val retriever = MediaMetadataRetriever()
+    return try {
+        when {
+            path.startsWith("http://") || path.startsWith("https://") ->
+                retriever.setDataSource(path, HashMap())
+            file != null && file.exists() ->
+                retriever.setDataSource(file.absolutePath)
+            else -> return null
+        }
+        retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+    } catch (_: Exception) {
+        null
+    } finally {
+        runCatching { retriever.release() }
+    }
+}
+
 /** Cluster pin: stack of kind glyphs (hottest first), +N if more than three. */
 @Composable
 private fun ClusterBubble(threads: List<ChatThread>) {
@@ -306,8 +385,9 @@ private fun ClusterBubble(threads: List<ChatThread>) {
         ) {
             Box(
                 modifier = Modifier.size(
-                    width = (28 + (visible.size - 1).coerceAtLeast(0) * 20).dp,
-                    height = 28.dp,
+                    // Room for the 1.5dp ring — marker bitmaps clip overflow.
+                    width = (31 + (visible.size - 1).coerceAtLeast(0) * 20).dp,
+                    height = 31.dp,
                 ),
             ) {
                 visible.forEachIndexed { index, thread ->
@@ -315,15 +395,22 @@ private fun ClusterBubble(threads: List<ChatThread>) {
                         contentAlignment = Alignment.Center,
                         modifier = Modifier
                             .padding(start = (index * 20).dp)
-                            .size(28.dp)
-                            .background(thread.kind.tint.copy(alpha = 0.22f), CircleShape)
-                            .border(1.5.dp, MapTalkColors.Surface, CircleShape),
+                            .size(31.dp),
                     ) {
-                        Text(
-                            text = thread.kind.glyph,
-                            style = MaterialTheme.typography.labelSmall,
-                            textAlign = TextAlign.Center,
-                        )
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .size(28.dp)
+                                .background(thread.kind.tint.copy(alpha = 0.22f), CircleShape)
+                                // Near-black ring (iOS Theme.surface) so overlaps separate.
+                                .border(1.5.dp, MapTalkColors.Base, CircleShape),
+                        ) {
+                            Text(
+                                text = thread.kind.glyph,
+                                style = MaterialTheme.typography.labelSmall,
+                                textAlign = TextAlign.Center,
+                            )
+                        }
                     }
                 }
             }
@@ -346,38 +433,39 @@ private fun ClusterBubble(threads: List<ChatThread>) {
     }
 }
 
-/** Soft accent halo (scaled fill) + main border/elevation. */
+/**
+ * Map bubble chip. Markers are software bitmaps — skip blur/elevation (they
+ * turn into hard rectangles). Soft accent halo is a light scaled fill only.
+ */
 @Composable
 private fun ActivityGlowBubble(
     heat: ActivityHeat,
     live: Boolean,
     content: @Composable () -> Unit,
 ) {
-    val glowAlpha = when (heat) {
-        ActivityHeat.HOT -> 0.22f
-        ActivityHeat.WARM -> 0.12f
-        ActivityHeat.COOL -> 0f
-    }
-    val glowScale = when (heat) {
-        ActivityHeat.HOT -> 1.08f
-        ActivityHeat.WARM -> 1.05f
-        ActivityHeat.COOL -> 1f
-    }
-    Box(modifier = Modifier.wrapContentSize()) {
+    Box(
+        modifier = Modifier
+            .padding(6.dp)
+            .wrapContentSize(),
+    ) {
         if (heat != ActivityHeat.COOL) {
             Box(
                 modifier = Modifier
                     .matchParentSize()
-                    .scale(glowScale)
-                    .blur(if (heat == ActivityHeat.HOT) 10.dp else 7.dp)
-                    .background(MapTalkColors.Accent.copy(alpha = glowAlpha), BubbleShape),
+                    .scale(if (heat == ActivityHeat.HOT) 1.08f else 1.05f)
+                    .background(
+                        MapTalkColors.Accent.copy(
+                            alpha = if (heat == ActivityHeat.HOT) 0.22f else 0.12f,
+                        ),
+                        BubbleShape,
+                    ),
             )
         }
         Surface(
             shape = BubbleShape,
             color = MapTalkColors.Surface,
             contentColor = MapTalkColors.Text,
-            shadowElevation = if (live) 10.dp else 6.dp,
+            shadowElevation = 0.dp,
             border = BorderStroke(
                 if (live) 1.5.dp else 1.dp,
                 if (live) MapTalkColors.Accent.copy(alpha = 0.7f) else MapTalkColors.Hairline,

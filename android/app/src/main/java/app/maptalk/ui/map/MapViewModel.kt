@@ -84,6 +84,10 @@ class MapViewModel(
     /** Where to point the camera on first load, once we know it. */
     val startLocation: StateFlow<GeoPoint?> = _startLocation.asStateFlow()
 
+    private val _centerOnMe = MutableSharedFlow<GeoPoint>(extraBufferCapacity = 1)
+    /** One-shot recenter (re-taps must emit even if the fix hasn't moved). */
+    val centerOnMe: SharedFlow<GeoPoint> = _centerOnMe.asSharedFlow()
+
     private val _widenToClosest = MutableSharedFlow<WidenMap>(extraBufferCapacity = 1)
     /** Same centre, wider zoom so the nearest chat lands on screen. */
     val widenToClosest: SharedFlow<WidenMap> = _widenToClosest.asSharedFlow()
@@ -164,7 +168,9 @@ class MapViewModel(
 
     fun locateMe() {
         viewModelScope.launch {
-            locationProvider.currentLocation()?.let { _startLocation.value = it }
+            val point = locationProvider.currentLocation() ?: return@launch
+            _startLocation.value = point
+            _centerOnMe.emit(point)
         }
     }
 
