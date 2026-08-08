@@ -51,7 +51,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -108,7 +107,9 @@ import app.maptalk.ui.InitialAvatar
 import app.maptalk.ui.PlaceSearch
 import app.maptalk.ui.PlaceSearchHit
 import app.maptalk.ui.account.AccountScreen
+import app.maptalk.ui.theme.MapTalkBottomSheet
 import app.maptalk.ui.theme.MapTalkColors
+import app.maptalk.ui.theme.MapTalkSheets
 import app.maptalk.ui.theme.tint
 import app.maptalk.ui.thread.ThreadScreen
 import com.google.android.gms.maps.CameraUpdateFactory
@@ -131,11 +132,6 @@ private const val NEARBY_ZOOM = 14f
 private const val SEARCH_DEBOUNCE_MS = 320L
 private const val SEARCH_LANDING_MS = 1_800L
 private val GLYPH_SIZE = 28.dp
-/** Compose sheet peek — leaves a map band above so the pin stays in view. */
-private val ComposeSheetPeek = 420.dp
-/** Side/bottom inset — matches the floating chat sheet so the map peeks around the card. */
-private val ComposeSheetInset = 12.dp
-private val ComposeSheetCorner = 28.dp
 /** Modest zoom-in when opening compose; cancel restores the prior camera. */
 private const val COMPOSE_ZOOM_DELTA = 0.55f
 
@@ -154,6 +150,8 @@ fun MapScreen(
 
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
+    val composeFocusManager = LocalFocusManager.current
+    val composeKeyboard = LocalSoftwareKeyboardController.current
     val startsInDemo = container.opensOnCebu
     val cameraPositionState = rememberCameraPositionState {
         position = if (startsInDemo) {
@@ -279,6 +277,10 @@ fun MapScreen(
 
     fun dismissCompose(restoreCamera: Boolean = true) {
         if (!showNewThreadSheet && composePosition == null) return
+        // Match iOS: drop the IME first. adjustNothing keeps the map from resizing, so
+        // restoreCamera is the only zoom-out (no double-zoom when cancelling with keyboard).
+        composeFocusManager.clearFocus(force = true)
+        composeKeyboard?.hide()
         showNewThreadSheet = false
         val restore = if (restoreCamera) composeRestoreCamera else null
         composeRestoreCamera = null
@@ -322,7 +324,7 @@ fun MapScreen(
         showNewThreadSheet = true
         // Light zoom-in + pan so the pin sits in the band above the panel.
         scope.launch {
-            val peekPx = with(density) { ComposeSheetPeek.toPx() }
+            val peekPx = with(density) { MapTalkSheets.ComposePeek.toPx() }
             val mapHeightPx = context.resources.displayMetrics.heightPixels.toFloat().coerceAtLeast(1f)
             val bounds = cameraPositionState.projection?.visibleRegion?.latLngBounds
             val latDelta = if (bounds != null) {
@@ -669,13 +671,14 @@ fun MapScreen(
             }
 
             // In-place panel — ModalBottomSheet still flashes/resizes the map under a scrim.
-            // imePadding rides the panel above the keyboard; tap the map band to clear focus
-            // so the sheet settles back down with the IME.
-            val composeFocusManager = LocalFocusManager.current
-            val composeKeyboard = LocalSoftwareKeyboardController.current
+            // imePadding rides the panel above the keyboard; tap outside cancels compose.
+            // Manifest adjustNothing keeps the map full-size (same idea as iOS ignoresSafeArea(.keyboard)).
             fun dismissComposeKeyboard() {
                 composeFocusManager.clearFocus(force = true)
                 composeKeyboard?.hide()
+            }
+            fun cancelCompose() {
+                dismissCompose(restoreCamera = true)
             }
             AnimatedVisibility(
                 visible = showNewThreadSheet,
@@ -693,32 +696,37 @@ fun MapScreen(
             ) {
                 val pin = cameraPositionState.position.target
                 val pinPosition = composePosition ?: GeoPoint(pin.latitude, pin.longitude)
-                Column(modifier = Modifier.fillMaxSize()) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    // Map / side gaps / anything outside the card cancels the new chat.
                     Box(
                         modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth()
+                            .fillMaxSize()
                             .clickable(
                                 interactionSource = remember { MutableInteractionSource() },
                                 indication = null,
-                                onClick = { dismissComposeKeyboard() },
+                                onClick = { cancelCompose() },
                             ),
                     )
                     BoxWithConstraints(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = ComposeSheetInset)
-                            .padding(bottom = ComposeSheetInset),
+                            .align(Alignment.BottomCenter)
+                            .padding(horizontal = MapTalkSheets.Inset)
+                            .padding(bottom = MapTalkSheets.Inset),
                     ) {
-                        val sheetHeight = minOf(ComposeSheetPeek, maxHeight)
+                        val sheetHeight = minOf(MapTalkSheets.ComposePeek, maxHeight)
                         Surface(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(sheetHeight)
-                                .border(1.dp, MapTalkColors.Hairline, RoundedCornerShape(ComposeSheetCorner)),
+                                .border(
+                                    1.dp,
+                                    MapTalkColors.Hairline,
+                                    RoundedCornerShape(MapTalkSheets.Corner),
+                                ),
                             color = MapTalkColors.Surface,
                             contentColor = MapTalkColors.Text,
-                            shape = RoundedCornerShape(ComposeSheetCorner),
+                            shape = RoundedCornerShape(MapTalkSheets.Corner),
                             shadowElevation = 12.dp,
                         ) {
                             Column {
@@ -736,7 +744,7 @@ fun MapScreen(
                                 )
                                 NewThreadSheet(
                                     position = pinPosition,
-                                    onCancel = { dismissCompose(restoreCamera = true) },
+                                    onCancel = { cancelCompose() },
                                     onDismissKeyboard = { dismissComposeKeyboard() },
                                     onCreate = { title, body, kind, image ->
                                         dismissCompose(restoreCamera = false)
@@ -815,37 +823,35 @@ fun MapScreen(
 
     openThreadId?.let { threadId ->
         BackHandler { openThreadId = null }
-        ModalBottomSheet(
+        MapTalkBottomSheet(
             onDismissRequest = { openThreadId = null },
             sheetState = threadSheetState,
             containerColor = MapTalkColors.Base,
-            contentColor = MapTalkColors.Text,
             dragHandle = null,
-            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
         ) {
-            ThreadScreen(
-                threadId = threadId,
-                author = author,
-                onBack = { openThreadId = null },
-                onThreadDeleted = { deletedId ->
-                    viewModel.removeThread(deletedId)
-                    openThreadId = null
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .fillMaxHeight(0.94f),
-            )
+            key(threadId) {
+                ThreadScreen(
+                    threadId = threadId,
+                    author = author,
+                    onBack = { openThreadId = null },
+                    onThreadDeleted = { deletedId ->
+                        viewModel.removeThread(deletedId)
+                        openThreadId = null
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .fillMaxHeight(MapTalkSheets.ExpandedFraction),
+                )
+            }
         }
     }
 
     if (showAccount) {
-        ModalBottomSheet(
+        MapTalkBottomSheet(
             onDismissRequest = { showAccount = false },
             sheetState = accountSheetState,
             containerColor = MapTalkColors.Base,
-            contentColor = MapTalkColors.Text,
             dragHandle = null,
-            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
         ) {
             AccountScreen(
                 author = author,
@@ -853,7 +859,7 @@ fun MapScreen(
                 onSessionEnded = { showAccount = false },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .fillMaxHeight(0.92f),
+                    .fillMaxHeight(MapTalkSheets.ExpandedFraction),
             )
         }
     }

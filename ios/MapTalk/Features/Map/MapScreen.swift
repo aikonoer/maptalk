@@ -8,11 +8,6 @@ private let worldRegion = MKCoordinateRegion(
     span: MKCoordinateSpan(latitudeDelta: 120, longitudeDelta: 120)
 )
 private let nearbySpan = MKCoordinateSpan(latitudeDelta: 0.03, longitudeDelta: 0.03)
-/// Compose panel height — leaves a map band above so the pin stays in view.
-private let composeSheetHeight: CGFloat = 420
-/// Side/bottom inset — matches the iOS 26 chat sheet so the map peeks around the card.
-private let composeSheetInset: CGFloat = 12
-private let composeSheetCornerRadius: CGFloat = 28
 /// How much to tighten the span when opening compose (`1` = no zoom). Cancel restores the prior span.
 private let composeZoomInFactor = 0.82
 
@@ -174,9 +169,9 @@ struct MapScreen: View {
                     openThreadId = nil
                 }
             )
-            .presentationDetents([.fraction(0.94), .large])
+            .presentationDetents([.fraction(Theme.Sheet.expandedFraction), .large])
             .presentationDragIndicator(.hidden)
-            .presentationCornerRadius(28)
+            .presentationCornerRadius(Theme.Sheet.corner)
             .presentationBackground(Theme.base)
             .presentationContentInteraction(.scrolls)
         }
@@ -191,9 +186,9 @@ struct MapScreen: View {
                     }
                 )
             }
-            .presentationDetents([.medium, .large])
+            .presentationDetents([.fraction(Theme.Sheet.expandedFraction), .large])
             .presentationDragIndicator(.visible)
-            .presentationCornerRadius(28)
+            .presentationCornerRadius(Theme.Sheet.corner)
             .presentationBackground(Theme.base)
         }
         .alert(
@@ -346,6 +341,9 @@ struct MapScreen: View {
         )
         .environment(\.colorScheme, .dark)
         .background(Theme.base)
+        // Keyboard must not resize the map — otherwise cancel-with-keyboard zooms out
+        // once from the frame growing and again from restoreCamera.
+        .ignoresSafeArea(.keyboard)
         .mapControls { MapCompass() }
         .onMapCameraChange(frequency: .onEnd) { context in
             let region = context.region
@@ -661,7 +659,7 @@ struct MapScreen: View {
             longitudeDelta: mapSpan.longitudeDelta * composeZoomInFactor
         )
         let mapHeight = UIScreen.main.bounds.height
-        let latShift = zoomedSpan.latitudeDelta * (composeSheetHeight * 0.5) / max(mapHeight, 1)
+        let latShift = zoomedSpan.latitudeDelta * (Theme.Sheet.composePeek * 0.5) / max(mapHeight, 1)
         let cameraCenter = CLLocationCoordinate2D(
             latitude: position.lat - latShift,
             longitude: position.lng
@@ -812,17 +810,16 @@ struct MapScreen: View {
             && model.bubbles.isEmpty && !model.isFilterHidingAll
     }
 
-        /// Bottom compose card — not a system sheet, so the map never scales/dims behind it.
+    /// Bottom compose card — not a system sheet, so the map never scales/dims behind it.
     /// Inset + fully rounded to echo the iOS 26 chat sheet (map peeks at the sides).
     private var composePanel: some View {
         let pin = composePosition ?? model.visibleCenter
-        return VStack(spacing: 0) {
-            // Tap the map band above the panel to drop the keyboard; the sheet springs back
-            // with the keyboard safe-area animation (content often isn’t tall enough to scroll-dismiss).
+        return ZStack(alignment: .bottom) {
+            // Map / side gaps / anything outside the card cancels the new chat.
             Color.clear
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .contentShape(Rectangle())
-                .onTapGesture { dismissComposeKeyboard() }
+                .onTapGesture { cancelCompose() }
             VStack(spacing: 0) {
                 Capsule()
                     .fill(Theme.faint.opacity(0.55))
@@ -834,7 +831,7 @@ struct MapScreen: View {
                     .onTapGesture { dismissComposeKeyboard() }
                 NewThreadSheet(
                     position: pin,
-                    onCancel: { dismissCompose(restoreCamera: true) },
+                    onCancel: { cancelCompose() },
                     onDismissKeyboard: { dismissComposeKeyboard() }
                 ) { title, body, kind, image in
                     dismissCompose(restoreCamera: false)
@@ -856,18 +853,23 @@ struct MapScreen: View {
                     }
                 }
             }
-            .frame(maxHeight: composeSheetHeight)
+            .frame(maxHeight: Theme.Sheet.composePeek)
             .background(Theme.surface)
-            .clipShape(RoundedRectangle(cornerRadius: composeSheetCornerRadius, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: Theme.Sheet.corner, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: composeSheetCornerRadius, style: .continuous)
+                RoundedRectangle(cornerRadius: Theme.Sheet.corner, style: .continuous)
                     .strokeBorder(Theme.hairline, lineWidth: 1)
             }
             .shadow(color: .black.opacity(0.35), radius: 18, y: -4)
-            .padding(.horizontal, composeSheetInset)
+            .padding(.horizontal, Theme.Sheet.inset)
             // Float above the home indicator (and the keyboard when focused).
-            .padding(.bottom, composeSheetInset)
+            .padding(.bottom, Theme.Sheet.inset)
         }
+    }
+
+    /// Close compose (keyboard + panel) and restore the prior camera.
+    private func cancelCompose() {
+        dismissCompose(restoreCamera: true)
     }
 
     /// Clears field focus so the keyboard dismisses and the compose panel drops with it.

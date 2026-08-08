@@ -334,6 +334,10 @@ final class ThreadRepository {
                         Fs.authorName: author.displayName,
                         Fs.createdAt: FieldValue.serverTimestamp(),
                     ]
+                    if let photo = author.photoURL?.trimmingCharacters(in: .whitespacesAndNewlines),
+                       !photo.isEmpty {
+                        fields[Fs.authorPhotoURL] = String(photo.prefix(2048))
+                    }
                     if let reply {
                         fields[Fs.replyToId] = reply.id
                         fields[Fs.replyToText] = String(reply.text.prefix(200))

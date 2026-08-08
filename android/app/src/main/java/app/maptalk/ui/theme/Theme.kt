@@ -36,6 +36,19 @@ object MapTalkColors {
     val Danger = Color(0xFFFB7185)
 }
 
+/**
+ * Floating sheet chrome shared with iOS (Theme.Sheet). On iOS 26, partial detents are
+ * inset so the map peeks around the card — Android ModalBottomSheets mirror that gap.
+ */
+object MapTalkSheets {
+    val Inset = 12.dp
+    val Corner = 28.dp
+    /** Thread / account sheet height as a fraction of the available screen. */
+    const val ExpandedFraction = 0.94f
+    /** New-thread compose card peek height. */
+    val ComposePeek = 420.dp
+}
+
 /** Three radii, one per kind of thing: a speech bubble, a card, an input. */
 object MapTalkShapes {
     val Bubble = 18.dp

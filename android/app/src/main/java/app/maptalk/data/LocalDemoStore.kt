@@ -278,6 +278,7 @@ class LocalDemoStore(context: Context) {
             text = body,
             authorId = author.uid,
             authorName = author.displayName,
+            authorPhotoURL = author.photoURL,
             createdAt = now,
             imagePath = imagePath,
             imageWidth = imageWidth,

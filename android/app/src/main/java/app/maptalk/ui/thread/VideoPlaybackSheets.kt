@@ -29,7 +29,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -66,6 +65,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import app.maptalk.R
 import app.maptalk.data.VideoCompressor
+import app.maptalk.ui.theme.MapTalkBottomSheet
 import app.maptalk.ui.theme.MapTalkColors
 import kotlin.math.abs
 import kotlin.math.max
@@ -132,12 +132,10 @@ fun VideoTrimSheet(
         seekWindow(0f)
     }
 
-    ModalBottomSheet(
+    MapTalkBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = MapTalkColors.Base,
-        contentColor = MapTalkColors.Text,
-        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
     ) {
         Column(
             modifier = Modifier

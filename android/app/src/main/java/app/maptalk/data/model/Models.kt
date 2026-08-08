@@ -84,6 +84,8 @@ data class Message(
     val text: String,
     val authorId: String,
     val authorName: String,
+    /** Write-time snapshot of the author's avatar URL (or local path). Null on older messages. */
+    val authorPhotoURL: String? = null,
     val createdAt: Instant?,
     val imagePath: String? = null,
     val imageWidth: Int? = null,
@@ -141,7 +143,12 @@ data class PreparedVideo(
 }
 
 /** Who is writing, denormalised onto every thread and message. */
-data class Author(val uid: String, val displayName: String)
+data class Author(
+    val uid: String,
+    val displayName: String,
+    /** Current profile photo — snapshotted onto new messages as `authorPhotoURL`. */
+    val photoURL: String? = null,
+)
 
 /** Someone this viewer has blocked. */
 data class BlockedPerson(val uid: String, val displayName: String)

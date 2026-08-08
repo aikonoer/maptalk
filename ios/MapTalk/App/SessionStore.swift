@@ -52,8 +52,8 @@ final class SessionStore {
         }
         guard displayNameTask == nil else { return }
         displayNameTask = Task { [repository] in
-            for await name in repository.displayName(uid: uid) {
-                guard let name, !name.isEmpty else {
+            for await profile in repository.profile(uid: uid) {
+                guard let name = profile.displayName, !name.isEmpty else {
                     if UserDefaults.standard.bool(forKey: authChoiceKey) {
                         state = .needsDisplayName
                     } else {
@@ -61,7 +61,7 @@ final class SessionStore {
                     }
                     continue
                 }
-                state = .ready(Author(uid: uid, displayName: name))
+                state = .ready(Author(uid: uid, displayName: name, photoURL: profile.photoURL))
             }
         }
     }

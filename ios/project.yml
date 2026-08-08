@@ -65,6 +65,7 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
         INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: MapTalk centres the map on you so you can see the conversations happening around you.
         INFOPLIST_KEY_NSPhotoLibraryUsageDescription: MapTalk attaches photos and short videos you pick to chats on the map.
+        INFOPLIST_KEY_NSCameraUsageDescription: MapTalk lets you take a quick photo to attach to a chat.
         INFOPLIST_KEY_NSMicrophoneUsageDescription: MapTalk records short voice notes you send in chats.
         INFOPLIST_KEY_UIBackgroundModes: remote-notification
         INFOPLIST_FILE: MapTalk/Info.plist

@@ -435,6 +435,7 @@ struct AccountScreen: View {
         }
         .presentationDetents([.height(280)])
         .presentationDragIndicator(.visible)
+        .presentationCornerRadius(Theme.Sheet.corner)
         .presentationBackground(Theme.surface)
     }
 }

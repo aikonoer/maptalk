@@ -95,6 +95,8 @@ struct Message: Identifiable, Equatable, Sendable {
     let text: String
     let authorId: String
     let authorName: String
+    /// Write-time snapshot of the author's avatar URL (or local path). Nil on older messages.
+    let authorPhotoURL: String?
     let createdAt: Date?
     let imagePath: String?
     let imageWidth: Int?
@@ -129,6 +131,7 @@ struct Message: Identifiable, Equatable, Sendable {
         text: String,
         authorId: String,
         authorName: String,
+        authorPhotoURL: String? = nil,
         createdAt: Date?,
         imagePath: String? = nil,
         imageWidth: Int? = nil,
@@ -148,6 +151,7 @@ struct Message: Identifiable, Equatable, Sendable {
         self.text = text
         self.authorId = authorId
         self.authorName = authorName
+        self.authorPhotoURL = authorPhotoURL
         self.createdAt = createdAt
         self.imagePath = imagePath
         self.imageWidth = imageWidth
@@ -175,6 +179,14 @@ struct Message: Identifiable, Equatable, Sendable {
 struct Author: Equatable, Sendable {
     let uid: String
     let displayName: String
+    /// Current profile photo — snapshotted onto new messages as `authorPhotoURL`.
+    let photoURL: String?
+
+    init(uid: String, displayName: String, photoURL: String? = nil) {
+        self.uid = uid
+        self.displayName = displayName
+        self.photoURL = photoURL
+    }
 }
 
 /// Someone this viewer has blocked.

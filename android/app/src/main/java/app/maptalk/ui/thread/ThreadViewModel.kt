@@ -461,6 +461,7 @@ class ThreadViewModel(
             text = caption.trim(),
             authorId = author.uid,
             authorName = author.displayName,
+            authorPhotoURL = author.photoURL,
             createdAt = Instant.now(),
             videoPath = video.file.absolutePath,
             videoDurationMs = video.durationMs,

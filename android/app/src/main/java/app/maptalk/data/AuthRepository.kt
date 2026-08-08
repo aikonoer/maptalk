@@ -146,9 +146,10 @@ class AuthRepository private constructor(
                 flowOf(Session.SignedOut)
             } else {
                 combine(
-                    displayName(backend.firestore, uid),
+                    profile(uid),
                     authChoiceRevision,
-                ) { name, _ ->
+                ) { userProfile, _ ->
+                    val name = userProfile.displayName
                     if (name.isNullOrBlank()) {
                         if (hasChosenAuthPath()) {
                             Session.NeedsDisplayName(uid)
@@ -156,12 +157,13 @@ class AuthRepository private constructor(
                             Session.NeedsAuthChoice(uid)
                         }
                     } else {
-                        Session.Ready(Author(uid, name))
+                        Session.Ready(Author(uid, name, userProfile.photoURL))
                     }
                 }
             }
         }
-        is Backend.Local -> combine(backend.store.displayName, authChoiceRevision) { name, _ ->
+        is Backend.Local -> combine(backend.store.profile, authChoiceRevision) { userProfile, _ ->
+            val name = userProfile.displayName
             if (name.isNullOrBlank()) {
                 if (hasChosenAuthPath()) {
                     Session.NeedsDisplayName(backend.store.uid)
@@ -169,7 +171,7 @@ class AuthRepository private constructor(
                     Session.NeedsAuthChoice(backend.store.uid)
                 }
             } else {
-                Session.Ready(Author(backend.store.uid, name))
+                Session.Ready(Author(backend.store.uid, name, userProfile.photoURL))
             }
         }
     }

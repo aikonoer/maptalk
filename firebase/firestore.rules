@@ -29,14 +29,26 @@ service cloud.firestore {
         && request.resource.data.createdAt == request.time;
     }
 
+    // Optional write-time avatar snapshot on new messages only.
+    function optionalAuthorPhotoURL() {
+      return !('authorPhotoURL' in request.resource.data)
+        || (request.resource.data.authorPhotoURL is string
+            && request.resource.data.authorPhotoURL.size() >= 8
+            && request.resource.data.authorPhotoURL.size() <= 2048
+            && request.resource.data.authorPhotoURL.matches('https://.*'));
+    }
+
+    // Keys must be a subset of [required ∪ optional], and include all required.
+    function keysWithin(allowed) {
+      return request.resource.data.keys().toSet().difference(allowed.toSet()).size() == 0;
+    }
+
     function isTextMessage() {
       return request.resource.data.keys().hasAll(['text', 'authorId', 'authorName', 'createdAt'])
-        && (
-          request.resource.data.keys().hasOnly(['text', 'authorId', 'authorName', 'createdAt'])
-          || request.resource.data.keys().hasOnly(['text', 'authorId', 'authorName', 'createdAt', 'messageKind'])
-          || request.resource.data.keys().hasOnly(['text', 'authorId', 'authorName', 'createdAt', 'messageKind', 'replyToId', 'replyToText', 'replyToAuthorName'])
-          || request.resource.data.keys().hasOnly(['text', 'authorId', 'authorName', 'createdAt', 'replyToId', 'replyToText', 'replyToAuthorName'])
-        )
+        && keysWithin([
+             'text', 'authorId', 'authorName', 'createdAt', 'messageKind',
+             'replyToId', 'replyToText', 'replyToAuthorName', 'authorPhotoURL'
+           ])
         && request.resource.data.text is string
         && request.resource.data.text.size() >= 1
         && request.resource.data.text.size() <= 1000
@@ -44,6 +56,7 @@ service cloud.firestore {
           !('messageKind' in request.resource.data)
           || request.resource.data.messageKind == 'text'
         )
+        && optionalAuthorPhotoURL()
         && (!('replyToId' in request.resource.data) || optionalReplyKeys());
     }
 
@@ -59,17 +72,11 @@ service cloud.firestore {
              'text', 'authorId', 'authorName', 'createdAt',
              'messageKind', 'imagePath', 'imageWidth', 'imageHeight'
            ])
-        && (
-          request.resource.data.keys().hasOnly([
-             'text', 'authorId', 'authorName', 'createdAt',
-             'messageKind', 'imagePath', 'imageWidth', 'imageHeight'
-           ])
-          || request.resource.data.keys().hasOnly([
+        && keysWithin([
              'text', 'authorId', 'authorName', 'createdAt',
              'messageKind', 'imagePath', 'imageWidth', 'imageHeight',
-             'replyToId', 'replyToText', 'replyToAuthorName'
+             'replyToId', 'replyToText', 'replyToAuthorName', 'authorPhotoURL'
            ])
-        )
         && request.resource.data.messageKind == 'image'
         && request.resource.data.text is string
         && request.resource.data.text.size() <= 1000
@@ -81,6 +88,7 @@ service cloud.firestore {
         && request.resource.data.imageHeight is number
         && request.resource.data.imageWidth > 0
         && request.resource.data.imageHeight > 0
+        && optionalAuthorPhotoURL()
         && (!('replyToId' in request.resource.data) || optionalReplyKeys());
     }
 
@@ -89,17 +97,11 @@ service cloud.firestore {
              'text', 'authorId', 'authorName', 'createdAt',
              'messageKind', 'audioPath', 'audioDurationMs'
            ])
-        && (
-          request.resource.data.keys().hasOnly([
-             'text', 'authorId', 'authorName', 'createdAt',
-             'messageKind', 'audioPath', 'audioDurationMs'
-           ])
-          || request.resource.data.keys().hasOnly([
+        && keysWithin([
              'text', 'authorId', 'authorName', 'createdAt',
              'messageKind', 'audioPath', 'audioDurationMs',
-             'replyToId', 'replyToText', 'replyToAuthorName'
+             'replyToId', 'replyToText', 'replyToAuthorName', 'authorPhotoURL'
            ])
-        )
         && request.resource.data.messageKind == 'voice'
         && request.resource.data.text is string
         && request.resource.data.text.size() == 0
@@ -110,6 +112,7 @@ service cloud.firestore {
         && request.resource.data.audioDurationMs is number
         && request.resource.data.audioDurationMs > 0
         && request.resource.data.audioDurationMs <= 60000
+        && optionalAuthorPhotoURL()
         && (!('replyToId' in request.resource.data) || optionalReplyKeys());
     }
 
@@ -119,19 +122,12 @@ service cloud.firestore {
              'messageKind', 'videoPath', 'videoDurationMs',
              'videoWidth', 'videoHeight'
            ])
-        && (
-          request.resource.data.keys().hasOnly([
-             'text', 'authorId', 'authorName', 'createdAt',
-             'messageKind', 'videoPath', 'videoDurationMs',
-             'videoWidth', 'videoHeight'
-           ])
-          || request.resource.data.keys().hasOnly([
+        && keysWithin([
              'text', 'authorId', 'authorName', 'createdAt',
              'messageKind', 'videoPath', 'videoDurationMs',
              'videoWidth', 'videoHeight',
-             'replyToId', 'replyToText', 'replyToAuthorName'
+             'replyToId', 'replyToText', 'replyToAuthorName', 'authorPhotoURL'
            ])
-        )
         && request.resource.data.messageKind == 'video'
         // Caption optional — clients (esp. Android) attach text like image messages.
         && request.resource.data.text is string
@@ -147,6 +143,7 @@ service cloud.firestore {
         && request.resource.data.videoHeight is number
         && request.resource.data.videoWidth > 0
         && request.resource.data.videoHeight > 0
+        && optionalAuthorPhotoURL()
         && (!('replyToId' in request.resource.data) || optionalReplyKeys());
     }
 
@@ -154,19 +151,15 @@ service cloud.firestore {
       return request.resource.data.keys().hasAll([
              'text', 'authorId', 'authorName', 'createdAt', 'messageKind'
            ])
-        && (
-          request.resource.data.keys().hasOnly([
-             'text', 'authorId', 'authorName', 'createdAt', 'messageKind'
-           ])
-          || request.resource.data.keys().hasOnly([
+        && keysWithin([
              'text', 'authorId', 'authorName', 'createdAt', 'messageKind',
-             'replyToId', 'replyToText', 'replyToAuthorName'
+             'replyToId', 'replyToText', 'replyToAuthorName', 'authorPhotoURL'
            ])
-        )
         && request.resource.data.messageKind == 'sticker'
         && request.resource.data.text is string
         && request.resource.data.text.size() >= 1
         && request.resource.data.text.size() <= 8
+        && optionalAuthorPhotoURL()
         && (!('replyToId' in request.resource.data) || optionalReplyKeys());
     }
 

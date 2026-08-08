@@ -221,6 +221,30 @@ describe('messages', () => {
     );
   });
 
+  it('accepts a message with an authorPhotoURL snapshot', async () => {
+    const threadId = await seedThread();
+    const db = testEnv.authenticatedContext(ALICE).firestore();
+    await assertSucceeds(
+      setDoc(
+        doc(db, 'threads', threadId, 'messages', 'with-photo'),
+        validMessage(ALICE, {
+          authorPhotoURL: 'https://firebasestorage.googleapis.com/v0/b/x/o/avatar.jpg',
+        }),
+      ),
+    );
+  });
+
+  it('rejects a non-https authorPhotoURL', async () => {
+    const threadId = await seedThread();
+    const db = testEnv.authenticatedContext(ALICE).firestore();
+    await assertFails(
+      setDoc(
+        doc(db, 'threads', threadId, 'messages', 'bad-photo'),
+        validMessage(ALICE, { authorPhotoURL: 'file:///tmp/avatar.jpg' }),
+      ),
+    );
+  });
+
   it('rejects empty and oversized text', async () => {
     const threadId = await seedThread();
     const db = testEnv.authenticatedContext(ALICE).firestore();

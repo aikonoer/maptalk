@@ -26,6 +26,7 @@ object Fs {
     const val GEOHASH = "geohash"
     const val AUTHOR_ID = "authorId"
     const val AUTHOR_NAME = "authorName"
+    const val AUTHOR_PHOTO_URL = "authorPhotoURL"
     const val CREATED_AT = "createdAt"
     const val LAST_MESSAGE_AT = "lastMessageAt"
     const val MESSAGE_COUNT = "messageCount"
@@ -138,6 +139,7 @@ fun DocumentSnapshot.toMessage(): Message? {
         text = text,
         authorId = getString(Fs.AUTHOR_ID).orEmpty(),
         authorName = getString(Fs.AUTHOR_NAME).orEmpty(),
+        authorPhotoURL = getString(Fs.AUTHOR_PHOTO_URL),
         createdAt = estimatedInstant(Fs.CREATED_AT),
         imagePath = imagePath,
         imageWidth = getLong(Fs.IMAGE_WIDTH)?.toInt(),

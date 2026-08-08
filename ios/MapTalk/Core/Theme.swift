@@ -25,6 +25,15 @@ enum Theme {
         static let field: CGFloat = 12
     }
 
+    /// Floating sheet chrome shared with Android (`MapTalkSheets`).
+    /// iOS 26 insets partial detents automatically; corner / compose metrics stay explicit.
+    enum Sheet {
+        static let inset: CGFloat = 12
+        static let corner: CGFloat = 28
+        static let expandedFraction: CGFloat = 0.94
+        static let composePeek: CGFloat = 420
+    }
+
     /// A rounded rectangle with one corner pulled in, so whatever wears it reads as something
     /// being said: the map markers, the app mark, the chat rows.
     /// A `nil` tail gives a plain rounded rectangle, which is what the middle of a run of

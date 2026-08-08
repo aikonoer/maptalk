@@ -16,6 +16,7 @@ enum Fs {
     static let geohash = "geohash"
     static let authorId = "authorId"
     static let authorName = "authorName"
+    static let authorPhotoURL = "authorPhotoURL"
     static let createdAt = "createdAt"
     static let lastMessageAt = "lastMessageAt"
     static let messageCount = "messageCount"
@@ -118,6 +119,7 @@ extension DocumentSnapshot {
             text: text,
             authorId: self[Fs.authorId] as? String ?? "",
             authorName: self[Fs.authorName] as? String ?? "",
+            authorPhotoURL: self[Fs.authorPhotoURL] as? String,
             createdAt: estimatedDate(Fs.createdAt),
             imagePath: self[Fs.imagePath] as? String,
             imageWidth: (self[Fs.imageWidth] as? NSNumber)?.intValue,

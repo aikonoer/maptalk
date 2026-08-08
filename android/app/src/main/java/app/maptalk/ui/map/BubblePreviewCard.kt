@@ -254,6 +254,7 @@ private fun PeekLatestRow(
             name = message.authorName,
             seed = message.authorId,
             size = 26.dp,
+            photoURL = message.authorPhotoURL,
         )
         Column(
             modifier = Modifier.weight(1f),

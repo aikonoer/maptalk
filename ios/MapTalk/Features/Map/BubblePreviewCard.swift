@@ -217,7 +217,12 @@ private struct PeekLatestRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            InitialAvatar(name: message.authorName, seed: message.authorId, size: 26)
+            InitialAvatar(
+                name: message.authorName,
+                seed: message.authorId,
+                size: 26,
+                photoURL: message.authorPhotoURL
+            )
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {

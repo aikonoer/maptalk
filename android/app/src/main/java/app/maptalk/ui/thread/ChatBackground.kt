@@ -20,7 +20,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -32,6 +31,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import app.maptalk.ui.theme.MapTalkBottomSheet
 import app.maptalk.ui.theme.MapTalkColors
 
 /** Curated chat wallpapers — local to this device, applied behind the message list. */
@@ -147,12 +147,10 @@ fun ChatBackgroundPickerSheet(
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    ModalBottomSheet(
+    MapTalkBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = MapTalkColors.Surface,
-        contentColor = MapTalkColors.Text,
-        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
     ) {
         Column(
             modifier = Modifier

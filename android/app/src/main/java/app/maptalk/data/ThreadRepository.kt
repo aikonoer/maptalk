@@ -260,10 +260,8 @@ class ThreadRepository private constructor(
                             fields = mapOf(
                                 Fs.TEXT to sticker,
                                 Fs.MESSAGE_KIND to MessageKind.STICKER.id,
-                                Fs.AUTHOR_ID to author.uid,
-                                Fs.AUTHOR_NAME to author.displayName,
                                 Fs.CREATED_AT to FieldValue.serverTimestamp(),
-                            ) + replyFields,
+                            ) + authorWriteFields(author) + replyFields,
                         )
                         onFinished?.invoke()
                     }
@@ -288,10 +286,8 @@ class ThreadRepository private constructor(
                                             Fs.IMAGE_PATH to url,
                                             Fs.IMAGE_WIDTH to image.width,
                                             Fs.IMAGE_HEIGHT to image.height,
-                                            Fs.AUTHOR_ID to author.uid,
-                                            Fs.AUTHOR_NAME to author.displayName,
                                             Fs.CREATED_AT to FieldValue.serverTimestamp(),
-                                        ) + replyFields,
+                                        ) + authorWriteFields(author) + replyFields,
                                     )
                                 }.onFailure { _errors.emit(it) }
                             } finally {
@@ -321,10 +317,8 @@ class ThreadRepository private constructor(
                                             Fs.VIDEO_DURATION_MS to video.durationMs,
                                             Fs.VIDEO_WIDTH to video.width,
                                             Fs.VIDEO_HEIGHT to video.height,
-                                            Fs.AUTHOR_ID to author.uid,
-                                            Fs.AUTHOR_NAME to author.displayName,
                                             Fs.CREATED_AT to FieldValue.serverTimestamp(),
-                                        ) + replyFields,
+                                        ) + authorWriteFields(author) + replyFields,
                                     )
                                 }.onFailure { _errors.emit(mapMediaUploadError(it)) }
                             } finally {
@@ -352,10 +346,8 @@ class ThreadRepository private constructor(
                                             Fs.MESSAGE_KIND to MessageKind.VOICE.id,
                                             Fs.AUDIO_PATH to url,
                                             Fs.AUDIO_DURATION_MS to audio.durationMs,
-                                            Fs.AUTHOR_ID to author.uid,
-                                            Fs.AUTHOR_NAME to author.displayName,
                                             Fs.CREATED_AT to FieldValue.serverTimestamp(),
-                                        ) + replyFields,
+                                        ) + authorWriteFields(author) + replyFields,
                                     )
                                 }.onFailure { _errors.emit(it) }
                             } finally {
@@ -371,10 +363,8 @@ class ThreadRepository private constructor(
                             fields = mapOf(
                                 Fs.TEXT to trimmed,
                                 Fs.MESSAGE_KIND to MessageKind.TEXT.id,
-                                Fs.AUTHOR_ID to author.uid,
-                                Fs.AUTHOR_NAME to author.displayName,
                                 Fs.CREATED_AT to FieldValue.serverTimestamp(),
-                            ) + replyFields,
+                            ) + authorWriteFields(author) + replyFields,
                         )
                         onFinished?.invoke()
                     }
@@ -445,10 +435,8 @@ class ThreadRepository private constructor(
                                 Fs.VIDEO_DURATION_MS to video.durationMs,
                                 Fs.VIDEO_WIDTH to video.width,
                                 Fs.VIDEO_HEIGHT to video.height,
-                                Fs.AUTHOR_ID to author.uid,
-                                Fs.AUTHOR_NAME to author.displayName,
                                 Fs.CREATED_AT to FieldValue.serverTimestamp(),
-                            ) + replyFields,
+                            ) + authorWriteFields(author) + replyFields,
                         )
                         update(
                             threadRef,
@@ -635,6 +623,15 @@ class ThreadRepository private constructor(
                 backend.store.deleteThread(threadId)
                 true
             }.onFailure { _errors.emit(it) }.getOrDefault(false)
+        }
+    }
+
+
+    private fun authorWriteFields(author: Author): Map<String, Any> = buildMap {
+        put(Fs.AUTHOR_ID, author.uid)
+        put(Fs.AUTHOR_NAME, author.displayName)
+        author.photoURL?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            put(Fs.AUTHOR_PHOTO_URL, it.take(2048))
         }
     }
 

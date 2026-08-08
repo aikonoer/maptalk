@@ -105,6 +105,7 @@ struct VideoTrimSheet: View {
             }
         }
         .presentationDetents([.large])
+        .presentationCornerRadius(Theme.Sheet.corner)
         .onAppear {
             let av = AVPlayer(url: sourceURL)
             av.isMuted = true

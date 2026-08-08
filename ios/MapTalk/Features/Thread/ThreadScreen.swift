@@ -27,7 +27,9 @@ struct ThreadScreen: View {
     @State private var retryPreparedVideo: PreparedVideo?
     @State private var retryVideoCaption = ""
     @State private var showStickers = false
-    /// Messenger-style collapse removed — text and media stay equally available.
+    @State private var showCamera = false
+    /// Messenger-style: media buttons collapse into a chevron once you start typing.
+    @State private var mediaExpanded = true
     @State private var longPressTarget: Message?
     @State private var longPressFrame: CGRect = .zero
     @State private var bubbleFrames: [String: CGRect] = [:]
@@ -90,6 +92,11 @@ struct ThreadScreen: View {
 
     private var trimmedDraft: String {
         draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Full media tray when the field is empty, or after tapping the chevron.
+    private var mediaTrayVisible: Bool {
+        trimmedDraft.isEmpty || mediaExpanded
     }
 
     private static let composerSpring = Animation.spring(response: 0.42, dampingFraction: 0.78)
@@ -201,6 +208,7 @@ struct ThreadScreen: View {
         }
         .presentationDetents([.medium])
         .presentationDragIndicator(.visible)
+        .presentationCornerRadius(Theme.Sheet.corner)
         .presentationBackground(Theme.base)
     }
 
@@ -236,6 +244,16 @@ struct ThreadScreen: View {
             videoTask?.cancel()
             videoTask = Task { await loadVideoItem(item) }
         }
+        .fullScreenCover(isPresented: $showCamera) {
+            CameraImagePicker(
+                onImage: { image in
+                    pendingImage = image
+                    showCamera = false
+                },
+                onCancel: { showCamera = false }
+            )
+            .ignoresSafeArea()
+        }
         .overlay { longPressOverlay }
         .coordinateSpace(name: "thread")
         .onPreferenceChange(BubbleFrameKey.self) { bubbleFrames = $0 }
@@ -251,6 +269,7 @@ struct ThreadScreen: View {
             )
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
+            .presentationCornerRadius(Theme.Sheet.corner)
             .presentationBackground(Theme.base)
         }
         .sheet(item: $pendingTrim) { trim in
@@ -273,6 +292,7 @@ struct ThreadScreen: View {
             )
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
+            .presentationCornerRadius(Theme.Sheet.corner)
             .presentationBackground(Theme.base)
             .interactiveDismissDisabled()
         }
@@ -461,6 +481,7 @@ struct ThreadScreen: View {
         }
         .presentationDetents([.height(280)])
         .presentationDragIndicator(.visible)
+        .presentationCornerRadius(Theme.Sheet.corner)
         .presentationBackground(Theme.surface)
     }
 
@@ -729,6 +750,7 @@ struct ThreadScreen: View {
             } else {
                 HStack(alignment: .bottom, spacing: 8) {
                     ComposerMediaControls(
+                        expanded: mediaTrayVisible,
                         showStickers: showStickers,
                         isPreparingImage: isPreparingImage,
                         isPreparingVideo: isPreparingVideo,
@@ -736,7 +758,16 @@ struct ThreadScreen: View {
                         pendingVideo: pendingVideo != nil,
                         pickerItem: $pickerItem,
                         videoPickerItem: $videoPickerItem,
-                        onToggleStickers: { showStickers.toggle() }
+                        onToggleStickers: { showStickers.toggle() },
+                        onTakePhoto: {
+                            guard CameraImagePicker.isAvailable else { return }
+                            showCamera = true
+                        },
+                        onExpand: {
+                            withAnimation(Self.composerSpring) {
+                                mediaExpanded = true
+                            }
+                        }
                     )
 
                     TextField(
@@ -762,6 +793,25 @@ struct ThreadScreen: View {
                     .onChange(of: draft) { _, newValue in
                         if newValue.count > ThreadModel.maxMessageLength {
                             draft = String(newValue.prefix(ThreadModel.maxMessageLength))
+                        }
+                        let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                        withAnimation(Self.composerSpring) {
+                            if trimmed.isEmpty {
+                                mediaExpanded = true
+                            } else if mediaExpanded {
+                                // Any keystroke while the tray is open tucks it away again
+                                // (including after reopening via the chevron).
+                                mediaExpanded = false
+                                showStickers = false
+                            }
+                        }
+                    }
+                    .onChange(of: isComposing) { _, focused in
+                        // Tapping back into the field while you have text collapses the tray again.
+                        guard focused, !trimmedDraft.isEmpty else { return }
+                        withAnimation(Self.composerSpring) {
+                            mediaExpanded = false
+                            showStickers = false
                         }
                     }
 
@@ -922,6 +972,7 @@ struct ThreadScreen: View {
             text: caption,
             authorId: author.uid,
             authorName: author.displayName,
+            authorPhotoURL: author.photoURL,
             createdAt: Date(),
             videoPath: prepared.fileURL.path,
             videoDurationMs: prepared.durationMs,
@@ -1477,7 +1528,12 @@ private struct MessageRow: View {
             if isMine {
                 Spacer(minLength: 48)
             } else if startsRun {
-                InitialAvatar(name: message.authorName, seed: message.authorId, size: 30)
+                InitialAvatar(
+                    name: message.authorName,
+                    seed: message.authorId,
+                    size: 30,
+                    photoURL: message.authorPhotoURL
+                )
             } else {
                 Color.clear.frame(width: 30, height: 1)
             }
@@ -1712,6 +1768,9 @@ private struct FullscreenImageViewer: View {
 
     @State private var scale: CGFloat = 1
     @State private var lastScale: CGFloat = 1
+    /// Pan while zoomed (separate from swipe-to-dismiss).
+    @State private var pan: CGSize = .zero
+    @State private var lastPan: CGSize = .zero
     @State private var dragOffset: CGFloat = 0
 
     private var dragProgress: CGFloat {
@@ -1725,26 +1784,31 @@ private struct FullscreenImageViewer: View {
             Color.black.ignoresSafeArea()
 
             if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .scaleEffect(scale * (1 - dragProgress * 0.14))
-                    .offset(y: dragOffset)
-                    .geometryGroup()
-                    .padding(12)
-                    .gesture(magnifyGesture)
-                    .simultaneousGesture(swipeToDismiss)
-                    .onTapGesture(count: 2) {
-                        withAnimation(.easeOut(duration: 0.2)) {
-                            if scale > 1.1 {
-                                scale = 1
-                                lastScale = 1
-                            } else {
-                                scale = 2.5
-                                lastScale = 2.5
+                GeometryReader { geo in
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .scaleEffect(scale * (1 - dragProgress * 0.14))
+                        .offset(x: pan.width, y: pan.height + dragOffset)
+                        .geometryGroup()
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .contentShape(Rectangle())
+                        .gesture(magnifyGesture(in: geo.size))
+                        .simultaneousGesture(panOrDismissGesture(in: geo.size))
+                        .onTapGesture(count: 2) {
+                            withAnimation(.easeOut(duration: 0.2)) {
+                                if scale > 1.1 {
+                                    resetZoom()
+                                } else {
+                                    scale = 2.5
+                                    lastScale = 2.5
+                                    pan = .zero
+                                    lastPan = .zero
+                                }
                             }
                         }
-                    }
+                }
+                .padding(12)
             }
 
             VStack {
@@ -1765,30 +1829,45 @@ private struct FullscreenImageViewer: View {
         .statusBarHidden(true)
     }
 
-    private var magnifyGesture: some Gesture {
+    private func magnifyGesture(in size: CGSize) -> some Gesture {
         MagnifyGesture()
             .onChanged { value in
                 scale = max(1, min(4, lastScale * value.magnification))
+                pan = clampedPan(pan, in: size)
             }
             .onEnded { _ in
                 lastScale = scale
                 if scale < 1.05 {
                     withAnimation(.easeOut(duration: 0.2)) {
-                        scale = 1
-                        lastScale = 1
+                        resetZoom()
                     }
+                } else {
+                    pan = clampedPan(pan, in: size)
+                    lastPan = pan
                 }
             }
     }
 
-    private var swipeToDismiss: some Gesture {
+    /// Pan when zoomed; swipe down to dismiss when not.
+    private func panOrDismissGesture(in size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 14)
             .onChanged { value in
-                guard !isZoomed else { return }
-                dragOffset = max(0, value.translation.height)
+                if isZoomed {
+                    dragOffset = 0
+                    pan = clampedPan(
+                        CGSize(
+                            width: lastPan.width + value.translation.width,
+                            height: lastPan.height + value.translation.height
+                        ),
+                        in: size
+                    )
+                } else {
+                    dragOffset = max(0, value.translation.height)
+                }
             }
             .onEnded { value in
-                guard !isZoomed else {
+                if isZoomed {
+                    lastPan = pan
                     dragOffset = 0
                     return
                 }
@@ -1803,12 +1882,32 @@ private struct FullscreenImageViewer: View {
             }
     }
 
+    private func resetZoom() {
+        scale = 1
+        lastScale = 1
+        pan = .zero
+        lastPan = .zero
+        dragOffset = 0
+    }
+
+    private func clampedPan(_ proposed: CGSize, in size: CGSize) -> CGSize {
+        guard scale > 1.01 else { return .zero }
+        let maxX = max(0, (size.width * (scale - 1)) / 2)
+        let maxY = max(0, (size.height * (scale - 1)) / 2)
+        return CGSize(
+            width: min(maxX, max(-maxX, proposed.width)),
+            height: min(maxY, max(-maxY, proposed.height))
+        )
+    }
+
     private static let dragTravel: CGFloat = 240
     private static let dismissThreshold: CGFloat = 110
 }
 
-/// Stickers / photo / video — always visible so text and media stay equal.
+/// Stickers / camera / photo / video — collapses into a chevron once you start typing.
+/// Width scales with the tool set so the text field keeps the remaining space.
 private struct ComposerMediaControls: View {
+    let expanded: Bool
     let showStickers: Bool
     let isPreparingImage: Bool
     let isPreparingVideo: Bool
@@ -1817,35 +1916,91 @@ private struct ComposerMediaControls: View {
     @Binding var pickerItem: PhotosPickerItem?
     @Binding var videoPickerItem: PhotosPickerItem?
     let onToggleStickers: () -> Void
+    let onTakePhoto: () -> Void
+    let onExpand: () -> Void
+
+    private var cameraEnabled: Bool {
+        !isPreparingImage && !isPreparingVideo && !pendingVideo && CameraImagePicker.isAvailable
+    }
 
     var body: some View {
-        HStack(spacing: 2) {
-            Button(action: onToggleStickers) {
-                Image(systemName: showStickers ? "face.smiling.fill" : "face.smiling")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(Theme.subtle)
-                    .frame(width: 36, height: 40)
-            }
-            .accessibilityLabel("Stickers")
+        ZStack(alignment: .leading) {
+            HStack(spacing: 2) {
+                mediaButton(delay: 0) {
+                    Button(action: onToggleStickers) {
+                        Image(systemName: showStickers ? "face.smiling.fill" : "face.smiling")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(Theme.subtle)
+                            .frame(width: 36, height: 40)
+                    }
+                    .accessibilityLabel("Stickers")
+                }
 
-            PhotosPicker(selection: $pickerItem, matching: .images, photoLibrary: .shared()) {
-                Image(systemName: "photo")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(Theme.subtle)
-                    .frame(width: 36, height: 40)
-            }
-            .accessibilityLabel("Add a photo")
-            .disabled(isPreparingImage || isPreparingVideo || pendingVideo)
+                mediaButton(delay: 0.03) {
+                    Button(action: onTakePhoto) {
+                        Image(systemName: "camera")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(cameraEnabled ? Theme.subtle : Theme.faint)
+                            .frame(width: 36, height: 40)
+                    }
+                    .accessibilityLabel("Take a photo")
+                    .disabled(!cameraEnabled)
+                }
 
-            PhotosPicker(selection: $videoPickerItem, matching: .videos, photoLibrary: .shared()) {
-                Image(systemName: "video")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(isPreparingVideo ? Theme.faint : Theme.subtle)
-                    .frame(width: 36, height: 40)
+                mediaButton(delay: 0.06) {
+                    PhotosPicker(selection: $pickerItem, matching: .images, photoLibrary: .shared()) {
+                        Image(systemName: "photo")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(Theme.subtle)
+                            .frame(width: 36, height: 40)
+                    }
+                    .accessibilityLabel("Add a photo")
+                    .disabled(isPreparingImage || isPreparingVideo || pendingVideo)
+                }
+
+                mediaButton(delay: 0.09) {
+                    PhotosPicker(selection: $videoPickerItem, matching: .videos, photoLibrary: .shared()) {
+                        Image(systemName: "video")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(isPreparingVideo ? Theme.faint : Theme.subtle)
+                            .frame(width: 36, height: 40)
+                    }
+                    .accessibilityLabel("Add a video")
+                    .disabled(isPreparingImage || isPreparingVideo || pendingImage || pendingVideo)
+                }
             }
-            .accessibilityLabel("Add a video")
-            .disabled(isPreparingImage || isPreparingVideo || pendingImage || pendingVideo)
+            .opacity(expanded ? 1 : 0)
+            .offset(x: expanded ? 0 : -18)
+            .allowsHitTesting(expanded)
+
+            Button(action: onExpand) {
+                Image(systemName: "chevron.forward")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(Theme.subtle)
+                    .frame(width: 32, height: 40)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("Show media options")
+            .opacity(expanded ? 0 : 1)
+            .scaleEffect(expanded ? 0.45 : 1, anchor: .leading)
+            .offset(x: expanded ? 10 : 0)
+            .allowsHitTesting(!expanded)
+            .symbolEffect(.bounce.up.byLayer, value: expanded == false)
         }
+        .frame(width: expanded ? 148 : 32, alignment: .leading)
+        .animation(.spring(response: 0.42, dampingFraction: 0.78), value: expanded)
+    }
+
+    @ViewBuilder
+    private func mediaButton<Content: View>(delay: Double, @ViewBuilder content: () -> Content) -> some View {
+        content()
+            .scaleEffect(expanded ? 1 : 0.55, anchor: .leading)
+            .opacity(expanded ? 1 : 0)
+            .animation(
+                .spring(response: 0.42, dampingFraction: 0.78)
+                    .delay(expanded ? delay : max(0, 0.09 - delay)),
+                value: expanded
+            )
     }
 }
 

@@ -18,6 +18,7 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -28,18 +29,23 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -54,6 +60,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -86,12 +93,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import app.maptalk.core.DeepLinkBus
 import app.maptalk.core.ActivityHeat
 import app.maptalk.core.ThreadLink
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
@@ -100,6 +109,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -108,6 +118,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.Player
@@ -125,12 +136,12 @@ import app.maptalk.data.model.ReactionEmoji
 import app.maptalk.data.model.ReportReason
 import app.maptalk.data.model.ReportTargetType
 import app.maptalk.data.model.StickerPack
+import app.maptalk.ui.InitialAvatar
 import app.maptalk.ui.PlaceLabelLine
 import app.maptalk.ui.relativeTime
 import app.maptalk.ui.theme.MapTalkColors
 import app.maptalk.ui.theme.MapTalkShapes
 import app.maptalk.ui.theme.avatarTint
-import app.maptalk.ui.theme.initialsOf
 import app.maptalk.ui.theme.tint
 import coil.compose.AsyncImage
 import java.io.File
@@ -153,8 +164,10 @@ fun ThreadScreen(
 ) {
     val context = LocalContext.current
     val container = context.appContainer
+    // Key by threadId so opening chat B after chat A does not reuse A's ViewModel
+    // (Activity-scoped store would otherwise keep the first instance forever).
     val viewModel: ThreadViewModel =
-        viewModel(factory = ThreadViewModel.factory(container, threadId))
+        viewModel(key = threadId, factory = ThreadViewModel.factory(container, threadId))
     val state by viewModel.state.collectAsStateWithLifecycle()
     val isPreparingImage by viewModel.isPreparingImage.collectAsStateWithLifecycle()
     val isPreparingVideo by viewModel.isPreparingVideo.collectAsStateWithLifecycle()
@@ -199,6 +212,35 @@ fun ThreadScreen(
         if (uri != null) {
             viewModel.prepareAndSendVideo(uri, author)
         }
+    }
+
+    var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
+    val takePicture = rememberLauncherForActivityResult(
+        ActivityResultContracts.TakePicture(),
+    ) { saved ->
+        val uri = pendingCameraUri
+        pendingCameraUri = null
+        if (saved && uri != null) {
+            viewModel.prepareImage(uri) { pendingImage = it }
+        }
+    }
+
+    fun launchCameraCapture() {
+        val dir = File(context.cacheDir, "camera").also { it.mkdirs() }
+        val file = File(dir, "capture-${System.currentTimeMillis()}.jpg")
+        val uri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            file,
+        )
+        pendingCameraUri = uri
+        takePicture.launch(uri)
+    }
+
+    val cameraPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) launchCameraCapture()
     }
 
     val micPermission = rememberLauncherForActivityResult(
@@ -582,6 +624,8 @@ fun ThreadScreen(
         modifier = modifier,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         containerColor = MapTalkColors.Base,
+        // Floating MapTalkBottomSheet already clears the nav/status bars.
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             Column(
                 modifier = Modifier
@@ -839,6 +883,17 @@ fun ThreadScreen(
                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
                     )
                 },
+                onTakePhoto = {
+                    val granted = ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.CAMERA,
+                    ) == PackageManager.PERMISSION_GRANTED
+                    if (granted) {
+                        launchCameraCapture()
+                    } else {
+                        cameraPermission.launch(Manifest.permission.CAMERA)
+                    }
+                },
                 onPickVideo = {
                     videoPicker.launch(
                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly),
@@ -871,9 +926,8 @@ fun ThreadScreen(
                     }
                     showStickers = false
                 },
-                modifier = Modifier
-                    .background(MapTalkColors.Surface)
-                    .navigationBarsPadding(),
+                // Sheet already floats above the nav bar (MapTalkBottomSheet inset).
+                modifier = Modifier.background(MapTalkColors.Surface),
             )
         }
     }
@@ -955,7 +1009,12 @@ private fun MessageRow(
     ) {
         if (!isMine) {
             if (startsRun) {
-                InitialAvatar(name = message.authorName, seed = message.authorId)
+                InitialAvatar(
+                    name = message.authorName,
+                    seed = message.authorId,
+                    size = 30.dp,
+                    photoURL = message.authorPhotoURL,
+                )
             } else {
                 Spacer(modifier = Modifier.size(30.dp))
             }
@@ -1457,7 +1516,25 @@ private fun FullscreenImage(path: String, file: File?, onDismiss: () -> Unit) {
     val dismissThreshold = with(density) { 110.dp.toPx() }
     val dragTravel = with(density) { 240.dp.toPx() }
     val scope = rememberCoroutineScope()
-    val dragOffset = remember { mutableFloatStateOf(0f) }
+    var scale by remember { mutableFloatStateOf(1f) }
+    var offset by remember { mutableStateOf(Offset.Zero) }
+    var dismissDrag by remember { mutableFloatStateOf(0f) }
+
+    fun resetZoom() {
+        scale = 1f
+        offset = Offset.Zero
+        dismissDrag = 0f
+    }
+
+    fun springDismissBack() {
+        scope.launch {
+            animate(
+                initialValue = dismissDrag,
+                targetValue = 0f,
+                animationSpec = spring(dampingRatio = 0.86f),
+            ) { value, _ -> dismissDrag = value }
+        }
+    }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -1471,37 +1548,60 @@ private fun FullscreenImage(path: String, file: File?, onDismiss: () -> Unit) {
                 .fillMaxSize()
                 .background(Color.Black)
                 .pointerInput(Unit) {
-                    detectVerticalDragGestures(
-                        onDragEnd = {
-                            if (dragOffset.floatValue > dismissThreshold) {
-                                onDismiss()
+                    detectTapGestures(
+                        onDoubleTap = {
+                            if (scale > 1.1f) {
+                                resetZoom()
                             } else {
-                                scope.launch {
-                                    animate(
-                                        initialValue = dragOffset.floatValue,
-                                        targetValue = 0f,
-                                        animationSpec = spring(dampingRatio = 0.86f),
-                                    ) { value, _ -> dragOffset.floatValue = value }
-                                }
+                                scale = 2.5f
+                                offset = Offset.Zero
+                                dismissDrag = 0f
                             }
                         },
-                        onVerticalDrag = { change, dragAmount ->
-                            change.consume()
-                            dragOffset.floatValue = maxOf(0f, dragOffset.floatValue + dragAmount)
-                        },
                     )
+                }
+                .pointerInput(Unit) {
+                    // Pinch/zoom + pan when zoomed; vertical drag dismisses at 1x.
+                    // detectTransformGestures returns when fingers lift — then we settle dismiss.
+                    while (true) {
+                        detectTransformGestures { _, pan, zoom, _ ->
+                            val nextScale = (scale * zoom).coerceIn(1f, 4f)
+                            if (nextScale > 1.05f) {
+                                scale = nextScale
+                                val maxX = (size.width * (scale - 1f)) / 2f
+                                val maxY = (size.height * (scale - 1f)) / 2f
+                                offset = Offset(
+                                    x = (offset.x + pan.x).coerceIn(-maxX, maxX),
+                                    y = (offset.y + pan.y).coerceIn(-maxY, maxY),
+                                )
+                                dismissDrag = 0f
+                            } else {
+                                scale = 1f
+                                offset = Offset.Zero
+                                dismissDrag = maxOf(0f, dismissDrag + pan.y)
+                            }
+                        }
+                        if (scale <= 1.05f) {
+                            if (dismissDrag > dismissThreshold) {
+                                onDismiss()
+                            } else if (dismissDrag > 0f) {
+                                springDismissBack()
+                            }
+                        }
+                    }
                 },
             contentAlignment = Alignment.Center,
         ) {
-            val progress = (dragOffset.floatValue / dragTravel).coerceIn(0f, 1f)
+            val progress = (dismissDrag / dragTravel).coerceIn(0f, 1f)
+            val shrink = if (scale <= 1.05f) 1f - progress * 0.14f else 1f
             val imageModifier = Modifier
                 .fillMaxSize()
                 .padding(12.dp)
                 .graphicsLayer {
-                    translationY = dragOffset.floatValue
-                    val shrink = 1f - progress * 0.14f
-                    scaleX = shrink
-                    scaleY = shrink
+                    scaleX = scale * shrink
+                    scaleY = scale * shrink
+                    translationX = offset.x
+                    translationY = offset.y + dismissDrag
                 }
             when {
                 bitmap != null -> Image(
@@ -1517,22 +1617,6 @@ private fun FullscreenImage(path: String, file: File?, onDismiss: () -> Unit) {
                     modifier = imageModifier,
                 )
             }
-        }
-    }
-}
-
-@Composable
-private fun InitialAvatar(name: String, seed: String, size: Int = 30) {
-    val tint = avatarTint(seed)
-    Surface(
-        modifier = Modifier.size(size.dp),
-        shape = CircleShape,
-        color = tint.copy(alpha = 0.18f),
-        contentColor = tint,
-        border = BorderStroke(1.dp, tint.copy(alpha = 0.35f)),
-    ) {
-        Box(contentAlignment = Alignment.Center) {
-            Text(text = initialsOf(name), style = MaterialTheme.typography.labelSmall)
         }
     }
 }
@@ -1556,6 +1640,7 @@ private fun Composer(
     onToggleStickers: () -> Unit,
     onPickSticker: (String) -> Unit,
     onPickPhoto: () -> Unit,
+    onTakePhoto: () -> Unit,
     onPickVideo: () -> Unit,
     onStartRecord: () -> Unit,
     onCancelRecord: () -> Unit,
@@ -1564,8 +1649,16 @@ private fun Composer(
     modifier: Modifier = Modifier,
 ) {
     var draft by remember { mutableStateOf("") }
+    var mediaExpanded by remember { mutableStateOf(true) }
+    val draftBlank = draft.isBlank()
+    val mediaTrayVisible = draftBlank || mediaExpanded
     val canSend = pendingImage != null || pendingVideo != null || draft.isNotBlank()
 
+    LaunchedEffect(draftBlank) {
+        if (draftBlank) {
+            mediaExpanded = true
+        }
+    }
     val sendContainer by animateColorAsState(
         if (canSend) MapTalkColors.Accent else MapTalkColors.Raised,
         label = "sendContainer",
@@ -1826,6 +1919,7 @@ private fun Composer(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 ComposerMediaTray(
+                    expanded = mediaTrayVisible,
                     showStickers = showStickers,
                     isPreparingImage = isPreparingImage,
                     isPreparingVideo = isPreparingVideo,
@@ -1833,37 +1927,80 @@ private fun Composer(
                     pendingVideo = pendingVideo != null,
                     onToggleStickers = onToggleStickers,
                     onPickPhoto = onPickPhoto,
+                    onTakePhoto = onTakePhoto,
                     onPickVideo = onPickVideo,
+                    onExpand = { mediaExpanded = true },
                 )
 
-                OutlinedTextField(
+                // BasicTextField — OutlinedTextField is locked to ~56dp (two visual
+                // lines) by Material3; this stays ~40dp like the send/mic buttons.
+                val fieldInteraction = remember { MutableInteractionSource() }
+                val fieldFocused by fieldInteraction.collectIsFocusedAsState()
+                BasicTextField(
                     value = draft,
                     onValueChange = {
-                        draft = if (it.length <= ThreadViewModel.MAX_MESSAGE_LENGTH) it else draft
+                        val next = if (it.length <= ThreadViewModel.MAX_MESSAGE_LENGTH) it else draft
+                        draft = next
+                        if (next.isBlank()) {
+                            mediaExpanded = true
+                        } else if (mediaExpanded) {
+                            // Any keystroke while the tray is open tucks it away again
+                            // (including after reopening via the chevron).
+                            mediaExpanded = false
+                            if (showStickers) onToggleStickers()
+                        }
                     },
-                    placeholder = {
-                        Text(
-                            if (pendingImage == null && pendingVideo == null) {
-                                "Say something"
-                            } else {
-                                "Add a caption"
-                            },
-                            color = MapTalkColors.Faint,
-                        )
-                    },
-                    maxLines = 5,
-                    // Rounded corners, not CircleShape — a circle stretches into a
-                    // weird sausage as soon as the field grows past one line.
-                    shape = RoundedCornerShape(20.dp),
-                    keyboardOptions = KeyboardOptions(autoCorrectEnabled = true),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedContainerColor = MapTalkColors.Raised,
-                        unfocusedContainerColor = MapTalkColors.Raised,
-                        focusedBorderColor = MapTalkColors.Accent,
-                        unfocusedBorderColor = MapTalkColors.Hairline,
-                        cursorColor = MapTalkColors.Accent,
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 40.dp)
+                        .onFocusChanged { focus ->
+                            if (focus.isFocused && draft.isNotBlank()) {
+                                mediaExpanded = false
+                                if (showStickers) onToggleStickers()
+                            }
+                        },
+                    textStyle = TextStyle(
+                        color = MapTalkColors.Text,
+                        fontSize = 15.sp,
                     ),
-                    modifier = Modifier.weight(1f),
+                    cursorBrush = SolidColor(MapTalkColors.Accent),
+                    maxLines = 5,
+                    keyboardOptions = KeyboardOptions(autoCorrectEnabled = true),
+                    interactionSource = fieldInteraction,
+                    decorationBox = { inner ->
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .border(
+                                    width = 1.dp,
+                                    color = if (fieldFocused) {
+                                        MapTalkColors.Accent
+                                    } else {
+                                        MapTalkColors.Hairline
+                                    },
+                                    shape = RoundedCornerShape(20.dp),
+                                )
+                                .background(
+                                    MapTalkColors.Raised,
+                                    RoundedCornerShape(20.dp),
+                                )
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            contentAlignment = Alignment.CenterStart,
+                        ) {
+                            if (draft.isEmpty()) {
+                                Text(
+                                    if (pendingImage == null && pendingVideo == null) {
+                                        "Say something"
+                                    } else {
+                                        "Add a caption"
+                                    },
+                                    color = MapTalkColors.Faint,
+                                    fontSize = 15.sp,
+                                )
+                            }
+                            inner()
+                        }
+                    },
                 )
 
                 if (canSend || isPreparingImage) {
@@ -1916,10 +2053,12 @@ private fun endsRun(messages: List<Message>, index: Int): Boolean =
 
 /** Same person, close enough in time to read as one thought. */
 /**
- * Stickers / photo / video tray — always visible so media stays equal to text.
+ * Stickers / photo / video tray that collapses into a chevron once typing starts.
+ * Springs + stagger — not a plain fade.
  */
 @Composable
 private fun ComposerMediaTray(
+    expanded: Boolean,
     showStickers: Boolean,
     isPreparingImage: Boolean,
     isPreparingVideo: Boolean,
@@ -1927,53 +2066,177 @@ private fun ComposerMediaTray(
     pendingVideo: Boolean,
     onToggleStickers: () -> Unit,
     onPickPhoto: () -> Unit,
+    onTakePhoto: () -> Unit,
     onPickVideo: () -> Unit,
+    onExpand: () -> Unit,
 ) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
+    val springSpec = spring<Float>(
+        dampingRatio = 0.72f,
+        stiffness = Spring.StiffnessMediumLow,
+    )
+    // Width tracks tool count — collapses to a chevron so the field keeps the rest.
+    val trayWidth by animateDpAsState(
+        targetValue = if (expanded) 160.dp else 32.dp,
+        animationSpec = spring(dampingRatio = 0.78f, stiffness = Spring.StiffnessMediumLow),
+        label = "composerTrayWidth",
+    )
+
+    Box(
+        modifier = Modifier
+            .width(trayWidth)
+            .height(40.dp),
+        contentAlignment = Alignment.CenterStart,
     ) {
-        IconButton(onClick = onToggleStickers, modifier = Modifier.size(40.dp)) {
+        val chevronScale by animateFloatAsState(
+            targetValue = if (expanded) 0.45f else 1f,
+            animationSpec = springSpec,
+            label = "chevronScale",
+        )
+        val chevronAlpha by animateFloatAsState(
+            targetValue = if (expanded) 0f else 1f,
+            animationSpec = springSpec,
+            label = "chevronAlpha",
+        )
+        // Chevron sits underneath the tray so expanded icons receive taps.
+        IconButton(
+            onClick = onExpand,
+            enabled = !expanded,
+            modifier = Modifier
+                .size(32.dp, 40.dp)
+                .graphicsLayer {
+                    scaleX = chevronScale
+                    scaleY = chevronScale
+                    alpha = chevronAlpha
+                    transformOrigin = TransformOrigin(0f, 0.5f)
+                },
+        ) {
             Icon(
-                painter = painterResource(R.drawable.ic_smile),
-                contentDescription = "Stickers",
-                tint = if (showStickers) MapTalkColors.Accent else MapTalkColors.Subtle,
+                painter = painterResource(R.drawable.ic_chevron_right),
+                contentDescription = "Show media options",
+                tint = MapTalkColors.Subtle,
             )
         }
-        IconButton(
-            onClick = onPickPhoto,
-            enabled = !isPreparingImage && !isPreparingVideo && !pendingVideo,
-            modifier = Modifier.size(40.dp),
+
+        val trayAlpha by animateFloatAsState(
+            targetValue = if (expanded) 1f else 0f,
+            animationSpec = springSpec,
+            label = "trayAlpha",
+        )
+        val trayShift by animateFloatAsState(
+            targetValue = if (expanded) 0f else -18f,
+            animationSpec = springSpec,
+            label = "trayShift",
+        )
+
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            modifier = Modifier
+                .graphicsLayer {
+                    alpha = trayAlpha
+                    translationX = trayShift
+                }
+                .then(if (expanded) Modifier else Modifier.size(0.dp)),
         ) {
-            if (isPreparingImage) {
-                CircularProgressIndicator(
-                    strokeWidth = 2.dp,
-                    color = MapTalkColors.Subtle,
-                    modifier = Modifier.size(18.dp),
-                )
-            } else {
-                Icon(
-                    painter = painterResource(R.drawable.ic_photo),
-                    contentDescription = "Add a photo",
-                    tint = MapTalkColors.Subtle,
-                )
+            StaggeredMediaIcon(visible = expanded, delayMs = 0) {
+                IconButton(onClick = onToggleStickers, modifier = Modifier.size(40.dp)) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_smile),
+                        contentDescription = "Stickers",
+                        tint = if (showStickers) MapTalkColors.Accent else MapTalkColors.Subtle,
+                    )
+                }
+            }
+            StaggeredMediaIcon(visible = expanded, delayMs = 30) {
+                IconButton(
+                    onClick = onTakePhoto,
+                    enabled = !isPreparingImage && !isPreparingVideo && !pendingVideo,
+                    modifier = Modifier.size(40.dp),
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_camera),
+                        contentDescription = "Take a photo",
+                        tint = if (isPreparingImage || isPreparingVideo || pendingVideo) {
+                            MapTalkColors.Faint
+                        } else {
+                            MapTalkColors.Subtle
+                        },
+                    )
+                }
+            }
+            StaggeredMediaIcon(visible = expanded, delayMs = 60) {
+                IconButton(
+                    onClick = onPickPhoto,
+                    enabled = !isPreparingImage && !isPreparingVideo && !pendingVideo,
+                    modifier = Modifier.size(40.dp),
+                ) {
+                    if (isPreparingImage) {
+                        CircularProgressIndicator(
+                            strokeWidth = 2.dp,
+                            color = MapTalkColors.Subtle,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    } else {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_photo),
+                            contentDescription = "Add a photo",
+                            tint = MapTalkColors.Subtle,
+                        )
+                    }
+                }
+            }
+            StaggeredMediaIcon(visible = expanded, delayMs = 90) {
+                IconButton(
+                    onClick = onPickVideo,
+                    enabled = !isPreparingImage && !isPreparingVideo && !pendingImage && !pendingVideo,
+                    modifier = Modifier.size(40.dp),
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_video),
+                        contentDescription = "Add a video",
+                        tint = if (isPreparingVideo || pendingVideo) {
+                            MapTalkColors.Faint
+                        } else {
+                            MapTalkColors.Subtle
+                        },
+                    )
+                }
             }
         }
-        IconButton(
-            onClick = onPickVideo,
-            enabled = !isPreparingImage && !isPreparingVideo && !pendingImage && !pendingVideo,
-            modifier = Modifier.size(40.dp),
-        ) {
-            Icon(
-                painter = painterResource(R.drawable.ic_video),
-                contentDescription = "Add a video",
-                tint = if (isPreparingVideo || pendingVideo) {
-                    MapTalkColors.Faint
-                } else {
-                    MapTalkColors.Subtle
-                },
+    }
+}
+
+@Composable
+private fun StaggeredMediaIcon(
+    visible: Boolean,
+    delayMs: Int,
+    content: @Composable () -> Unit,
+) {
+    val scale = remember { Animatable(if (visible) 1f else 0.55f) }
+    val alpha = remember { Animatable(if (visible) 1f else 0f) }
+    LaunchedEffect(visible) {
+        val expandDelay = if (visible) delayMs.toLong() else maxOf(0, 90 - delayMs).toLong()
+        delay(expandDelay)
+        launch {
+            scale.animateTo(
+                if (visible) 1f else 0.55f,
+                spring(dampingRatio = 0.68f, stiffness = Spring.StiffnessMediumLow),
             )
         }
+        alpha.animateTo(
+            if (visible) 1f else 0f,
+            spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMedium),
+        )
+    }
+    Box(
+        modifier = Modifier.graphicsLayer {
+            scaleX = scale.value
+            scaleY = scale.value
+            this.alpha = alpha.value
+            transformOrigin = TransformOrigin(0f, 0.5f)
+        },
+    ) {
+        content()
     }
 }
 

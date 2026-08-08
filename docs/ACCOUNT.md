@@ -89,7 +89,7 @@ Email/password, phone number as login, birthday, gender, full address, follower 
 
 ## Denormalisation
 
-Threads and messages keep `authorId` + `authorName` (and later optional `authorPhotoURL` snapshot on new writes only). Changing display name or photo does **not** rewrite old messages; new posts use the current profile. Anonymous posts use a fixed public label (e.g. `Anonymous`) and omit or hide photo. Account deletion does **not** rewrite historical posts.
+Threads and messages keep `authorId` + `authorName`, plus optional `authorPhotoURL` snapshotted on new writes only. Changing display name or photo does **not** rewrite old messages; new posts use the current profile. Anonymous posts use a fixed public label (e.g. `Anonymous`) and omit or hide photo. Account deletion does **not** rewrite historical posts.
 
 ---
 
