@@ -122,7 +122,7 @@ class AuthRepository private constructor(
     val allowsGoogleSignIn: Boolean
         get() = backend is Backend.Firebase
 
-    /** Name + photo, for the account screen and the map avatar button. */
+    /** Name + photo, for the account screen, map avatar, and chat bubble fallbacks. */
     fun profile(uid: String): Flow<UserProfile> = when (val backend = backend) {
         is Backend.Firebase -> callbackFlow {
             val registration = backend.firestore.collection(Fs.USERS).document(uid)
@@ -136,7 +136,12 @@ class AuthRepository private constructor(
                 }
             awaitClose { registration.remove() }
         }
-        is Backend.Local -> backend.store.profile
+        // Local demo only stores the current user's avatar — other uids stay empty.
+        is Backend.Local -> if (uid == backend.store.uid) {
+            backend.store.profile
+        } else {
+            flowOf(UserProfile())
+        }
     }
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
@@ -290,9 +295,33 @@ class AuthRepository private constructor(
                 } catch (e: Exception) {
                     throw LinkException.Failed(e.message ?: "Link failed")
                 }
+                // Prefer an Account upload; otherwise adopt Google’s face so chats aren’t initials-only.
+                seedProviderPhotoIfNeeded()
             }
             is Backend.Local -> throw LinkException.Failed("Account linking isn’t available in local demo.")
         }
+    }
+
+    /**
+     * Writes Auth provider photoURL into `users/{uid}` when the profile has none yet.
+     * Safe to call repeatedly — no-ops if an Account photo already exists.
+     */
+    suspend fun seedProviderPhotoIfNeeded() {
+        val backend = backend as? Backend.Firebase ?: return
+        val user = backend.auth.currentUser ?: return
+        val providerPhoto = user.photoUrl?.toString()?.takeIf {
+            it.startsWith("https://") && it.length in 8..2048
+        } ?: return
+        val doc = backend.firestore.collection(Fs.USERS).document(user.uid).get().await()
+        val existing = doc.getString(Fs.PHOTO_URL)?.trim().orEmpty()
+        if (existing.isNotEmpty()) return
+        backend.firestore.collection(Fs.USERS).document(user.uid).set(
+            mapOf(
+                Fs.PHOTO_URL to providerPhoto,
+                Fs.UPDATED_AT to FieldValue.serverTimestamp(),
+            ),
+            SetOptions.merge(),
+        ).await()
     }
 
     fun markAuthPathChosen() {

@@ -40,6 +40,14 @@ class SessionViewModel(private val authRepository: AuthRepository) : ViewModel()
 
     init {
         signIn()
+        viewModelScope.launch {
+            session.collect { current ->
+                // Already-linked Google accounts may never have written photoURL — seed once.
+                if (current is Session.Ready && current.author.photoURL.isNullOrBlank()) {
+                    runCatching { authRepository.seedProviderPhotoIfNeeded() }
+                }
+            }
+        }
     }
 
     private fun signIn() {

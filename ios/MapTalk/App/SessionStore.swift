@@ -62,6 +62,9 @@ final class SessionStore {
                     continue
                 }
                 state = .ready(Author(uid: uid, displayName: name, photoURL: profile.photoURL))
+                if profile.photoURL == nil || profile.photoURL?.isEmpty == true {
+                    try? await repository.seedProviderPhotoIfNeeded()
+                }
             }
         }
     }

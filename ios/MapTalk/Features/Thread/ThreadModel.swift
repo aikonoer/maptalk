@@ -15,6 +15,8 @@ final class ThreadModel {
     /// Set when older messages were just prepended so the screen can keep its scroll anchor.
     private(set) var historyPrepended: Int = 0
     private(set) var blockedUids: Set<String> = []
+    /// Live `users/{uid}.photoURL` — bubbles prefer denormalized `authorPhotoURL`, then this.
+    private(set) var authorPhotos: [String: String] = [:]
     var errorMessage: String?
     var replyTarget: Message?
     /// Set when the thread author is blocked so the screen can dismiss.
@@ -25,22 +27,26 @@ final class ThreadModel {
     private let repository: ThreadRepository
     private let safety: SafetyRepository
     private let push: PushRepository
+    private let auth: AuthRepository
     private let threadId: String
     /// Live tip + pages loaded by scrolling up. Grows; live updates overwrite by id.
     private var retainedMessages: [Message] = []
     /// Ids in the last live tip page — used to drop deletes without wiping scroll-back history.
     private var liveTipIds: Set<String> = []
     private var tasks: [Task<Void, Never>] = []
+    private var authorPhotoTasks: [String: Task<Void, Never>] = [:]
 
     init(
         repository: ThreadRepository,
         safety: SafetyRepository,
         push: PushRepository,
+        auth: AuthRepository,
         threadId: String
     ) {
         self.repository = repository
         self.safety = safety
         self.push = push
+        self.auth = auth
         self.threadId = threadId
         repository.onError = { [weak self] error in
             self?.errorMessage = error.localizedDescription
@@ -48,6 +54,15 @@ final class ThreadModel {
         safety.onError = { [weak self] error in
             self?.errorMessage = error.localizedDescription
         }
+    }
+
+    /// Denormalized message photo, else live profile — so older chats still show a face.
+    func photoURL(for message: Message) -> String? {
+        if let snap = message.authorPhotoURL?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !snap.isEmpty {
+            return snap
+        }
+        return authorPhotos[message.authorId]
     }
 
     func start() {
@@ -76,6 +91,7 @@ final class ThreadModel {
                     }
                     retainedMessages = Self.merge(older: retainedMessages, live: live)
                     liveTipIds = newIds
+                    syncAuthorPhotos()
                     // A short tip means the whole thread fit in one page.
                     if live.count < repository.messagePageSize {
                         hasMoreHistory = false
@@ -101,6 +117,31 @@ final class ThreadModel {
     func stop() {
         tasks.forEach { $0.cancel() }
         tasks = []
+        authorPhotoTasks.values.forEach { $0.cancel() }
+        authorPhotoTasks = [:]
+    }
+
+    private func syncAuthorPhotos() {
+        let wanted = Set(retainedMessages.map(\.authorId))
+        for uid in authorPhotoTasks.keys where !wanted.contains(uid) {
+            authorPhotoTasks.removeValue(forKey: uid)?.cancel()
+            authorPhotos[uid] = nil
+        }
+        for uid in wanted where authorPhotoTasks[uid] == nil {
+            authorPhotoTasks[uid] = Task { [auth] in
+                for await profile in auth.profile(uid: uid) {
+                    let url = profile.photoURL?
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    await MainActor.run {
+                        if let url, !url.isEmpty {
+                            self.authorPhotos[uid] = url
+                        } else {
+                            self.authorPhotos[uid] = nil
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Fetch the next older page when the user scrolls near the top.
@@ -124,6 +165,7 @@ final class ThreadModel {
                     return
                 }
                 retainedMessages = Self.merge(older: fresh, live: retainedMessages)
+                syncAuthorPhotos()
                 historyPrepended = fresh.count
                 applyMessageFilter()
             }

@@ -81,6 +81,7 @@ struct ThreadScreen: View {
                 repository: environment.threadRepository,
                 safety: environment.safetyRepository,
                 push: environment.pushRepository,
+                auth: environment.authRepository,
                 threadId: threadId
             )
         )
@@ -535,6 +536,7 @@ struct ThreadScreen: View {
                                 startsRun: startsRun(at: index),
                                 endsRun: endsRun(at: index),
                                 isLifted: longPressTarget?.id == message.id,
+                                authorPhotoURL: model.photoURL(for: message),
                                 onLongPress: {
                                     guard !message.isLocalPending else { return }
                                     longPressFrame = bubbleFrames[message.id] ?? .zero
@@ -1519,6 +1521,7 @@ private struct MessageRow: View {
     let startsRun: Bool
     let endsRun: Bool
     var isLifted: Bool = false
+    var authorPhotoURL: String? = nil
     let onLongPress: () -> Void
     let onToggleReaction: (String) -> Void
     var onOpenVideo: (String, Int) -> Void = { _, _ in }
@@ -1532,7 +1535,7 @@ private struct MessageRow: View {
                     name: message.authorName,
                     seed: message.authorId,
                     size: 30,
-                    photoURL: message.authorPhotoURL
+                    photoURL: authorPhotoURL ?? message.authorPhotoURL
                 )
             } else {
                 Color.clear.frame(width: 30, height: 1)

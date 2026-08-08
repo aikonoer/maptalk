@@ -169,6 +169,7 @@ fun ThreadScreen(
     val viewModel: ThreadViewModel =
         viewModel(key = threadId, factory = ThreadViewModel.factory(container, threadId))
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val authorPhotos by viewModel.authorPhotos.collectAsStateWithLifecycle()
     val isPreparingImage by viewModel.isPreparingImage.collectAsStateWithLifecycle()
     val isPreparingVideo by viewModel.isPreparingVideo.collectAsStateWithLifecycle()
     val videoSend by viewModel.videoSend.collectAsStateWithLifecycle()
@@ -832,6 +833,8 @@ fun ThreadScreen(
                                     startsRun = startsRun(state.messages, index),
                                     endsRun = endsRun(state.messages, index),
                                     isLifted = longPressTarget?.id == message.id,
+                                    authorPhotoURL = message.authorPhotoURL
+                                        ?: authorPhotos[message.authorId],
                                     resolveMedia = viewModel::mediaFile,
                                     onImageClick = { path -> fullscreenPath = path },
                                     onOpenVideo = { path -> fullscreenVideoPath = path },
@@ -990,6 +993,7 @@ private fun MessageRow(
     startsRun: Boolean,
     endsRun: Boolean,
     isLifted: Boolean = false,
+    authorPhotoURL: String? = message.authorPhotoURL,
     resolveMedia: (String) -> File?,
     onImageClick: (String) -> Unit,
     onOpenVideo: (String) -> Unit = {},
@@ -1013,7 +1017,7 @@ private fun MessageRow(
                     name = message.authorName,
                     seed = message.authorId,
                     size = 30.dp,
-                    photoURL = message.authorPhotoURL,
+                    photoURL = authorPhotoURL,
                 )
             } else {
                 Spacer(modifier = Modifier.size(30.dp))
@@ -1932,76 +1936,73 @@ private fun Composer(
                     onExpand = { mediaExpanded = true },
                 )
 
-                // BasicTextField — OutlinedTextField is locked to ~56dp (two visual
-                // lines) by Material3; this stays ~40dp like the send/mic buttons.
+                // Compact field (~40dp) — Material OutlinedTextField forces ~56dp.
+                // Placeholder is a sibling under the field (not decorationBox) so it
+                // can’t paint twice on some OEMs.
                 val fieldInteraction = remember { MutableInteractionSource() }
                 val fieldFocused by fieldInteraction.collectIsFocusedAsState()
-                BasicTextField(
-                    value = draft,
-                    onValueChange = {
-                        val next = if (it.length <= ThreadViewModel.MAX_MESSAGE_LENGTH) it else draft
-                        draft = next
-                        if (next.isBlank()) {
-                            mediaExpanded = true
-                        } else if (mediaExpanded) {
-                            // Any keystroke while the tray is open tucks it away again
-                            // (including after reopening via the chevron).
-                            mediaExpanded = false
-                            if (showStickers) onToggleStickers()
-                        }
-                    },
+                Box(
                     modifier = Modifier
                         .weight(1f)
-                        .heightIn(min = 40.dp)
-                        .onFocusChanged { focus ->
-                            if (focus.isFocused && draft.isNotBlank()) {
+                        .heightIn(min = 40.dp, max = 120.dp)
+                        .border(
+                            width = 1.dp,
+                            color = if (fieldFocused) {
+                                MapTalkColors.Accent
+                            } else {
+                                MapTalkColors.Hairline
+                            },
+                            shape = RoundedCornerShape(20.dp),
+                        )
+                        .background(MapTalkColors.Raised, RoundedCornerShape(20.dp))
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    contentAlignment = Alignment.CenterStart,
+                ) {
+                    if (draft.isEmpty()) {
+                        Text(
+                            text = if (pendingImage == null && pendingVideo == null) {
+                                "Say something"
+                            } else {
+                                "Add a caption"
+                            },
+                            color = MapTalkColors.Faint,
+                            fontSize = 15.sp,
+                            lineHeight = 20.sp,
+                            maxLines = 1,
+                        )
+                    }
+                    BasicTextField(
+                        value = draft,
+                        onValueChange = {
+                            val next =
+                                if (it.length <= ThreadViewModel.MAX_MESSAGE_LENGTH) it else draft
+                            draft = next
+                            if (next.isBlank()) {
+                                mediaExpanded = true
+                            } else if (mediaExpanded) {
                                 mediaExpanded = false
                                 if (showStickers) onToggleStickers()
                             }
                         },
-                    textStyle = TextStyle(
-                        color = MapTalkColors.Text,
-                        fontSize = 15.sp,
-                    ),
-                    cursorBrush = SolidColor(MapTalkColors.Accent),
-                    maxLines = 5,
-                    keyboardOptions = KeyboardOptions(autoCorrectEnabled = true),
-                    interactionSource = fieldInteraction,
-                    decorationBox = { inner ->
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .border(
-                                    width = 1.dp,
-                                    color = if (fieldFocused) {
-                                        MapTalkColors.Accent
-                                    } else {
-                                        MapTalkColors.Hairline
-                                    },
-                                    shape = RoundedCornerShape(20.dp),
-                                )
-                                .background(
-                                    MapTalkColors.Raised,
-                                    RoundedCornerShape(20.dp),
-                                )
-                                .padding(horizontal = 12.dp, vertical = 10.dp),
-                            contentAlignment = Alignment.CenterStart,
-                        ) {
-                            if (draft.isEmpty()) {
-                                Text(
-                                    if (pendingImage == null && pendingVideo == null) {
-                                        "Say something"
-                                    } else {
-                                        "Add a caption"
-                                    },
-                                    color = MapTalkColors.Faint,
-                                    fontSize = 15.sp,
-                                )
-                            }
-                            inner()
-                        }
-                    },
-                )
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged { focus ->
+                                if (focus.isFocused && draft.isNotBlank()) {
+                                    mediaExpanded = false
+                                    if (showStickers) onToggleStickers()
+                                }
+                            },
+                        textStyle = TextStyle(
+                            color = MapTalkColors.Text,
+                            fontSize = 15.sp,
+                            lineHeight = 20.sp,
+                        ),
+                        cursorBrush = SolidColor(MapTalkColors.Accent),
+                        maxLines = 5,
+                        keyboardOptions = KeyboardOptions(autoCorrectEnabled = true),
+                        interactionSource = fieldInteraction,
+                    )
+                }
 
                 if (canSend || isPreparingImage) {
                     Surface(

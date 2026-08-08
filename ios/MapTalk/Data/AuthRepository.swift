@@ -138,7 +138,7 @@ final class AuthRepository {
         }
     }
 
-    /// Profile fields for Account (name + photo).
+    /// Profile fields for Account, map avatar, and chat bubble fallbacks.
     func profile(uid: String) -> AsyncStream<(displayName: String?, photoURL: String?)> {
         switch backend {
         case let .firebase(_, firestore, _):
@@ -158,6 +158,13 @@ final class AuthRepository {
                 continuation.onTermination = { _ in listeners.removeAll() }
             }
         case let .local(store):
+            // Local demo only stores the current user's avatar — other uids stay empty.
+            guard uid == store.uid else {
+                return AsyncStream { continuation in
+                    continuation.yield((nil, nil))
+                    continuation.finish()
+                }
+            }
             return store.profileStream()
         }
     }
@@ -266,8 +273,35 @@ final class AuthRepository {
             } catch let error as NSError {
                 throw mapLinkError(error)
             }
+            try? await seedProviderPhotoIfNeeded()
         case .local:
             throw LinkError.failed("Account linking isn’t available in local demo.")
+        }
+    }
+
+    /// Writes Auth provider photoURL into `users/{uid}` when the profile has none yet.
+    func seedProviderPhotoIfNeeded() async throws {
+        switch backend {
+        case let .firebase(auth, firestore, _):
+            guard let user = auth.currentUser,
+                  let providerPhoto = user.photoURL?.absoluteString,
+                  providerPhoto.hasPrefix("https://"),
+                  (8...2048).contains(providerPhoto.count)
+            else { return }
+            let ref = firestore.collection(Fs.users).document(user.uid)
+            let existing = try await ref.getDocument().data()?[Fs.photoURL] as? String
+            if let existing, !existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return
+            }
+            try await ref.setData(
+                [
+                    Fs.photoURL: providerPhoto,
+                    Fs.updatedAt: FieldValue.serverTimestamp(),
+                ],
+                merge: true
+            )
+        case .local:
+            return
         }
     }
 

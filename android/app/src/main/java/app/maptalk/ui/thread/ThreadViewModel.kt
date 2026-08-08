@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import app.maptalk.AppContainer
+import app.maptalk.data.AuthRepository
 import app.maptalk.data.ImageCompressor
 import app.maptalk.data.PushRepository
 import app.maptalk.data.SafetyRepository
@@ -104,6 +105,7 @@ class ThreadViewModel(
     private val threadRepository: ThreadRepository,
     private val safetyRepository: SafetyRepository,
     private val pushRepository: PushRepository,
+    private val authRepository: AuthRepository,
     private val readBytes: suspend (Uri) -> ByteArray?,
     private val resolveMedia: (String) -> File?,
     private val appContext: Context,
@@ -111,6 +113,14 @@ class ThreadViewModel(
 
     private val _errors = MutableSharedFlow<Throwable>(extraBufferCapacity = 1)
     val errors = merge(_errors, threadRepository.errors, safetyRepository.errors)
+
+    /**
+     * Live `users/{uid}.photoURL` for authors in this thread. Bubbles prefer the denormalized
+     * `message.authorPhotoURL`, then fall back here so older messages still show a face.
+     */
+    private val _authorPhotos = MutableStateFlow<Map<String, String>>(emptyMap())
+    val authorPhotos: StateFlow<Map<String, String>> = _authorPhotos.asStateFlow()
+    private val authorPhotoJobs = mutableMapOf<String, Job>()
 
     private val _isPreparingImage = MutableStateFlow(false)
     val isPreparingImage: StateFlow<Boolean> = _isPreparingImage.asStateFlow()
@@ -215,6 +225,7 @@ class ThreadViewModel(
                     mergeMessages(older = base, live = live, pending = null)
                 }
                 liveTipIds = newIds
+                syncAuthorPhotos(_retainedMessages.value.map { it.authorId }.toSet())
                 // A short tip means the whole thread fit in one page.
                 if (live.size < ThreadRepository.MESSAGE_PAGE) {
                     _hasMoreHistory.value = false
@@ -246,6 +257,7 @@ class ThreadViewModel(
                 _retainedMessages.update { previous ->
                     mergeMessages(older = fresh, live = previous, pending = null)
                 }
+                syncAuthorPhotos(_retainedMessages.value.map { it.authorId }.toSet())
                 _historyPrepended.emit(fresh.size)
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -253,6 +265,25 @@ class ThreadViewModel(
                 _errors.tryEmit(error)
             } finally {
                 _isLoadingOlder.value = false
+            }
+        }
+    }
+
+    /** Keep a live photo listener per author so bubbles can fall back past denormalized URLs. */
+    private fun syncAuthorPhotos(authorIds: Set<String>) {
+        authorPhotoJobs.keys.filter { it !in authorIds }.forEach { uid ->
+            authorPhotoJobs.remove(uid)?.cancel()
+            _authorPhotos.update { it - uid }
+        }
+        for (uid in authorIds) {
+            if (uid in authorPhotoJobs) continue
+            authorPhotoJobs[uid] = viewModelScope.launch {
+                authRepository.profile(uid).collect { profile ->
+                    val url = profile.photoURL?.trim()?.takeIf { it.isNotEmpty() }
+                    _authorPhotos.update { current ->
+                        if (url == null) current - uid else current + (uid to url)
+                    }
+                }
             }
         }
     }
@@ -631,6 +662,7 @@ class ThreadViewModel(
                         threadRepository = container.threadRepository,
                         safetyRepository = container.safetyRepository,
                         pushRepository = container.pushRepository,
+                        authRepository = container.authRepository,
                         readBytes = { uri ->
                             app.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                         },
