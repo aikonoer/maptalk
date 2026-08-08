@@ -339,6 +339,24 @@ describe('messages', () => {
     );
   });
 
+  it('accepts a video message with a caption', async () => {
+    const threadId = await seedThread();
+    const db = testEnv.authenticatedContext(ALICE).firestore();
+    await assertSucceeds(
+      setDoc(doc(db, 'threads', threadId, 'messages', 'video-caption'), {
+        text: 'Check this out',
+        authorId: ALICE,
+        authorName: 'Alice',
+        createdAt: serverTimestamp(),
+        messageKind: 'video',
+        videoPath: R2_VIDEO,
+        videoDurationMs: 8_000,
+        videoWidth: 720,
+        videoHeight: 1280,
+      }),
+    );
+  });
+
   it('rejects a video with overlong duration or missing dimensions', async () => {
     const threadId = await seedThread();
     const db = testEnv.authenticatedContext(ALICE).firestore();
