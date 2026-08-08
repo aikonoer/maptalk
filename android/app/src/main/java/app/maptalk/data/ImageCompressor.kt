@@ -23,11 +23,19 @@ object ImageCompressor {
     /** Avatar edge/quality, matching `AuthRepository.avatarMaxEdge` on iOS. */
     const val AVATAR_MAX_EDGE = 512
     const val AVATAR_JPEG_QUALITY = 82
+    /** Must stay under `firebase/storage.rules` avatar write limit (1 MB). */
+    const val AVATAR_MAX_BYTES = 900_000
 
     /** Square-ish profile photo, small enough for the map chrome and chat rows. */
-    fun prepareAvatar(bytes: ByteArray): ByteArray? =
-        prepare(bytes, AVATAR_MAX_EDGE, AVATAR_JPEG_QUALITY)?.jpegBytes
-
+    fun prepareAvatar(bytes: ByteArray): ByteArray? {
+        var quality = AVATAR_JPEG_QUALITY
+        while (quality >= 40) {
+            val prepared = prepare(bytes, AVATAR_MAX_EDGE, quality) ?: return null
+            if (prepared.jpegBytes.size <= AVATAR_MAX_BYTES) return prepared.jpegBytes
+            quality -= 12
+        }
+        return null
+    }
     fun prepare(bytes: ByteArray): PreparedImage? = prepare(bytes, MAX_EDGE, JPEG_QUALITY)
 
     private fun prepare(bytes: ByteArray, maxEdge: Int, quality: Int): PreparedImage? {

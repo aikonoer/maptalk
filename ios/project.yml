@@ -49,6 +49,8 @@ targets:
         product: FirebaseStorage
       - package: Firebase
         product: FirebaseMessaging
+      - package: Firebase
+        product: FirebaseFunctions
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.maptalk

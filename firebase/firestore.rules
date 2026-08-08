@@ -343,7 +343,7 @@ service cloud.firestore {
 
       allow update: if signedIn() && (isTipIncrement() || isTipRewind());
 
-      // Thread starter can remove the chat (client deletes messages first).
+      // Thread starter can remove the chat (client deletes messages + subscribers first).
       allow delete: if signedIn() && resource.data.authorId == request.auth.uid;
 
       match /messages/{messageId} {
@@ -355,7 +355,12 @@ service cloud.firestore {
 
         allow update: if signedIn() && (isReactionUpdate() || isOwnMessageEdit());
 
-        allow delete: if signedIn() && resource.data.authorId == request.auth.uid;
+        // Own message, or the chat starter wiping the thread.
+        allow delete: if signedIn() && (
+          resource.data.authorId == request.auth.uid
+          || get(/databases/$(database)/documents/threads/$(threadId)).data.authorId
+               == request.auth.uid
+        );
       }
 
       // Auto-subscribed when the user opens or posts in a thread.
@@ -365,7 +370,12 @@ service cloud.firestore {
           && request.auth.uid == uid
           && request.resource.data.keys().hasOnly(['subscribedAt'])
           && request.resource.data.subscribedAt == request.time;
-        allow delete: if signedIn() && request.auth.uid == uid;
+        // Own unsubscribe, or chat starter deleting the thread.
+        allow delete: if signedIn() && (
+          request.auth.uid == uid
+          || get(/databases/$(database)/documents/threads/$(threadId)).data.authorId
+               == request.auth.uid
+        );
       }
     }
   }

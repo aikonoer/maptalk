@@ -1,5 +1,6 @@
 package app.maptalk.ui.map
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -73,6 +74,35 @@ fun ThreadBubbleMarker(bubble: GeoCluster<ChatThread>) {
             ClusterBubble(threads = bubble.items)
         } else {
             ThreadBubble(thread = thread)
+        }
+    }
+}
+
+/** Pin for the new-chat compose spot — stays glued to the coordinate (no screen-overlay lag). */
+@Composable
+@GoogleMapComposable
+fun ComposePinMarker(latitude: Double, longitude: Double) {
+    MarkerComposable(
+        "compose-pin",
+        state = rememberUpdatedMarkerState(position = LatLng(latitude, longitude)),
+        anchor = Offset(0.5f, 0.5f),
+        zIndex = 2f,
+        onClick = { true },
+    ) {
+        Box(contentAlignment = Alignment.Center, modifier = Modifier.size(22.dp)) {
+            Surface(
+                modifier = Modifier.size(22.dp),
+                shape = CircleShape,
+                color = MapTalkColors.Accent.copy(alpha = 0.15f),
+                border = BorderStroke(2.dp, MapTalkColors.Accent),
+                content = {},
+            )
+            Surface(
+                modifier = Modifier.size(5.dp),
+                shape = CircleShape,
+                color = MapTalkColors.Accent,
+                content = {},
+            )
         }
     }
 }

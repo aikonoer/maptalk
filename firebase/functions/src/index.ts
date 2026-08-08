@@ -5,6 +5,7 @@ import {
   onDocumentCreated,
   onDocumentDeleted,
 } from "firebase-functions/v2/firestore";
+import { HttpsError, onCall } from "firebase-functions/v2/https";
 import { defineString } from "firebase-functions/params";
 import { logger } from "firebase-functions";
 
@@ -182,8 +183,37 @@ export const onThreadMessageCreated = onDocumentCreated(
 );
 
 /**
- * When a message doc is deleted (admin/scripts), drop the matching R2 object.
- * Clients cannot delete messages today — this is for future moderation tools.
+ * Chat starter deletes the whole thread. Admin SDK so we are not limited by
+ * client security-rule `get()` budgets when wiping others’ replies / subscribers.
+ */
+export const deleteThread = onCall(async (request) => {
+  if (!request.auth?.uid) {
+    throw new HttpsError("unauthenticated", "Sign in to delete a chat.");
+  }
+  const threadId = request.data?.threadId;
+  if (typeof threadId !== "string" || threadId.length < 1 || threadId.length > 128) {
+    throw new HttpsError("invalid-argument", "Missing chat id.");
+  }
+
+  const threadRef = db.collection("threads").doc(threadId);
+  const threadSnap = await threadRef.get();
+  if (!threadSnap.exists) {
+    throw new HttpsError("not-found", "Chat not found.");
+  }
+  if (threadSnap.data()?.authorId !== request.auth.uid) {
+    throw new HttpsError(
+      "permission-denied",
+      "Only the person who started this chat can delete it.",
+    );
+  }
+
+  await db.recursiveDelete(threadRef);
+  logger.info("Thread deleted", { threadId, uid: request.auth.uid });
+  return { ok: true };
+});
+
+/**
+ * When a message doc is deleted, drop the matching R2 object (if any).
  */
 export const onThreadMessageDeleted = onDocumentDeleted(
   "threads/{threadId}/messages/{messageId}",

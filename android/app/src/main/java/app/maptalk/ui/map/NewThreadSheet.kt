@@ -21,8 +21,10 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -34,6 +36,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -77,6 +80,7 @@ private const val MAX_BODY_LENGTH = 1_000
 @Composable
 fun NewThreadSheet(
     position: GeoPoint,
+    onCancel: (() -> Unit)? = null,
     onCreate: (title: String, body: String, kind: ThreadKind, image: PreparedImage?) -> Unit,
 ) {
     var title by remember { mutableStateOf("") }
@@ -113,18 +117,30 @@ fun NewThreadSheet(
         modifier = Modifier
             .fillMaxWidth()
             .navigationBarsPadding()
-            .padding(start = 24.dp, end = 24.dp, bottom = 28.dp),
+            .verticalScroll(rememberScrollState())
+            .padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 20.dp),
     ) {
-        Text(
-            text = "Start a chat here",
-            style = MaterialTheme.typography.titleLarge,
-            color = MapTalkColors.Text,
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "Start a chat",
+                style = MaterialTheme.typography.titleMedium,
+                color = MapTalkColors.Text,
+                modifier = Modifier.weight(1f),
+            )
+            if (onCancel != null) {
+                TextButton(onClick = onCancel) {
+                    Text("Cancel", color = MapTalkColors.Subtle)
+                }
+            }
+        }
 
         PlaceLabelLine(
             point = position,
-            trailing = "anyone looking here can join in",
-            modifier = Modifier.padding(top = 6.dp),
+            trailing = "anyone nearby can join",
+            modifier = Modifier.padding(top = 4.dp),
         )
 
         OutlinedTextField(
@@ -143,7 +159,7 @@ fun NewThreadSheet(
             ),
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 22.dp),
+                .padding(top = 14.dp),
         )
 
         // Only worth the space once the limit is close.
@@ -152,7 +168,7 @@ fun NewThreadSheet(
             style = MaterialTheme.typography.labelSmall,
             color = MapTalkColors.Faint,
             modifier = Modifier
-                .padding(top = 6.dp)
+                .padding(top = 4.dp)
                 .alpha(if (trimmed.length > MAX_TITLE_LENGTH - 20) 1f else 0f),
         )
 
@@ -170,8 +186,8 @@ fun NewThreadSheet(
             ),
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 96.dp, max = 140.dp)
-                .padding(top = 12.dp),
+                .heightIn(min = 72.dp, max = 110.dp)
+                .padding(top = 10.dp),
         )
 
         Text(

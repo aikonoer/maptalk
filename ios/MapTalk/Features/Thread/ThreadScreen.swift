@@ -10,6 +10,8 @@ struct ThreadScreen: View {
     private let threadId: String
     /// Dismiss the sheet and show this pin’s area on the map (place-search style).
     private let onShowOnMap: ((GeoPoint, String?) -> Void)?
+    /// Called after Delete chat succeeds so the map can drop the bubble immediately.
+    private let onThreadDeleted: ((String) -> Void)?
     @State private var model: ThreadModel
     @State private var draft = ""
     @State private var pickerItem: PhotosPickerItem?
@@ -65,11 +67,13 @@ struct ThreadScreen: View {
         environment: AppEnvironment,
         author: Author,
         threadId: String,
-        onShowOnMap: ((GeoPoint, String?) -> Void)? = nil
+        onShowOnMap: ((GeoPoint, String?) -> Void)? = nil,
+        onThreadDeleted: ((String) -> Void)? = nil
     ) {
         self.author = author
         self.threadId = threadId
         self.onShowOnMap = onShowOnMap
+        self.onThreadDeleted = onThreadDeleted
         _model = State(
             initialValue: ThreadModel(
                 repository: environment.threadRepository,
@@ -217,7 +221,11 @@ struct ThreadScreen: View {
             cancelVideoSend()
         }
         .onChange(of: model.shouldDismiss) { _, dismissNow in
-            if dismissNow { dismiss() }
+            guard dismissNow else { return }
+            if let deletedId = model.deletedThreadId {
+                onThreadDeleted?(deletedId)
+            }
+            dismiss()
         }
         .onChange(of: pickerItem) { _, item in
             guard let item else { return }
@@ -1017,6 +1025,14 @@ private struct ReactionBarWidthKey: PreferenceKey {
     }
 }
 
+private struct ActionMenuHeightKey: PreferenceKey {
+    nonisolated(unsafe) static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 private extension Message {
     func follows(_ previous: Message) -> Bool {
         guard authorId == previous.authorId else { return false }
@@ -1094,6 +1110,7 @@ private struct MessageLongPressOverlay: View {
     /// Measured width of the reaction pill — the clamp used to assume 5 icons (286pt)
     /// while we ship 6, which clipped the trailing edge on outgoing bubbles.
     @State private var reactionBarWidth: CGFloat = 330
+    @State private var actionMenuHeight: CGFloat = 0
 
     init(
         message: Message,
@@ -1153,16 +1170,30 @@ private struct MessageLongPressOverlay: View {
                     .opacity(chromeIn ? 1 : 0)
                     .offset(
                         x: clampedReactionBarX(in: geo.size.width),
-                        y: anchor.minY - 58
+                        y: chromeLayout(in: geo.size).barY
                     )
 
                 actionMenu
                     .fixedSize()
-                    .scaleEffect(chromeIn ? 1 : 0.94, anchor: isMine ? .topTrailing : .topLeading)
+                    .background {
+                        GeometryReader { menuGeo in
+                            Color.clear.preference(
+                                key: ActionMenuHeightKey.self,
+                                value: menuGeo.size.height
+                            )
+                        }
+                    }
+                    .onPreferenceChange(ActionMenuHeightKey.self) { actionMenuHeight = $0 }
+                    .scaleEffect(
+                        chromeIn ? 1 : 0.94,
+                        anchor: chromeLayout(in: geo.size).flipped
+                            ? (isMine ? .bottomTrailing : .bottomLeading)
+                            : (isMine ? .topTrailing : .topLeading)
+                    )
                     .opacity(chromeIn ? 1 : 0)
                     .offset(
                         x: isMine ? anchor.maxX - menuWidth : anchor.minX,
-                        y: anchor.maxY + 10
+                        y: chromeLayout(in: geo.size).menuY
                     )
             }
         }
@@ -1171,6 +1202,45 @@ private struct MessageLongPressOverlay: View {
 
     // Approximate menu width so we can place it without a second layout pass.
     private var menuWidth: CGFloat { isMine ? 160 : 220 }
+
+    private var estimatedMenuHeight: CGFloat {
+        let rows: CGFloat
+        if isMine {
+            rows = message.isEditable ? 3 : 2
+        } else {
+            rows = 3
+        }
+        return rows * 46 + max(0, rows - 1)
+    }
+
+    private struct ChromeLayout {
+        var barY: CGFloat
+        var menuY: CGFloat
+        var flipped: Bool
+    }
+
+    /// Keep reaction bar + action menu from overlapping when the menu flips above the bubble.
+    private func chromeLayout(in size: CGSize) -> ChromeLayout {
+        let margin: CGFloat = 16
+        let gap: CGFloat = 10
+        let barH: CGFloat = 62
+        let menuH = max(actionMenuHeight, estimatedMenuHeight)
+        let barAboveBubble = anchor.minY - 58
+        let menuBelowBubble = anchor.maxY + 10
+
+        if menuBelowBubble + menuH <= size.height - margin {
+            return ChromeLayout(barY: barAboveBubble, menuY: menuBelowBubble, flipped: false)
+        }
+
+        // Stack above the bubble: [reactions] then [menu], both fully on-screen.
+        let stackH = barH + gap + menuH
+        let stackTop = max(margin, min(anchor.minY - 10 - stackH, size.height - margin - stackH))
+        return ChromeLayout(
+            barY: stackTop,
+            menuY: stackTop + barH + gap,
+            flipped: true
+        )
+    }
 
     /// Keep the reaction pill fully on-screen. Outgoing bubbles sit near the
     /// trailing edge, so centering on midX would push half the bar off-screen.

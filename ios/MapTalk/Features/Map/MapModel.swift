@@ -71,9 +71,11 @@ final class MapModel {
         subscribe(center: center, radiusKm: radiusKm)
     }
 
-    func clearKindFilter() {
-        guard !kindFilter.isEmpty else { return }
-        kindFilter = []
+    /// Drop a thread from the current map snapshot immediately (e.g. after Delete chat).
+    func removeThread(id: String) {
+        let before = latestThreads.count
+        latestThreads.removeAll { $0.id == id }
+        guard latestThreads.count != before else { return }
         publishBubbles()
     }
 
@@ -91,11 +93,22 @@ final class MapModel {
         publishBubbles()
     }
 
+    func clearKindFilter() {
+        guard !kindFilter.isEmpty else { return }
+        kindFilter = []
+        publishBubbles()
+    }
+
     private func subscribe(center: GeoPoint, radiusKm: Double) {
         streamTask?.cancel()
         let query = Viewport.query(center: center, radiusKm: radiusKm)
         clusterPrefixLength = Viewport.clusterPrefixLength(radiusKm: radiusKm)
         isGlobalView = query == .globalRecent
+        // Keep showing the last snapshot (reclustered for the new zoom) until Firestore
+        // answers — avoids an empty flash on every meaningful camera move.
+        if !latestThreads.isEmpty {
+            publishBubbles()
+        }
 
         streamTask = Task { [repository] in
             for await threads in repository.threads(for: query) {

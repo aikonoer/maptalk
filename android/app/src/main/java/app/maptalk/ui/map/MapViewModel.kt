@@ -93,6 +93,9 @@ class MapViewModel(
         .map { people -> people.map { it.uid }.toSet() }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
 
+    /** Optimistically hidden after Delete chat until the query snapshot catches up. */
+    private val _removedThreadIds = MutableStateFlow<Set<String>>(emptySet())
+
     @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
     val state: StateFlow<MapUiState> = camera
         .filterNotNull()
@@ -104,8 +107,9 @@ class MapViewModel(
                 threadRepository.threads(query),
                 blockedUids,
                 _kindFilter,
-            ) { threads, blocked, filter ->
-                val visible = threads.filter { it.authorId !in blocked }
+                _removedThreadIds,
+            ) { threads, blocked, filter, removed ->
+                val visible = threads.filter { it.id !in removed && it.authorId !in blocked }
                 val shown = if (filter.isEmpty()) visible else visible.filter { it.kind in filter }
                 MapUiState(
                     bubbles = clusterByGeohash(
@@ -122,6 +126,11 @@ class MapViewModel(
             }
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), MapUiState())
+
+    /** Drop a thread from the current map snapshot immediately (e.g. after Delete chat). */
+    fun removeThread(id: String) {
+        _removedThreadIds.value = _removedThreadIds.value + id
+    }
 
     fun onCameraSettled(center: GeoPoint, radiusKm: Double) {
         camera.value = CameraSnapshot(center, radiusKm)

@@ -111,6 +111,7 @@ dependencies {
     implementation(libs.firebase.firestore)
     implementation(libs.firebase.storage)
     implementation(libs.firebase.messaging)
+    implementation(libs.firebase.functions)
     implementation(libs.coroutines.play.services)
 
     implementation(libs.maps.compose)

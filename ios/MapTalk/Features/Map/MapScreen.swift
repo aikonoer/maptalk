@@ -8,6 +8,8 @@ private let worldRegion = MKCoordinateRegion(
     span: MKCoordinateSpan(latitudeDelta: 120, longitudeDelta: 120)
 )
 private let nearbySpan = MKCoordinateSpan(latitudeDelta: 0.03, longitudeDelta: 0.03)
+/// Compose panel height — leaves a map band above so the pin stays in view.
+private let composeSheetHeight: CGFloat = 420
 
 /// Cebu City — where the mock-data seed clusters when you run against local emulators.
 private let cebuRegion = MKCoordinateRegion(
@@ -25,10 +27,14 @@ struct MapScreen: View {
     @State private var camera: MapCameraPosition = Self.startsInDemo
         ? .region(cebuRegion)
         : .region(worldRegion)
+    /// Last settled span — compose pans with this so zoom doesn’t change.
+    @State private var mapSpan = nearbySpan
     @State private var openThreadId: String?
     @State private var showSettings = false
     @State private var isComposing = false
-    @State private var isPlacingPin = false
+    /// Where the new chat will land — set by long-press or the compose button (map centre).
+    @State private var composePosition: GeoPoint?
+    @State private var composeDismissTask: Task<Void, Never>?
     @State private var previewThread: ChatThread?
     @State private var previewLatest: [Message] = []
     @State private var previewMediaThumb: UIImage?
@@ -100,10 +106,6 @@ struct MapScreen: View {
         let pendingDeepLink = DeepLinkBus.shared.pendingThreadId
         return ZStack {
             map
-            if showCrosshair {
-                crosshair
-                    .transition(.opacity.combined(with: .scale(scale: 0.7)))
-            }
             overlay
             if previewThread != nil || previewCluster != nil {
                 Color.black.opacity(0.4)
@@ -136,10 +138,16 @@ struct MapScreen: View {
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
+            // In-place panel — system `.sheet` scales the map behind it (the flicker).
+            if isComposing {
+                composePanel
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .zIndex(3)
+            }
         }
         .animation(.spring(duration: 0.34, bounce: 0.12), value: previewThread?.id)
         .animation(.spring(duration: 0.34, bounce: 0.12), value: previewCluster?.count)
-        .animation(.spring(duration: 0.32, bounce: 0.2), value: showCrosshair)
+        .animation(.easeInOut(duration: 0.3), value: isComposing)
         .sheet(item: openThreadBinding) { route in
             ThreadScreen(
                 environment: environment,
@@ -148,6 +156,10 @@ struct MapScreen: View {
                 onShowOnMap: { point, placeName in
                     openThreadId = nil
                     focusOnPlace(point, title: placeName ?? "Here")
+                },
+                onThreadDeleted: { deletedId in
+                    model.removeThread(id: deletedId)
+                    openThreadId = nil
                 }
             )
             .presentationDetents([.fraction(0.94), .large])
@@ -171,24 +183,6 @@ struct MapScreen: View {
             .presentationDragIndicator(.visible)
             .presentationCornerRadius(28)
             .presentationBackground(Theme.base)
-        }
-        .sheet(isPresented: $isComposing) {
-            NewThreadSheet(position: model.visibleCenter) { title, body, kind, image in
-                isComposing = false
-                isPlacingPin = false
-                openThreadId = model.createThread(
-                    title: title,
-                    kind: kind,
-                    position: model.visibleCenter,
-                    author: author,
-                    openingText: body,
-                    openingImage: image.flatMap(ImageCompressor.prepare)
-                )
-            }
-            .presentationDetents([.height(580), .large])
-            .presentationDragIndicator(.visible)
-            .presentationCornerRadius(24)
-            .presentationBackground(Theme.surface)
         }
         .alert(
             "Something went wrong",
@@ -224,8 +218,9 @@ struct MapScreen: View {
             openPendingDeepLink()
         }
         .onChange(of: nearbyChatCount) { _, count in
+            // Once you've seen chats (or dismissed the tip), don't nag on every empty pan.
             if count > 0 {
-                emptyNearbyHintDismissed = false
+                emptyNearbyHintDismissed = true
             }
             guard !model.isGlobalView, !model.isLoading else {
                 lastNearbyCount = count
@@ -296,6 +291,12 @@ struct MapScreen: View {
                         .allowsHitTesting(false)
                 }
             }
+            if let pin = composePosition {
+                Annotation("", coordinate: pin.coordinate, anchor: .center) {
+                    crosshair
+                        .allowsHitTesting(false)
+                }
+            }
         }
         .mapStyle(
             .standard(
@@ -309,6 +310,7 @@ struct MapScreen: View {
         .mapControls { MapCompass() }
         .onMapCameraChange(frequency: .onEnd) { context in
             let region = context.region
+            mapSpan = region.span
             let center = GeoPoint(region.center)
             let corner = GeoPoint(
                 lat: region.center.latitude + region.span.latitudeDelta / 2,
@@ -316,6 +318,19 @@ struct MapScreen: View {
             )
             model.cameraChanged(center: center, radiusKm: center.distance(to: corner) / 1_000)
         }
+        .overlay {
+            MapEmptyLongPressCatcher(
+                enabled: canLongPressCompose,
+                onLongPress: { coordinate in
+                    beginCompose(at: GeoPoint(coordinate))
+                }
+            )
+            .allowsHitTesting(false)
+        }
+    }
+
+    private var canLongPressCompose: Bool {
+        !isComposing && !isSearching && previewThread == nil && previewCluster == nil
     }
 
     /// Marks the spot a new chat would be pinned to.
@@ -399,14 +414,18 @@ struct MapScreen: View {
                 EmptyMapHint(
                     symbol: "bubble.left.and.bubble.right",
                     title: "Quiet around here",
-                    detail: "Zoom out until a chat appears, or start one right here.",
+                    detail: "Long-press the map to start a chat, zoom out to find one, or use the button.",
                     primaryTitle: model.isFindingClosest ? "Looking\u{2026}" : "Find the closest chat",
                     primaryEnabled: !model.isFindingClosest,
                     onPrimary: {
+                        emptyNearbyHintDismissed = true
                         Task { await widenToClosestChat() }
                     },
                     secondaryTitle: "Start the first chat",
-                    onSecondary: { beginPlacingPin() },
+                    onSecondary: {
+                        emptyNearbyHintDismissed = true
+                        beginCompose(at: model.visibleCenter)
+                    },
                     onDismiss: {
                         withAnimation(.spring(duration: 0.28, bounce: 0.12)) {
                             emptyNearbyHintDismissed = true
@@ -414,6 +433,9 @@ struct MapScreen: View {
                     }
                 )
                 .padding(.top, 28)
+                // Stay mounted while composing so it doesn’t spring-out and flash the map.
+                .opacity(isComposing ? 0 : 1)
+                .allowsHitTesting(!isComposing)
                 .transition(.opacity.combined(with: .scale(scale: 0.96)))
             } else if showFilterEmptyHint {
                 EmptyMapHint(
@@ -430,64 +452,41 @@ struct MapScreen: View {
             }
 
             Spacer()
-            HStack(spacing: 12) {
-                Button {
-                    wantsToCenterOnUser = true
-                    location.locateMe()
-                    centerOnUserIfWanted()
-                } label: {
-                    Image(systemName: "location.fill")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(Theme.text)
-                        .frame(width: 46, height: 46)
-                        .background(Theme.surface.opacity(0.92), in: Circle())
-                        .overlay { Circle().strokeBorder(Theme.hairline, lineWidth: 1) }
-                }
-                .accessibilityLabel("Centre on my location")
-
-                Spacer()
-
-                if isPlacingPin, !isComposing {
+            if !isComposing {
+                HStack(spacing: 12) {
                     Button {
-                        withAnimation(.spring(duration: 0.32, bounce: 0.2)) {
-                            isPlacingPin = false
-                        }
+                        wantsToCenterOnUser = true
+                        location.locateMe()
+                        centerOnUserIfWanted()
                     } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 14, weight: .bold))
+                        Image(systemName: "location.fill")
+                            .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(Theme.text)
                             .frame(width: 46, height: 46)
                             .background(Theme.surface.opacity(0.92), in: Circle())
                             .overlay { Circle().strokeBorder(Theme.hairline, lineWidth: 1) }
                     }
-                    .accessibilityLabel("Cancel placing chat")
-                    .transition(.scale.combined(with: .opacity))
-                }
+                    .accessibilityLabel("Centre on my location")
 
-                Button {
-                    if isPlacingPin {
-                        isComposing = true
-                    } else {
-                        beginPlacingPin()
+                    Spacer()
+
+                    Button {
+                        beginCompose(at: model.visibleCenter)
+                    } label: {
+                        Label("Start a chat here", systemImage: "plus")
+                        .font(.control)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 15)
+                        .background(Theme.accent, in: Capsule())
                     }
-                } label: {
-                    Label(
-                        isPlacingPin ? "Pin chat here" : "Start a chat here",
-                        systemImage: isPlacingPin ? "mappin.and.ellipse" : "plus"
-                    )
-                    .font(.control)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 15)
-                    .background(Theme.accent, in: Capsule())
+                    .buttonStyle(.pressable)
                 }
-                .buttonStyle(.pressable)
-                .disabled(isComposing)
+                .shadow(color: .black.opacity(0.35), radius: 12, y: 4)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 14)
+                .transition(.opacity)
             }
-            .shadow(color: .black.opacity(0.35), radius: 12, y: 4)
-            .padding(.horizontal, 16)
-            .padding(.bottom, 14)
-            .animation(.spring(duration: 0.32, bounce: 0.2), value: isPlacingPin)
         }
         .animation(.spring(duration: 0.35), value: showEmptyNearbyCTA)
         .animation(.spring(duration: 0.35), value: showFilterEmptyHint)
@@ -604,13 +603,49 @@ struct MapScreen: View {
         }
     }
 
-    private var showCrosshair: Bool {
-        isPlacingPin || isComposing
+    /// Opens the new-chat panel at `position` and pans (same zoom) so the pin sits above the panel.
+    private func beginCompose(at position: GeoPoint) {
+        guard !isComposing else { return }
+        composeDismissTask?.cancel()
+        composeDismissTask = nil
+        dismissPreview()
+        if isSearching { dismissSearch() }
+        composePosition = position
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+
+        // Keep current zoom — only shift the centre south so the pin sits in the band above the panel.
+        let mapHeight = UIScreen.main.bounds.height
+        let latShift = mapSpan.latitudeDelta * (composeSheetHeight * 0.5) / max(mapHeight, 1)
+        let cameraCenter = CLLocationCoordinate2D(
+            latitude: position.lat - latShift,
+            longitude: position.lng
+        )
+        withAnimation(.easeInOut(duration: 0.35)) {
+            isComposing = true
+            camera = .region(MKCoordinateRegion(center: cameraCenter, span: mapSpan))
+        }
     }
 
-    private func beginPlacingPin() {
-        withAnimation(.spring(duration: 0.32, bounce: 0.2)) {
-            isPlacingPin = true
+    /// Panel + pin only — map stays put (no padding release, no reverse pan).
+    private func dismissCompose() {
+        guard isComposing || composePosition != nil else { return }
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
+        )
+        composeDismissTask?.cancel()
+        withAnimation(.easeInOut(duration: 0.32)) {
+            isComposing = false
+        }
+        composeDismissTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(280))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.2)) {
+                composePosition = nil
+            }
+            composeDismissTask = nil
         }
     }
 
@@ -721,8 +756,43 @@ struct MapScreen: View {
 
     private var showEmptyNearbyCTA: Bool {
         !emptyNearbyHintDismissed
-            && !isPlacingPin && !isComposing && !model.isLoading && !model.isGlobalView
+            && !model.isLoading && !model.isGlobalView
             && model.bubbles.isEmpty && !model.isFilterHidingAll
+    }
+
+    /// Bottom compose card — not a system sheet, so the map never scales/dims behind it.
+    private var composePanel: some View {
+        let pin = composePosition ?? model.visibleCenter
+        return VStack(spacing: 0) {
+            Spacer(minLength: 0)
+                .allowsHitTesting(false)
+            VStack(spacing: 0) {
+                Capsule()
+                    .fill(Theme.faint.opacity(0.55))
+                    .frame(width: 36, height: 5)
+                    .padding(.top, 10)
+                    .padding(.bottom, 4)
+                NewThreadSheet(
+                    position: pin,
+                    onCancel: { dismissCompose() }
+                ) { title, body, kind, image in
+                    dismissCompose()
+                    openThreadId = model.createThread(
+                        title: title,
+                        kind: kind,
+                        position: pin,
+                        author: author,
+                        openingText: body,
+                        openingImage: image.flatMap(ImageCompressor.prepare)
+                    )
+                }
+            }
+            .frame(maxHeight: composeSheetHeight)
+            .background(Theme.surface)
+            .clipShape(.rect(topLeadingRadius: 24, bottomLeadingRadius: 0, bottomTrailingRadius: 0, topTrailingRadius: 24))
+            .shadow(color: .black.opacity(0.35), radius: 18, y: -4)
+        }
+        .ignoresSafeArea(edges: .bottom)
     }
 
     private var showFilterEmptyHint: Bool {
@@ -862,6 +932,131 @@ struct MapScreen: View {
         previewLatest = []
         previewMediaThumb = nil
         previewLoading = false
+    }
+}
+
+/// Installs a long-press on the underlying `MKMapView` so empty-map presses open compose
+/// without fighting pan/zoom the way a SwiftUI `LongPressGesture` would on iOS 17.
+private struct MapEmptyLongPressCatcher: UIViewRepresentable {
+    var enabled: Bool
+    var onLongPress: (CLLocationCoordinate2D) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onLongPress: onLongPress)
+    }
+
+    func makeUIView(context: Context) -> MapLongPressHostView {
+        let view = MapLongPressHostView()
+        view.coordinator = context.coordinator
+        context.coordinator.enabled = enabled
+        context.coordinator.onLongPress = onLongPress
+        return view
+    }
+
+    func updateUIView(_ uiView: MapLongPressHostView, context: Context) {
+        context.coordinator.enabled = enabled
+        context.coordinator.onLongPress = onLongPress
+        uiView.coordinator = context.coordinator
+        context.coordinator.attachIfNeeded(from: uiView)
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var onLongPress: (CLLocationCoordinate2D) -> Void
+        var enabled = true
+        private weak var mapView: MKMapView?
+        private let recognizer = UILongPressGestureRecognizer()
+        private var didInstall = false
+
+        init(onLongPress: @escaping (CLLocationCoordinate2D) -> Void) {
+            self.onLongPress = onLongPress
+            super.init()
+            recognizer.minimumPressDuration = 0.42
+            recognizer.allowableMovement = 14
+            recognizer.delegate = self
+            recognizer.cancelsTouchesInView = false
+            recognizer.addTarget(self, action: #selector(handleLongPress))
+        }
+
+        func attachIfNeeded(from host: UIView) {
+            guard !didInstall else { return }
+            DispatchQueue.main.async { [weak self, weak host] in
+                guard let self, let host else { return }
+                guard let map = host.findEnclosingMapView() else { return }
+                self.mapView = map
+                if !(map.gestureRecognizers ?? []).contains(self.recognizer) {
+                    map.addGestureRecognizer(self.recognizer)
+                }
+                self.didInstall = true
+            }
+        }
+
+        @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
+            guard enabled, gesture.state == .began, let map = mapView else { return }
+            let point = gesture.location(in: map)
+            let coordinate = map.convert(point, toCoordinateFrom: map)
+            onLongPress(coordinate)
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            true
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldReceive touch: UITouch
+        ) -> Bool {
+            guard enabled else { return false }
+            // Bubbles own their long-press (peek). Don't also open compose.
+            var view: UIView? = touch.view
+            while let current = view {
+                if current is BubbleGestureView { return false }
+                if current is MKMapView { break }
+                view = current.superview
+            }
+            return true
+        }
+    }
+}
+
+private final class MapLongPressHostView: UIView {
+    weak var coordinator: MapEmptyLongPressCatcher.Coordinator?
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        guard let coordinator else { return }
+        coordinator.attachIfNeeded(from: self)
+    }
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        nil
+    }
+}
+
+private extension UIView {
+    func findEnclosingMapView() -> MKMapView? {
+        var ancestor: UIView? = superview
+        while let current = ancestor {
+            if let map = current as? MKMapView { return map }
+            if let map = current.subviews.lazy.compactMap({ $0 as? MKMapView }).first {
+                return map
+            }
+            if let map = current.findMapViewInDescendants() { return map }
+            ancestor = current.superview
+        }
+        return window?.findMapViewInDescendants()
+    }
+
+    func findMapViewInDescendants() -> MKMapView? {
+        var stack = subviews
+        while !stack.isEmpty {
+            let next = stack.removeLast()
+            if let map = next as? MKMapView { return map }
+            stack.append(contentsOf: next.subviews)
+        }
+        return nil
     }
 }
 

@@ -14,11 +14,13 @@ import app.maptalk.geo.Viewport
 import app.maptalk.geo.ViewportQuery
 import com.firebase.geofire.GeoFireUtils
 import com.firebase.geofire.GeoLocation
+import com.google.firebase.Firebase
 import com.google.firebase.Timestamp
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.Query
+import com.google.firebase.functions.functions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -563,16 +565,15 @@ class ThreadRepository private constructor(
                     val messageRef = threadRef.collection(Fs.MESSAGES).document(messageId)
                     val exists = messageRef.get().await().exists()
                     if (!exists) return@runCatching
-                    messageRef.delete().await()
 
                     val latest = threadRef.collection(Fs.MESSAGES)
                         .orderBy(Fs.CREATED_AT, Query.Direction.DESCENDING)
-                        .limit(1)
+                        .limit(2)
                         .get()
                         .await()
                         .documents
-                        .firstOrNull()
-                        ?.toMessage()
+                        .mapNotNull { it.toMessage() }
+                        .firstOrNull { it.id != messageId }
 
                     val tip = mutableMapOf<String, Any>(
                         Fs.MESSAGE_COUNT to FieldValue.increment(-1),
@@ -603,7 +604,12 @@ class ThreadRepository private constructor(
                         tip[Fs.LAST_MEDIA_PATH] = FieldValue.delete()
                         tip[Fs.LAST_MEDIA_KIND] = FieldValue.delete()
                     }
-                    threadRef.update(tip).await()
+
+                    backend.db.batch()
+                        .delete(messageRef)
+                        .update(threadRef, tip)
+                        .commit()
+                        .await()
                 }.onFailure { _errors.emit(it) }
             }
             is Backend.Local -> runCatching {
@@ -612,33 +618,23 @@ class ThreadRepository private constructor(
         }
     }
 
-    /** Delete a thread you started (messages + subscribers first). */
-    fun deleteThread(threadId: String) {
-        when (val backend = backend) {
-            is Backend.Firestore -> scope.launch {
-                runCatching {
-                    val threadRef = backend.db.collection(Fs.THREADS).document(threadId)
-                    require(threadRef.get().await().toChatThread() != null) { "Chat not found." }
-                    while (true) {
-                        val page = threadRef.collection(Fs.MESSAGES).limit(400).get().await()
-                        if (page.isEmpty) break
-                        val batch = backend.db.batch()
-                        page.documents.forEach { batch.delete(it.reference) }
-                        batch.commit().await()
-                    }
-                    while (true) {
-                        val page = threadRef.collection(Fs.SUBSCRIBERS).limit(400).get().await()
-                        if (page.isEmpty) break
-                        val batch = backend.db.batch()
-                        page.documents.forEach { batch.delete(it.reference) }
-                        batch.commit().await()
-                    }
-                    threadRef.delete().await()
-                }.onFailure { _errors.emit(it) }
-            }
+    /**
+     * Delete a thread you started via Cloud Function (admin wipe of messages + subscribers).
+     * Returns true on success; failures are also emitted on [errors].
+     */
+    suspend fun deleteThread(threadId: String): Boolean {
+        return when (val backend = backend) {
+            is Backend.Firestore -> runCatching {
+                Firebase.functions
+                    .getHttpsCallable("deleteThread")
+                    .call(hashMapOf("threadId" to threadId))
+                    .await()
+                true
+            }.onFailure { _errors.emit(it) }.getOrDefault(false)
             is Backend.Local -> runCatching {
                 backend.store.deleteThread(threadId)
-            }.onFailure { scope.launch { _errors.emit(it) } }
+                true
+            }.onFailure { _errors.emit(it) }.getOrDefault(false)
         }
     }
 

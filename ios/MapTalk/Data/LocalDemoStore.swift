@@ -497,6 +497,7 @@ final class LocalDemoStore {
         guard threads[threadId] != nil else { throw EditError.notFound }
         threads[threadId] = nil
         messages[threadId] = nil
+        publishThread(threadId)
         publishAllThreadLists()
     }
 

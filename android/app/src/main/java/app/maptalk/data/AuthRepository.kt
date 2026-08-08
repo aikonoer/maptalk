@@ -217,17 +217,27 @@ class AuthRepository private constructor(
     /** Compresses and uploads a square-ish avatar; returns the URL (or local path) to show. */
     suspend fun saveAvatar(bytes: ByteArray): String {
         val jpeg = ImageCompressor.prepareAvatar(bytes)
-            ?: throw LinkException.Failed("Couldn’t get that photo ready.")
+            ?: throw LinkException.Failed("Couldn’t get that photo ready. Try a smaller image.")
         return when (val backend = backend) {
             is Backend.Firebase -> {
                 val uid = backend.auth.currentUser?.uid ?: throw LinkException.NotSignedIn
                 val path = avatarPath(uid)
                 val reference = backend.storage.reference.child(path)
-                reference.putBytes(
-                    jpeg,
-                    StorageMetadata.Builder().setContentType("image/jpeg").build(),
-                ).await()
-                val url = reference.downloadUrl.await().toString()
+                try {
+                    reference.putBytes(
+                        jpeg,
+                        StorageMetadata.Builder().setContentType("image/jpeg").build(),
+                    ).await()
+                } catch (e: Exception) {
+                    throw LinkException.Failed(
+                        "Couldn’t upload that photo. Try a smaller image. (${e.message ?: "upload failed"})",
+                    )
+                }
+                val url = try {
+                    reference.downloadUrl.await().toString()
+                } catch (_: Exception) {
+                    throw LinkException.Failed("Photo uploaded but couldn’t get a link. Try again.")
+                }
                 backend.firestore.collection(Fs.USERS).document(uid).set(
                     mapOf(
                         Fs.PHOTO_URL to url,

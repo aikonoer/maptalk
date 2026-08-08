@@ -50,6 +50,8 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -147,6 +149,7 @@ fun ThreadScreen(
     author: Author,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    onThreadDeleted: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val container = context.appContainer
@@ -261,12 +264,17 @@ fun ThreadScreen(
 
     LaunchedEffect(Unit) {
         viewModel.errors.collect { error ->
-            snackbarHostState.showSnackbar(error.message ?: "Message could not be sent")
+            val message = error.message?.takeIf { it.isNotBlank() }
+                ?: "Something went wrong"
+            snackbarHostState.showSnackbar(message)
         }
     }
 
     LaunchedEffect(state.shouldDismiss) {
-        if (state.shouldDismiss) onBack()
+        if (state.shouldDismiss) {
+            state.deletedThreadId?.let(onThreadDeleted)
+            onBack()
+        }
     }
 
     // Stick to the latest bubble on first paint and when a new tip message arrives while
@@ -2097,7 +2105,8 @@ private fun MessageLongPressDialog(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 28.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 28.dp, vertical = 24.dp)
                     .clickable(enabled = false) {},
             ) {
                 Surface(

@@ -14,6 +14,8 @@ final class AuthRepository {
     static let maxDisplayNameLength = 24
     /// Avatar JPEG edge length — enough for chat + account, small for Storage.
     static let avatarMaxEdge: CGFloat = 512
+    /// Must stay under `firebase/storage.rules` avatar write limit (1 MB).
+    static let avatarMaxBytes = 900_000
 
     enum LinkError: LocalizedError {
         case notSignedIn
@@ -189,8 +191,21 @@ final class AuthRepository {
             let ref = storage.reference().child(path)
             let meta = StorageMetadata()
             meta.contentType = "image/jpeg"
-            _ = try await ref.putDataAsync(jpeg, metadata: meta)
-            let url = try await ref.downloadURL().absoluteString
+            do {
+                _ = try await ref.putDataAsync(jpeg, metadata: meta)
+            } catch {
+                throw LinkError.failed(
+                    "Couldn’t upload that photo. Try a smaller image. (\(error.localizedDescription))"
+                )
+            }
+            let url: String
+            do {
+                url = try await ref.downloadURL().absoluteString
+            } catch {
+                throw LinkError.failed(
+                    "Photo uploaded but couldn’t get a link. Try again."
+                )
+            }
             try await firestore.collection(Fs.users).document(uid).setData(
                 [
                     Fs.photoURL: url,
@@ -210,7 +225,18 @@ final class AuthRepository {
         case let .firebase(auth, firestore, storage):
             guard let uid = auth.currentUser?.uid else { throw LinkError.notSignedIn }
             let path = "users/\(uid)/avatar.jpg"
-            try? await storage.reference().child(path).delete()
+            // Missing object is normal (stale profile fields, failed upload, reinstall).
+            // Never surface Storage noise — clearing Firestore is what the UI needs.
+            do {
+                try await storage.reference().child(path).delete()
+            } catch {
+                let ns = error as NSError
+                let notFound = ns.domain == StorageErrorDomain
+                    && ns.code == StorageErrorCode.objectNotFound.rawValue
+                if !notFound {
+                    // Still clear profile fields below; orphan Storage objects are rare.
+                }
+            }
             try await firestore.collection(Fs.users).document(uid).setData(
                 [
                     Fs.photoURL: FieldValue.delete(),
@@ -332,7 +358,14 @@ final class AuthRepository {
         let scaled = renderer.image { _ in
             image.draw(in: CGRect(origin: .zero, size: target))
         }
-        return scaled.jpegData(compressionQuality: 0.82)
+        var quality: CGFloat = 0.82
+        var data = scaled.jpegData(compressionQuality: quality)
+        while let bytes = data, bytes.count > avatarMaxBytes, quality > 0.35 {
+            quality -= 0.12
+            data = scaled.jpegData(compressionQuality: quality)
+        }
+        guard let bytes = data, bytes.count <= avatarMaxBytes else { return nil }
+        return bytes
     }
 }
 

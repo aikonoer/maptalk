@@ -603,8 +603,17 @@ final class AccountModel {
             statusIsError = false
             statusMessage = "Photo removed."
         } catch {
-            statusIsError = true
-            statusMessage = error.localizedDescription
+            // Stale photoURL with a missing Storage object — treat as cleared.
+            let text = error.localizedDescription
+            if text.localizedCaseInsensitiveContains("does not exist")
+                || text.localizedCaseInsensitiveContains("object not found") {
+                photoURL = nil
+                statusIsError = false
+                statusMessage = "Photo removed."
+            } else {
+                statusIsError = true
+                statusMessage = text
+            }
         }
         isSavingPhoto = false
     }

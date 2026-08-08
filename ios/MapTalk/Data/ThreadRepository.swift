@@ -1,4 +1,5 @@
 import FirebaseFirestore
+import FirebaseFunctions
 import Foundation
 
 /// Reads and writes threads. Every read is a snapshot listener exposed as an `AsyncStream`, so
@@ -526,15 +527,13 @@ final class ThreadRepository {
                     let messageSnap = try await messageRef.getDocument()
                     guard messageSnap.exists else { return }
 
-                    try await messageRef.delete()
-
-                    let latest = try await threadRef.collection(Fs.messages)
+                    let latestBefore = try await threadRef.collection(Fs.messages)
                         .order(by: Fs.createdAt, descending: true)
-                        .limit(to: 1)
+                        .limit(to: 2)
                         .getDocuments()
                         .documents
-                        .first
-                        .flatMap { $0.message() }
+                        .compactMap { $0.message() }
+                    let latest = latestBefore.first(where: { $0.id != messageId })
 
                     var tip: [String: Any] = [
                         Fs.messageCount: FieldValue.increment(Int64(-1)),
@@ -562,7 +561,11 @@ final class ThreadRepository {
                         tip[Fs.lastMediaPath] = FieldValue.delete()
                         tip[Fs.lastMediaKind] = FieldValue.delete()
                     }
-                    try await threadRef.updateData(tip)
+
+                    let batch = firestore.batch()
+                    batch.deleteDocument(messageRef)
+                    batch.updateData(tip, forDocument: threadRef)
+                    try await batch.commit()
                 } catch {
                     self?.onError?(error)
                 }
@@ -576,47 +579,34 @@ final class ThreadRepository {
         }
     }
 
-    /// Delete a thread you started (messages + subscribers first).
-    func deleteThread(threadId: String) {
+    /// Delete a thread you started via Cloud Function (admin wipe of messages + subscribers).
+    /// Calls `onFinished(nil)` on success or `onFinished(error)` on failure.
+    func deleteThread(threadId: String, onFinished: ((Error?) -> Void)? = nil) {
         switch backend {
-        case let .firestore(firestore, _):
+        case .firestore:
             Task { [weak self] in
                 do {
-                    let threadRef = firestore.collection(Fs.threads).document(threadId)
-                    let threadSnap = try await threadRef.getDocument()
-                    guard threadSnap.chatThread() != nil else {
-                        throw Self.editError("Chat not found.")
+                    let result = try await Functions.functions()
+                        .httpsCallable("deleteThread")
+                        .call(["threadId": threadId])
+                    _ = result
+                    await MainActor.run {
+                        onFinished?(nil)
                     }
-                    // Messages
-                    while true {
-                        let page = try await threadRef.collection(Fs.messages).limit(to: 400).getDocuments()
-                        if page.documents.isEmpty { break }
-                        let batch = firestore.batch()
-                        for doc in page.documents {
-                            batch.deleteDocument(doc.reference)
-                        }
-                        try await batch.commit()
-                    }
-                    // Subscribers
-                    while true {
-                        let page = try await threadRef.collection(Fs.subscribers).limit(to: 400).getDocuments()
-                        if page.documents.isEmpty { break }
-                        let batch = firestore.batch()
-                        for doc in page.documents {
-                            batch.deleteDocument(doc.reference)
-                        }
-                        try await batch.commit()
-                    }
-                    try await threadRef.delete()
                 } catch {
                     self?.onError?(error)
+                    await MainActor.run {
+                        onFinished?(error)
+                    }
                 }
             }
         case let .local(store):
             do {
                 try store.deleteThread(threadId: threadId)
+                onFinished?(nil)
             } catch {
                 onError?(error)
+                onFinished?(error)
             }
         }
     }

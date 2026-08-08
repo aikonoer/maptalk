@@ -32,4 +32,10 @@ struct GeoPoint: Equatable, Sendable {
             * sin(dLng / 2) * sin(dLng / 2)
         return 2 * earthRadiusMeters * asin(min(1, a.squareRoot()))
     }
+
+    /// Move south by `meters` (pin stays put while the camera centre shifts under a bottom sheet).
+    func shiftedSouth(byMeters meters: Double) -> GeoPoint {
+        let degrees = meters / 111_320.0
+        return GeoPoint(lat: lat - degrees, lng: lng)
+    }
 }

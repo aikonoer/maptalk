@@ -14,8 +14,6 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
@@ -27,6 +25,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -128,6 +127,8 @@ private const val NEARBY_ZOOM = 14f
 private const val SEARCH_DEBOUNCE_MS = 320L
 private const val SEARCH_LANDING_MS = 1_800L
 private val GLYPH_SIZE = 28.dp
+/** Compose sheet peek — leaves a map band above so the pin stays in view. */
+private val ComposeSheetPeek = 420.dp
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -217,8 +218,9 @@ fun MapScreen(
         }
     }
 
+    val density = LocalDensity.current
     var showNewThreadSheet by remember { mutableStateOf(false) }
-    var isPlacingPin by remember { mutableStateOf(false) }
+    var composePosition by remember { mutableStateOf<GeoPoint?>(null) }
     var openThreadId by remember { mutableStateOf<String?>(null) }
     var showAccount by remember { mutableStateOf(false) }
     var previewThread by remember { mutableStateOf<ChatThread?>(null) }
@@ -228,7 +230,6 @@ fun MapScreen(
     var searchLanding by remember { mutableStateOf<PlaceSearchHit?>(null) }
     var isSearching by remember { mutableStateOf(false) }
     var emptyNearbyHintDismissed by remember { mutableStateOf(false) }
-    val newThreadSheetState = rememberModalBottomSheetState()
     val threadSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val accountSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val pendingDeepLink by DeepLinkBus.pendingThreadId.collectAsStateWithLifecycle()
@@ -238,8 +239,19 @@ fun MapScreen(
         openThreadId = id
     }
 
-    // The crosshair only earns its place on screen while you are choosing a spot.
-    val showCrosshair = isPlacingPin || showNewThreadSheet
+    fun dismissCompose() {
+        if (!showNewThreadSheet && composePosition == null) return
+        // Panel + pin only — map stays put (no padding release, no reverse pan).
+        showNewThreadSheet = false
+        scope.launch {
+            delay(280)
+            composePosition = null
+        }
+    }
+
+    if (showNewThreadSheet) {
+        BackHandler { dismissCompose() }
+    }
 
     fun dismissPreview() {
         previewThread = null
@@ -255,8 +267,28 @@ fun MapScreen(
         previewCluster = threads
     }
 
-    if (isPlacingPin && !showNewThreadSheet) {
-        BackHandler { isPlacingPin = false }
+    fun beginCompose(at: GeoPoint) {
+        if (showNewThreadSheet) return
+        dismissPreview()
+        if (isSearching) isSearching = false
+        composePosition = at
+        showNewThreadSheet = true
+        // Pan only (keep zoom) — nudge south so the pin sits in the band above the panel.
+        scope.launch {
+            val peekPx = with(density) { ComposeSheetPeek.toPx() }
+            val mapHeightPx = context.resources.displayMetrics.heightPixels.toFloat().coerceAtLeast(1f)
+            val bounds = cameraPositionState.projection?.visibleRegion?.latLngBounds
+            val latDelta = if (bounds != null) {
+                (bounds.northeast.latitude - bounds.southwest.latitude).coerceAtLeast(1e-6)
+            } else {
+                0.02
+            }
+            val latShift = latDelta * (peekPx * 0.5) / mapHeightPx
+            cameraPositionState.animate(
+                CameraUpdateFactory.newLatLng(LatLng(at.lat - latShift, at.lng)),
+                durationMs = 320,
+            )
+        }
     }
 
     Scaffold(
@@ -283,6 +315,13 @@ fun MapScreen(
                     indoorLevelPickerEnabled = false,
                 ),
                 contentPadding = padding,
+                onMapLongClick = { latLng ->
+                    if (showNewThreadSheet || isSearching) return@GoogleMap
+                    if (previewThread != null || previewCluster != null) return@GoogleMap
+                    beginCompose(
+                        at = GeoPoint(latLng.latitude, latLng.longitude),
+                    )
+                },
             ) {
                 state.bubbles.forEach { bubble ->
                     key(bubble.key) {
@@ -295,6 +334,9 @@ fun MapScreen(
                         latitude = landing.latitude,
                         longitude = landing.longitude,
                     )
+                }
+                composePosition?.let { pin ->
+                    ComposePinMarker(latitude = pin.lat, longitude = pin.lng)
                 }
             }
 
@@ -402,15 +444,6 @@ fun MapScreen(
                 }
             }
 
-            AnimatedVisibility(
-                visible = showCrosshair,
-                enter = fadeIn() + scaleIn(initialScale = 0.7f),
-                exit = fadeOut() + scaleOut(targetScale = 0.7f),
-                modifier = Modifier.align(Alignment.Center),
-            ) {
-                Crosshair()
-            }
-
             Column(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
@@ -466,26 +499,39 @@ fun MapScreen(
                 }
 
                 val nearbyEmpty = !emptyNearbyHintDismissed &&
-                    !isPlacingPin && !showNewThreadSheet && !state.isLoading &&
+                    !state.isLoading &&
                     !state.isGlobalView && state.bubbles.isEmpty() && !state.isFilterHidingAll
                 val filterEmpty = !state.isLoading && state.bubbles.isEmpty() && state.isFilterHidingAll
 
                 LaunchedEffect(state.bubbles) {
-                    if (state.bubbles.isNotEmpty()) emptyNearbyHintDismissed = false
+                    // Once you've seen chats (or dismissed the tip), don't nag on every empty pan.
+                    if (state.bubbles.isNotEmpty()) emptyNearbyHintDismissed = true
                 }
 
                 if (nearbyEmpty) {
                     HintCard(
                         icon = R.drawable.ic_nearby,
                         title = "Quiet around here",
-                        detail = "Zoom out until a chat appears, or start one right here.",
+                        detail = "Long-press the map to start a chat, zoom out to find one, or use the button.",
                         primaryAction = if (findingClosest) "Looking…" else "Find the closest chat",
                         primaryEnabled = !findingClosest,
-                        onPrimary = viewModel::findClosestChat,
+                        onPrimary = {
+                            emptyNearbyHintDismissed = true
+                            viewModel.findClosestChat()
+                        },
                         secondaryAction = "Start the first chat",
-                        onSecondary = { isPlacingPin = true },
+                        onSecondary = {
+                            emptyNearbyHintDismissed = true
+                            val target = cameraPositionState.position.target
+                            beginCompose(
+                                at = GeoPoint(target.latitude, target.longitude),
+                            )
+                        },
                         onDismiss = { emptyNearbyHintDismissed = true },
-                        modifier = Modifier.padding(top = 18.dp),
+                        // Stay mounted while composing so it doesn’t pop off and flash the map.
+                        modifier = Modifier
+                            .padding(top = 18.dp)
+                            .graphicsLayer { alpha = if (showNewThreadSheet) 0f else 1f },
                     )
                 } else if (filterEmpty) {
                     HintCard(
@@ -499,72 +545,115 @@ fun MapScreen(
                 }
             }
 
-            Row(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .padding(
-                        start = 16.dp,
-                        end = 16.dp,
-                        bottom = padding.calculateBottomPadding() + 20.dp,
-                    ),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            AnimatedVisibility(
+                visible = !showNewThreadSheet,
+                enter = fadeIn(animationSpec = tween(220)),
+                exit = fadeOut(animationSpec = tween(120)),
+                modifier = Modifier.align(Alignment.BottomCenter),
             ) {
-                RoundMapButton(
-                    icon = R.drawable.ic_my_location,
-                    contentDescription = "Centre on my location",
-                    onClick = {
-                        if (hasLocationPermission) {
-                            viewModel.locateMe()
-                        } else {
-                            permissionLauncher.launch(LocationProvider.PERMISSIONS)
-                        }
-                    },
-                )
-
-                Box(modifier = Modifier.weight(1f))
-
-                AnimatedVisibility(
-                    visible = isPlacingPin && !showNewThreadSheet,
-                    enter = fadeIn() + scaleIn(initialScale = 0.7f),
-                    exit = fadeOut() + scaleOut(targetScale = 0.7f),
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(
+                            start = 16.dp,
+                            end = 16.dp,
+                            bottom = padding.calculateBottomPadding() + 20.dp,
+                        ),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     RoundMapButton(
-                        icon = R.drawable.ic_close,
-                        contentDescription = "Cancel placing chat",
-                        onClick = { isPlacingPin = false },
+                        icon = R.drawable.ic_my_location,
+                        contentDescription = "Centre on my location",
+                        onClick = {
+                            if (hasLocationPermission) {
+                                viewModel.locateMe()
+                            } else {
+                                permissionLauncher.launch(LocationProvider.PERMISSIONS)
+                            }
+                        },
                     )
-                }
 
-                Button(
-                    onClick = {
-                        if (isPlacingPin) showNewThreadSheet = true else isPlacingPin = true
-                    },
-                    enabled = !showNewThreadSheet,
-                    shape = CircleShape,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MapTalkColors.Accent,
-                        contentColor = Color.White,
-                        disabledContainerColor = MapTalkColors.Accent,
-                        disabledContentColor = Color.White,
-                    ),
-                ) {
-                    Row(
-                        modifier = Modifier.padding(vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    Box(modifier = Modifier.weight(1f))
+
+                    Button(
+                        onClick = {
+                            val target = cameraPositionState.position.target
+                            beginCompose(
+                                at = GeoPoint(target.latitude, target.longitude),
+                            )
+                        },
+                        shape = CircleShape,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MapTalkColors.Accent,
+                            contentColor = Color.White,
+                        ),
                     ) {
-                        Icon(
-                            painter = painterResource(
-                                if (isPlacingPin) R.drawable.ic_pin else R.drawable.ic_add,
-                            ),
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
+                        Row(
+                            modifier = Modifier.padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Icon(
+                                painter = painterResource(R.drawable.ic_add),
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Text(
+                                text = "Start a chat here",
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                        }
+                    }
+                }
+            }
+
+            // In-place panel — ModalBottomSheet still flashes/resizes the map under a scrim.
+            AnimatedVisibility(
+                visible = showNewThreadSheet,
+                enter = slideInVertically(
+                    animationSpec = tween(320),
+                    initialOffsetY = { it },
+                ) + fadeIn(animationSpec = tween(220)),
+                exit = slideOutVertically(
+                    animationSpec = tween(320),
+                    targetOffsetY = { it },
+                ) + fadeOut(animationSpec = tween(200)),
+                modifier = Modifier.align(Alignment.BottomCenter),
+            ) {
+                val pin = cameraPositionState.position.target
+                val pinPosition = composePosition ?: GeoPoint(pin.latitude, pin.longitude)
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(ComposeSheetPeek),
+                    color = MapTalkColors.Surface,
+                    contentColor = MapTalkColors.Text,
+                    shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+                    shadowElevation = 12.dp,
+                ) {
+                    Column {
+                        Box(
+                            modifier = Modifier
+                                .padding(top = 10.dp, bottom = 4.dp)
+                                .size(width = 36.dp, height = 5.dp)
+                                .align(Alignment.CenterHorizontally)
+                                .background(MapTalkColors.Faint.copy(alpha = 0.55f), CircleShape),
                         )
-                        Text(
-                            text = if (isPlacingPin) "Pin chat here" else "Start a chat here",
-                            style = MaterialTheme.typography.labelLarge,
+                        NewThreadSheet(
+                            position = pinPosition,
+                            onCancel = { dismissCompose() },
+                            onCreate = { title, body, kind, image ->
+                                dismissCompose()
+                                openThreadId = viewModel.createThread(
+                                    title = title,
+                                    kind = kind,
+                                    position = pinPosition,
+                                    author = author,
+                                    openingText = body,
+                                    openingImage = image,
+                                )
+                            },
                         )
                     }
                 }
@@ -619,34 +708,6 @@ fun MapScreen(
         }
     }
 
-    if (showNewThreadSheet) {
-        val pin = cameraPositionState.position.target
-        val pinPosition = GeoPoint(pin.latitude, pin.longitude)
-        ModalBottomSheet(
-            onDismissRequest = { showNewThreadSheet = false },
-            sheetState = newThreadSheetState,
-            containerColor = MapTalkColors.Surface,
-            contentColor = MapTalkColors.Text,
-            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-        ) {
-            NewThreadSheet(
-                position = pinPosition,
-                onCreate = { title, body, kind, image ->
-                    showNewThreadSheet = false
-                    isPlacingPin = false
-                    openThreadId = viewModel.createThread(
-                        title = title,
-                        kind = kind,
-                        position = pinPosition,
-                        author = author,
-                        openingText = body,
-                        openingImage = image,
-                    )
-                },
-            )
-        }
-    }
-
     openThreadId?.let { threadId ->
         BackHandler { openThreadId = null }
         ModalBottomSheet(
@@ -661,6 +722,10 @@ fun MapScreen(
                 threadId = threadId,
                 author = author,
                 onBack = { openThreadId = null },
+                onThreadDeleted = { deletedId ->
+                    viewModel.removeThread(deletedId)
+                    openThreadId = null
+                },
                 modifier = Modifier
                     .fillMaxWidth()
                     .fillMaxHeight(0.94f),
@@ -1284,22 +1349,3 @@ private fun RoundMapButton(
     }
 }
 
-/** Marks the spot a new chat would be pinned to. */
-@Composable
-private fun Crosshair(modifier: Modifier = Modifier) {
-    Box(modifier = modifier, contentAlignment = Alignment.Center) {
-        Surface(
-            modifier = Modifier.size(22.dp),
-            shape = CircleShape,
-            color = MapTalkColors.Accent.copy(alpha = 0.15f),
-            border = BorderStroke(2.dp, MapTalkColors.Accent),
-            content = {},
-        )
-        Surface(
-            modifier = Modifier.size(5.dp),
-            shape = CircleShape,
-            color = MapTalkColors.Accent,
-            content = {},
-        )
-    }
-}

@@ -50,6 +50,8 @@ data class ThreadUiState(
     val hasMoreHistory: Boolean = true,
     val replyTarget: Message? = null,
     val shouldDismiss: Boolean = false,
+    /** Set after Delete chat succeeds — map should drop the bubble immediately. */
+    val deletedThreadId: String? = null,
 )
 
 enum class VideoSendPhase {
@@ -137,8 +139,11 @@ class ThreadViewModel(
     private val _pendingOutgoing = MutableStateFlow<Message?>(null)
     private val _replyTarget = MutableStateFlow<Message?>(null)
     private val _shouldDismiss = MutableStateFlow(false)
+    private val _deletedThreadId = MutableStateFlow<String?>(null)
     /** Live tip + pages loaded by scrolling up. Grows; live updates overwrite by id. */
     private val _retainedMessages = MutableStateFlow<List<Message>>(emptyList())
+    /** Ids in the last live tip page — used to drop deletes without wiping scroll-back history. */
+    private var liveTipIds: Set<String> = emptySet()
     private val _isLoadingOlder = MutableStateFlow(false)
     private val _hasMoreHistory = MutableStateFlow(true)
     private val _tipReady = MutableStateFlow(false)
@@ -157,14 +162,26 @@ class ThreadViewModel(
     ) { loadingOlder, hasMore -> loadingOlder to hasMore }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false to true)
 
+    private val dismissChrome: StateFlow<DismissChrome> = combine(
+        _replyTarget,
+        _shouldDismiss,
+        _tipReady,
+        historyFlags,
+        _deletedThreadId,
+    ) { reply, dismiss, tipReady, history, deletedId ->
+        DismissChrome(reply, dismiss, tipReady, history.first, history.second, deletedId)
+    }.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        DismissChrome(null, false, false, false, true, null),
+    )
+
     val state: StateFlow<ThreadUiState> = combine(
         threadRepository.thread(threadId),
         _retainedMessages,
         _pendingOutgoing,
         blockedUids,
-        combine(_replyTarget, _shouldDismiss, _tipReady, historyFlags) { reply, dismiss, tipReady, history ->
-            HistoryChrome(reply, dismiss, tipReady, history.first, history.second)
-        },
+        dismissChrome,
     ) { thread, retained, pending, blocked, chrome ->
         val messages = mergeMessages(older = retained, live = emptyList(), pending = pending)
             .filter { it.authorId !in blocked }
@@ -178,6 +195,7 @@ class ThreadViewModel(
             hasMoreHistory = chrome.hasMore,
             replyTarget = replyVisible,
             shouldDismiss = chrome.dismiss || authorBlocked,
+            deletedThreadId = chrome.deletedThreadId,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ThreadUiState())
 
@@ -185,9 +203,18 @@ class ThreadViewModel(
         pushRepository.subscribe(toThreadId = threadId)
         viewModelScope.launch {
             threadRepository.messages(threadId).collect { live ->
+                val newIds = live.map { it.id }.toSet()
+                val goneFromTip = liveTipIds - newIds
+                val addedToTip = newIds - liveTipIds
                 _retainedMessages.update { previous ->
-                    mergeMessages(older = previous, live = live, pending = null)
+                    val base = if (goneFromTip.isNotEmpty() && addedToTip.isEmpty()) {
+                        previous.filterNot { it.id in goneFromTip }
+                    } else {
+                        previous
+                    }
+                    mergeMessages(older = base, live = live, pending = null)
                 }
+                liveTipIds = newIds
                 // A short tip means the whole thread fit in one page.
                 if (live.size < ThreadRepository.MESSAGE_PAGE) {
                     _hasMoreHistory.value = false
@@ -246,12 +273,13 @@ class ThreadViewModel(
         )
     }
 
-    private data class HistoryChrome(
+    private data class DismissChrome(
         val reply: Message?,
         val dismiss: Boolean,
         val tipReady: Boolean,
         val loadingOlder: Boolean,
         val hasMore: Boolean,
+        val deletedThreadId: String?,
     )
 
     fun mediaFile(relativePath: String): File? = resolveMedia(relativePath)
@@ -553,12 +581,19 @@ class ThreadViewModel(
 
     fun deleteMessage(message: Message) {
         if (_replyTarget.value?.id == message.id) clearReply()
+        // Drop immediately — merge used to resurrect deletes from retained history.
+        _retainedMessages.update { previous -> previous.filterNot { it.id == message.id } }
+        liveTipIds = liveTipIds - message.id
         threadRepository.deleteMessage(threadId, message.id)
     }
 
     fun deleteThread() {
-        threadRepository.deleteThread(threadId)
-        _shouldDismiss.value = true
+        viewModelScope.launch {
+            if (threadRepository.deleteThread(threadId)) {
+                _deletedThreadId.value = threadId
+                _shouldDismiss.value = true
+            }
+        }
     }
 
     fun block(blockedUid: String, displayName: String, author: Author) {

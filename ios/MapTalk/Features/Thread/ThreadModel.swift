@@ -19,6 +19,8 @@ final class ThreadModel {
     var replyTarget: Message?
     /// Set when the thread author is blocked so the screen can dismiss.
     var shouldDismiss = false
+    /// Non-nil after a successful Delete chat — map should drop the bubble immediately.
+    private(set) var deletedThreadId: String?
 
     private let repository: ThreadRepository
     private let safety: SafetyRepository
@@ -26,6 +28,8 @@ final class ThreadModel {
     private let threadId: String
     /// Live tip + pages loaded by scrolling up. Grows; live updates overwrite by id.
     private var retainedMessages: [Message] = []
+    /// Ids in the last live tip page — used to drop deletes without wiping scroll-back history.
+    private var liveTipIds: Set<String> = []
     private var tasks: [Task<Void, Never>] = []
 
     init(
@@ -62,7 +66,16 @@ final class ThreadModel {
         tasks.append(
             Task { [repository, threadId] in
                 for await live in repository.messages(threadId: threadId) {
+                    let newIds = Set(live.map(\.id))
+                    let goneFromTip = liveTipIds.subtracting(newIds)
+                    let addedToTip = newIds.subtracting(liveTipIds)
+                    // Pure removals (no new tip ids) → deletes. Tip-slide adds one and drops one —
+                    // keep the dropped id in retained so scroll-back history doesn’t get a hole.
+                    if !goneFromTip.isEmpty, addedToTip.isEmpty {
+                        retainedMessages.removeAll { goneFromTip.contains($0.id) }
+                    }
                     retainedMessages = Self.merge(older: retainedMessages, live: live)
+                    liveTipIds = newIds
                     // A short tip means the whole thread fit in one page.
                     if live.count < repository.messagePageSize {
                         hasMoreHistory = false
@@ -187,12 +200,23 @@ final class ThreadModel {
 
     func deleteMessage(_ message: Message) {
         if replyTarget?.id == message.id { replyTarget = nil }
+        // Drop immediately — merge used to resurrect deletes from retained history.
+        retainedMessages.removeAll { $0.id == message.id }
+        liveTipIds.remove(message.id)
+        applyMessageFilter()
         repository.deleteMessage(threadId: threadId, messageId: message.id)
     }
 
     func deleteThread() {
-        repository.deleteThread(threadId: threadId)
-        shouldDismiss = true
+        repository.deleteThread(threadId: threadId) { [weak self] error in
+            guard let self else { return }
+            if let error {
+                self.errorMessage = error.localizedDescription
+                return
+            }
+            self.deletedThreadId = self.threadId
+            self.shouldDismiss = true
+        }
     }
 
     func block(uid: String, displayName: String, as author: Author) {
