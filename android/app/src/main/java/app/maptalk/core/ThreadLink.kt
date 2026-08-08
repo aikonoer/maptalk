@@ -30,15 +30,37 @@ object ThreadLink {
     }
 }
 
-/** Recently active threads get a "Live" mark on the map — no backend field required. */
-object LiveNow {
-    private val WINDOW: Duration = Duration.ofMinutes(20)
+/**
+ * How fresh a chat feels — map bubbles use glow intensity instead of a "Live" label.
+ */
+enum class ActivityHeat {
+    /** Active in the last 20 minutes — strong accent glow. */
+    HOT,
+    /** Active in the last 2 hours — soft accent glow. */
+    WARM,
+    /** Quieter — hairline only. */
+    COOL,
+    ;
 
-    fun isLive(instant: Instant?, now: Instant = Instant.now()): Boolean {
-        if (instant == null) return false
-        val age = Duration.between(instant, now)
-        return !age.isNegative && age <= WINDOW
+    companion object {
+        private val HOT_WINDOW: Duration = Duration.ofMinutes(20)
+        private val WARM_WINDOW: Duration = Duration.ofHours(2)
+
+        fun of(instant: Instant?, now: Instant = Instant.now()): ActivityHeat {
+            if (instant == null) return COOL
+            val age = Duration.between(instant, now)
+            if (age.isNegative) return COOL
+            if (age <= HOT_WINDOW) return HOT
+            if (age <= WARM_WINDOW) return WARM
+            return COOL
+        }
     }
+}
+
+/** Recently active threads get a glow on the map — no backend field required. */
+object LiveNow {
+    fun isLive(instant: Instant?, now: Instant = Instant.now()): Boolean =
+        ActivityHeat.of(instant, now) == ActivityHeat.HOT
 }
 
 /** Holds a thread id from a deep link or notification tap until MapScreen can open the sheet. */

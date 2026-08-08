@@ -28,14 +28,36 @@ enum ThreadLink {
     }
 }
 
-/// Recently active threads get a "Live" pulse on the map — no backend field required.
+/// How fresh a chat feels — map bubbles use glow intensity instead of a "Live" label.
+/// Ordered hot → cool so `min()` picks the most active in a cluster.
+enum ActivityHeat: Equatable, Sendable, Comparable {
+    /// Active in the last 20 minutes — strong accent glow.
+    case hot
+    /// Active in the last 2 hours — soft accent glow.
+    case warm
+    /// Quieter — hairline only.
+    case cool
+
+    static let hotWindow: TimeInterval = 20 * 60
+    static let warmWindow: TimeInterval = 2 * 60 * 60
+
+    static func of(_ date: Date?, now: Date = Date()) -> ActivityHeat {
+        guard let date else { return .cool }
+        let age = now.timeIntervalSince(date)
+        guard age >= 0 else { return .cool }
+        if age <= hotWindow { return .hot }
+        if age <= warmWindow { return .warm }
+        return .cool
+    }
+}
+
+/// Recently active threads get a glow on the map — no backend field required.
 enum LiveNow {
-    /// Activity within this window counts as live.
-    static let window: TimeInterval = 20 * 60
+    /// Activity within this window counts as live (hot).
+    static let window: TimeInterval = ActivityHeat.hotWindow
 
     static func isLive(_ date: Date?, now: Date = Date()) -> Bool {
-        guard let date else { return false }
-        return now.timeIntervalSince(date) <= window && now.timeIntervalSince(date) >= 0
+        ActivityHeat.of(date, now: now) == .hot
     }
 }
 

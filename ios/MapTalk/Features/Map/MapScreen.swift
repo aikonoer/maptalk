@@ -10,6 +10,11 @@ private let worldRegion = MKCoordinateRegion(
 private let nearbySpan = MKCoordinateSpan(latitudeDelta: 0.03, longitudeDelta: 0.03)
 /// Compose panel height — leaves a map band above so the pin stays in view.
 private let composeSheetHeight: CGFloat = 420
+/// Side/bottom inset — matches the iOS 26 chat sheet so the map peeks around the card.
+private let composeSheetInset: CGFloat = 12
+private let composeSheetCornerRadius: CGFloat = 28
+/// How much to tighten the span when opening compose (`1` = no zoom). Cancel restores the prior span.
+private let composeZoomInFactor = 0.82
 
 /// Cebu City — where the mock-data seed clusters when you run against local emulators.
 private let cebuRegion = MKCoordinateRegion(
@@ -27,13 +32,15 @@ struct MapScreen: View {
     @State private var camera: MapCameraPosition = Self.startsInDemo
         ? .region(cebuRegion)
         : .region(worldRegion)
-    /// Last settled span — compose pans with this so zoom doesn’t change.
+    /// Last settled span — used as the base for compose pan/zoom.
     @State private var mapSpan = nearbySpan
     @State private var openThreadId: String?
     @State private var showSettings = false
     @State private var isComposing = false
     /// Where the new chat will land — set by long-press or the compose button (map centre).
     @State private var composePosition: GeoPoint?
+    /// Camera to restore when compose is cancelled (pre–zoom-in region).
+    @State private var composeRestoreRegion: MKCoordinateRegion?
     @State private var composeDismissTask: Task<Void, Never>?
     @State private var previewThread: ChatThread?
     @State private var previewLatest: [Message] = []
@@ -59,6 +66,11 @@ struct MapScreen: View {
     @State private var landTask: Task<Void, Never>?
     /// User dismissed the empty-nearby tip; show again once chats return then go empty again.
     @State private var emptyNearbyHintDismissed = false
+    /// Thread ids already shown on the map — seed once so load doesn’t grow every pin.
+    @State private var seenBubbleThreadIds: Set<String> = []
+    @State private var bubbleIdsSeeded = false
+    /// Fresh thread ids that should play the grow-in once.
+    @State private var appearingBubbleIds: Set<String> = []
     @FocusState private var searchFocused: Bool
 
     private var openThreadBinding: Binding<ThreadRoute?> {
@@ -231,10 +243,34 @@ struct MapScreen: View {
             }
             lastNearbyCount = count
         }
+        .onChange(of: bubbleThreadIds) { _, ids in
+            trackNewBubbles(ids)
+        }
     }
 
     private var nearbyChatCount: Int {
         model.bubbles.reduce(0) { $0 + $1.size }
+    }
+
+    private var bubbleThreadIds: Set<String> {
+        Set(model.bubbles.flatMap(\.items).map(\.id))
+    }
+
+    /// First snapshot seeds silently; later arrivals get a one-shot grow-in.
+    private func trackNewBubbles(_ ids: Set<String>) {
+        if !bubbleIdsSeeded {
+            seenBubbleThreadIds = ids
+            bubbleIdsSeeded = true
+            return
+        }
+        let fresh = ids.subtracting(seenBubbleThreadIds)
+        guard !fresh.isEmpty else { return }
+        seenBubbleThreadIds.formUnion(fresh)
+        appearingBubbleIds.formUnion(fresh)
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(520))
+            appearingBubbleIds.subtract(fresh)
+        }
     }
 
     private func flashNearbyCount() {
@@ -270,7 +306,10 @@ struct MapScreen: View {
             UserAnnotation()
             ForEach(model.bubbles) { bubble in
                 Annotation("", coordinate: bubble.position.coordinate, anchor: .bottomLeading) {
-                    BubbleMarker(bubble: bubble)
+                    BubbleMarker(
+                        bubble: bubble,
+                        playAppear: bubble.items.contains { appearingBubbleIds.contains($0.id) }
+                    )
                         .modifier(
                             BubblePressModifier(
                                 onTap: { open(bubble) },
@@ -603,7 +642,7 @@ struct MapScreen: View {
         }
     }
 
-    /// Opens the new-chat panel at `position` and pans (same zoom) so the pin sits above the panel.
+    /// Opens the new-chat panel at `position`: light zoom-in + pan so the pin sits above the panel.
     private func beginCompose(at position: GeoPoint) {
         guard !isComposing else { return }
         composeDismissTask?.cancel()
@@ -611,23 +650,30 @@ struct MapScreen: View {
         dismissPreview()
         if isSearching { dismissSearch() }
         composePosition = position
+        composeRestoreRegion = MKCoordinateRegion(
+            center: model.visibleCenter.coordinate,
+            span: mapSpan
+        )
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
 
-        // Keep current zoom — only shift the centre south so the pin sits in the band above the panel.
+        let zoomedSpan = MKCoordinateSpan(
+            latitudeDelta: mapSpan.latitudeDelta * composeZoomInFactor,
+            longitudeDelta: mapSpan.longitudeDelta * composeZoomInFactor
+        )
         let mapHeight = UIScreen.main.bounds.height
-        let latShift = mapSpan.latitudeDelta * (composeSheetHeight * 0.5) / max(mapHeight, 1)
+        let latShift = zoomedSpan.latitudeDelta * (composeSheetHeight * 0.5) / max(mapHeight, 1)
         let cameraCenter = CLLocationCoordinate2D(
             latitude: position.lat - latShift,
             longitude: position.lng
         )
-        withAnimation(.easeInOut(duration: 0.35)) {
+        withAnimation(.easeInOut(duration: 0.38)) {
             isComposing = true
-            camera = .region(MKCoordinateRegion(center: cameraCenter, span: mapSpan))
+            camera = .region(MKCoordinateRegion(center: cameraCenter, span: zoomedSpan))
         }
     }
 
-    /// Panel + pin only — map stays put (no padding release, no reverse pan).
-    private func dismissCompose() {
+    /// Slides the panel away; on cancel, zooms back out to the pre-compose camera.
+    private func dismissCompose(restoreCamera: Bool = true) {
         guard isComposing || composePosition != nil else { return }
         UIApplication.shared.sendAction(
             #selector(UIResponder.resignFirstResponder),
@@ -636,13 +682,19 @@ struct MapScreen: View {
             for: nil
         )
         composeDismissTask?.cancel()
-        withAnimation(.easeInOut(duration: 0.32)) {
+        let restore = restoreCamera ? composeRestoreRegion : nil
+        composeRestoreRegion = nil
+        withAnimation(.easeInOut(duration: 0.34)) {
             isComposing = false
+            if let restore {
+                camera = .region(restore)
+                mapSpan = restore.span
+            }
         }
         composeDismissTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(280))
+            try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled else { return }
-            withAnimation(.easeOut(duration: 0.2)) {
+            withAnimation(.easeOut(duration: 0.18)) {
                 composePosition = nil
             }
             composeDismissTask = nil
@@ -760,24 +812,33 @@ struct MapScreen: View {
             && model.bubbles.isEmpty && !model.isFilterHidingAll
     }
 
-    /// Bottom compose card — not a system sheet, so the map never scales/dims behind it.
+        /// Bottom compose card — not a system sheet, so the map never scales/dims behind it.
+    /// Inset + fully rounded to echo the iOS 26 chat sheet (map peeks at the sides).
     private var composePanel: some View {
         let pin = composePosition ?? model.visibleCenter
         return VStack(spacing: 0) {
-            Spacer(minLength: 0)
-                .allowsHitTesting(false)
+            // Tap the map band above the panel to drop the keyboard; the sheet springs back
+            // with the keyboard safe-area animation (content often isn’t tall enough to scroll-dismiss).
+            Color.clear
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .onTapGesture { dismissComposeKeyboard() }
             VStack(spacing: 0) {
                 Capsule()
                     .fill(Theme.faint.opacity(0.55))
                     .frame(width: 36, height: 5)
                     .padding(.top, 10)
                     .padding(.bottom, 4)
+                    .frame(maxWidth: .infinity)
+                    .contentShape(Rectangle())
+                    .onTapGesture { dismissComposeKeyboard() }
                 NewThreadSheet(
                     position: pin,
-                    onCancel: { dismissCompose() }
+                    onCancel: { dismissCompose(restoreCamera: true) },
+                    onDismissKeyboard: { dismissComposeKeyboard() }
                 ) { title, body, kind, image in
-                    dismissCompose()
-                    openThreadId = model.createThread(
+                    dismissCompose(restoreCamera: false)
+                    let id = model.createThread(
                         title: title,
                         kind: kind,
                         position: pin,
@@ -785,14 +846,38 @@ struct MapScreen: View {
                         openingText: body,
                         openingImage: image.flatMap(ImageCompressor.prepare)
                     )
+                    // Stay on the map briefly so the new bubble’s grow-in is visible.
+                    seenBubbleThreadIds.insert(id)
+                    appearingBubbleIds.insert(id)
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(780))
+                        appearingBubbleIds.remove(id)
+                        openThreadId = id
+                    }
                 }
             }
             .frame(maxHeight: composeSheetHeight)
             .background(Theme.surface)
-            .clipShape(.rect(topLeadingRadius: 24, bottomLeadingRadius: 0, bottomTrailingRadius: 0, topTrailingRadius: 24))
+            .clipShape(RoundedRectangle(cornerRadius: composeSheetCornerRadius, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: composeSheetCornerRadius, style: .continuous)
+                    .strokeBorder(Theme.hairline, lineWidth: 1)
+            }
             .shadow(color: .black.opacity(0.35), radius: 18, y: -4)
+            .padding(.horizontal, composeSheetInset)
+            // Float above the home indicator (and the keyboard when focused).
+            .padding(.bottom, composeSheetInset)
         }
-        .ignoresSafeArea(edges: .bottom)
+    }
+
+    /// Clears field focus so the keyboard dismisses and the compose panel drops with it.
+    private func dismissComposeKeyboard() {
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
+        )
     }
 
     private var showFilterEmptyHint: Bool {
@@ -1361,14 +1446,15 @@ private struct MapAccountAvatar: View {
 /// A marker drawn as a chat bubble: title when alone, stacked kind glyphs when clustered.
 private struct BubbleMarker: View {
     let bubble: GeoCluster<ChatThread>
+    var playAppear: Bool = false
 
     var body: some View {
         // Re-evaluate Live every 30s so badges age off without a pan.
         TimelineView(.periodic(from: .now, by: 30)) { context in
             if let thread = bubble.single {
-                LiveThreadBubble(thread: thread, now: context.date)
+                LiveThreadBubble(thread: thread, now: context.date, playAppear: playAppear)
             } else {
-                ClusterBubbleMarker(threads: bubble.items, now: context.date)
+                ClusterBubbleMarker(threads: bubble.items, now: context.date, playAppear: playAppear)
             }
         }
     }
@@ -1443,24 +1529,43 @@ private struct MapBubbleMediaThumb: View {
 private struct LiveThreadBubble: View {
     let thread: ChatThread
     let now: Date
+    var playAppear: Bool = false
 
     @State private var flash = false
+    /// Start small when this pin is meant to grow in — avoids a one-frame full-size flash.
+    @State private var appearScale: CGFloat
     @State private var seenMessageAt: Date?
 
-    private var live: Bool { LiveNow.isLive(thread.lastMessageAt, now: now) }
+    init(thread: ChatThread, now: Date, playAppear: Bool = false) {
+        self.thread = thread
+        self.now = now
+        self.playAppear = playAppear
+        _appearScale = State(initialValue: playAppear ? 0.4 : 1)
+    }
+
+    private var heat: ActivityHeat { ActivityHeat.of(thread.lastMessageAt, now: now) }
+    /// Same window as main’s live border (≤20m).
+    private var live: Bool { heat == .hot }
     /// Sharper lower-left point — that corner is the map anchor (`.bottomLeading`).
     private var shape: UnevenRoundedRectangle { Theme.bubble(radius: 14, tailRadius: 2) }
 
     var body: some View {
         bubbleChip
             .background {
+                ActivityRingGlow(shape: shape, heat: heat)
                 if live {
                     LiveBubbleAura(shape: shape)
                 }
             }
-            .scaleEffect(flash ? 1.08 : 1, anchor: .bottomLeading)
+            .scaleEffect(appearScale * (flash ? 1.08 : 1), anchor: .bottomLeading)
             .brightness(flash ? 0.08 : 0)
-            .onAppear { seenMessageAt = thread.lastMessageAt }
+            .onAppear {
+                seenMessageAt = thread.lastMessageAt
+                runAppearIfNeeded()
+            }
+            .onChange(of: playAppear) { _, should in
+                if should { runAppearIfNeeded() }
+            }
             .onChange(of: thread.lastMessageAt) { _, newValue in
                 guard let newValue else { return }
                 if let seen = seenMessageAt, newValue > seen {
@@ -1470,16 +1575,21 @@ private struct LiveThreadBubble: View {
             }
     }
 
+    private func runAppearIfNeeded() {
+        guard playAppear else { return }
+        // Skip if a grow is already in flight (init may start at 0.4).
+        if appearScale > 0.42, appearScale < 0.99 { return }
+        appearScale = 0.4
+        withAnimation(.spring(duration: 0.55, bounce: 0.42)) {
+            appearScale = 1
+        }
+    }
+
     private var bubbleChip: some View {
         HStack(spacing: 7) {
-            if live {
-                LiveDot(size: 8)
-            }
-
             if thread.hasMapMediaPreview,
                let path = thread.lastMediaPath,
                let kind = thread.lastMediaKind {
-                // Media tip: thumb + title — LiveDot carries activity when live.
                 MapBubbleMediaThumb(path: path, isVideo: kind == .video)
                 Text(thread.title)
                     .font(.markerTitle)
@@ -1494,9 +1604,9 @@ private struct LiveThreadBubble: View {
                     .foregroundStyle(Theme.text)
                     .lineLimit(1)
 
-                Text(live ? "Live" : relativeTime(thread.lastMessageAt))
+                Text(relativeTime(thread.lastMessageAt))
                     .font(.meta)
-                    .foregroundStyle(live ? Theme.accent : Theme.faint)
+                    .foregroundStyle(heat == .cool ? Theme.faint : Theme.accent.opacity(heat == .hot ? 0.95 : 0.7))
             }
         }
         .padding(.leading, 10)
@@ -1520,7 +1630,11 @@ private struct LiveThreadBubble: View {
 
     private var accessibilityLabel: String {
         var parts = [thread.title, thread.kind.label]
-        if live { parts.append("Live") }
+        switch heat {
+        case .hot: parts.append("Active now")
+        case .warm: parts.append("Active recently")
+        case .cool: break
+        }
         if thread.hasMapMediaPreview {
             parts.append(thread.lastMediaKind == .video ? "Has video" : "Has photo")
         }
@@ -1541,9 +1655,19 @@ private struct LiveThreadBubble: View {
 private struct ClusterBubbleMarker: View {
     let threads: [ChatThread]
     let now: Date
+    var playAppear: Bool = false
+
+    @State private var appearScale: CGFloat
 
     private static let maxVisible = 3
     private var shape: UnevenRoundedRectangle { Theme.bubble(radius: 14, tailRadius: 2) }
+
+    init(threads: [ChatThread], now: Date, playAppear: Bool = false) {
+        self.threads = threads
+        self.now = now
+        self.playAppear = playAppear
+        _appearScale = State(initialValue: playAppear ? 0.4 : 1)
+    }
 
     private var sorted: [ChatThread] {
         threads.sorted {
@@ -1559,12 +1683,16 @@ private struct ClusterBubbleMarker: View {
         max(0, sorted.count - visible.count)
     }
 
-    private var anyLive: Bool {
-        sorted.contains { LiveNow.isLive($0.lastMessageAt, now: now) }
+    private var heat: ActivityHeat {
+        sorted.map { ActivityHeat.of($0.lastMessageAt, now: now) }.min() ?? .cool
     }
 
+    private var anyLive: Bool { heat == .hot }
+
     var body: some View {
-        HStack(spacing: 0) {
+        // One tight LTR strip — hug content so the map annotation can’t stretch
+        // the pill and leave the time stranded on the trailing edge.
+        HStack(spacing: 6) {
             HStack(spacing: -8) {
                 ForEach(Array(visible.enumerated()), id: \.element.id) { index, thread in
                     Text(thread.kind.glyph)
@@ -1586,17 +1714,19 @@ private struct ClusterBubbleMarker: View {
                 Text("+\(overflow)")
                     .font(.markerTitle)
                     .foregroundStyle(Theme.text)
-                    .padding(.leading, 8)
-            } else if anyLive {
-                LiveDot(size: 7)
-                    .padding(.leading, 8)
             }
+
+            Text(relativeTime(sorted.first?.lastMessageAt))
+                .font(.meta)
+                .foregroundStyle(heat == .cool ? Theme.faint : Theme.accent.opacity(heat == .hot ? 0.95 : 0.7))
         }
         .padding(.leading, 8)
         .padding(.trailing, 10)
         .padding(.vertical, 7)
+        .fixedSize(horizontal: true, vertical: true)
         .background(Theme.surface, in: shape)
         .background {
+            ActivityRingGlow(shape: shape, heat: heat)
             if anyLive {
                 LiveBubbleAura(shape: shape)
             }
@@ -1612,13 +1742,31 @@ private struct ClusterBubbleMarker: View {
             radius: anyLive ? 8 : 6,
             y: 3
         )
+        .scaleEffect(appearScale, anchor: .bottomLeading)
+        .onAppear { runAppearIfNeeded() }
+        .onChange(of: playAppear) { _, should in
+            if should { runAppearIfNeeded() }
+        }
         .accessibilityLabel(accessibilityLabel)
+    }
+
+    private func runAppearIfNeeded() {
+        guard playAppear else { return }
+        if appearScale > 0.42, appearScale < 0.99 { return }
+        appearScale = 0.4
+        withAnimation(.spring(duration: 0.55, bounce: 0.42)) {
+            appearScale = 1
+        }
     }
 
     private var accessibilityLabel: String {
         let n = sorted.count
         let base = n == 1 ? "1 chat" : "\(n) chats"
-        return anyLive ? "\(base), live" : base
+        switch heat {
+        case .hot: return "\(base), active now"
+        case .warm: return "\(base), active recently"
+        case .cool: return base
+        }
     }
 }
 

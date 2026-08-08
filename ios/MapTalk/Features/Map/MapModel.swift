@@ -162,6 +162,26 @@ final class MapModel {
     ) -> String {
         let id = repository.createThread(title: title, kind: kind, position: position, author: author)
         let opening = openingText.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Pin immediately so the map bubble can grow in before Firestore echoes the write.
+        let now = Date()
+        let local = ChatThread(
+            id: id,
+            title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+            kind: kind,
+            position: position,
+            geohash: GeoHash.hash(for: position),
+            authorId: author.uid,
+            authorName: author.displayName,
+            createdAt: now,
+            lastMessageAt: now,
+            messageCount: (openingImage != nil || !opening.isEmpty) ? 1 : 0,
+            lastMediaPath: nil,
+            lastMediaKind: nil
+        )
+        if !latestThreads.contains(where: { $0.id == id }) {
+            latestThreads.insert(local, at: 0)
+            publishBubbles()
+        }
         if openingImage != nil || !opening.isEmpty {
             repository.postMessage(
                 threadId: id,

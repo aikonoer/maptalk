@@ -20,7 +20,8 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import app.maptalk.core.LiveNow
+import androidx.compose.foundation.layout.size
+import app.maptalk.core.ActivityHeat
 import app.maptalk.data.model.ChatThread
 import app.maptalk.data.model.Message
 import app.maptalk.ui.relativeTime
@@ -39,7 +40,7 @@ fun BubblePreviewCard(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val live = LiveNow.isLive(thread.lastMessageAt)
+    val heat = ActivityHeat.of(thread.lastMessageAt)
     Surface(
         modifier = modifier
             .fillMaxWidth()
@@ -74,26 +75,32 @@ fun BubblePreviewCard(
                         horizontalArrangement = Arrangement.spacedBy(5.dp),
                         modifier = Modifier.padding(top = 2.dp),
                     ) {
-                        if (live) {
-                            LiveDot(size = 6.dp)
-                            Text(
-                                text = "Live",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MapTalkColors.Accent,
+                        if (heat != ActivityHeat.COOL) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .background(
+                                        MapTalkColors.Accent.copy(
+                                            alpha = if (heat == ActivityHeat.HOT) 1f else 0.55f,
+                                        ),
+                                        CircleShape,
+                                    ),
                             )
                         }
                         Text(
                             text = buildString {
-                                if (!live) {
-                                    append(relativeTime(thread.lastMessageAt))
-                                    append(" · ")
-                                }
+                                append(relativeTime(thread.lastMessageAt))
+                                append(" · ")
                                 append(thread.kind.label)
                                 append(" · ")
                                 append(thread.authorName)
                             },
                             style = MaterialTheme.typography.labelSmall,
-                            color = if (live) MapTalkColors.Accent else MapTalkColors.Faint,
+                            color = when (heat) {
+                                ActivityHeat.HOT -> MapTalkColors.Accent.copy(alpha = 0.95f)
+                                ActivityHeat.WARM -> MapTalkColors.Accent.copy(alpha = 0.7f)
+                                ActivityHeat.COOL -> MapTalkColors.Faint
+                            },
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f, fill = false),

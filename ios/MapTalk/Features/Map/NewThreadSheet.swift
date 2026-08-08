@@ -13,6 +13,8 @@ struct NewThreadSheet: View {
 
     let position: GeoPoint
     var onCancel: (() -> Void)? = nil
+    /// Called when a non-field control is used so the panel can settle under a dismissed keyboard.
+    var onDismissKeyboard: (() -> Void)? = nil
     let onCreate: (_ title: String, _ body: String, _ kind: ThreadKind, _ image: UIImage?) -> Void
 
     @State private var title = ""
@@ -34,6 +36,10 @@ struct NewThreadSheet: View {
 
     private var trimmedBody: String {
         bodyText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var canCreate: Bool {
+        !trimmedTitle.isEmpty && !isPreparingImage
     }
 
     var body: some View {
@@ -75,8 +81,8 @@ struct NewThreadSheet: View {
                     .font(.body)
                     .foregroundStyle(Theme.text)
                     .scrollContentBackground(.hidden)
-                    .focused($focusedField, equals: .body)
-                    .frame(minHeight: 56, maxHeight: 88)
+                .focused($focusedField, equals: .body)
+                .frame(minHeight: 56, maxHeight: 88)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
                     .background(Theme.raised, in: RoundedRectangle(cornerRadius: Theme.Radius.field))
@@ -112,24 +118,12 @@ struct NewThreadSheet: View {
                 HStack(spacing: 8) {
                     ForEach(ThreadKind.allCases, id: \.rawValue) { option in
                         KindChip(kind: option, isSelected: option == kind) {
+                            releaseKeyboard()
                             withAnimation(.spring(duration: 0.25)) { kind = option }
                         }
                     }
                 }
                 .padding(.top, 6)
-
-                Button(action: create) {
-                    Text("Pin it and open the chat")
-                        .font(.control)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                        .background(trimmedTitle.isEmpty ? Theme.raised : Theme.accent, in: Capsule())
-                        .foregroundStyle(trimmedTitle.isEmpty ? Theme.faint : .white)
-                }
-                .buttonStyle(.pressable)
-                .disabled(trimmedTitle.isEmpty || isPreparingImage)
-                .animation(.easeOut(duration: 0.15), value: trimmedTitle.isEmpty)
-                .padding(.top, 16)
                 .padding(.bottom, 8)
             }
             .padding(.horizontal, 20)
@@ -138,17 +132,18 @@ struct NewThreadSheet: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .background(Theme.surface)
-        // Don't auto-focus — keyboard would shove the sheet up and hide the map pin.
+        // Don't auto-focus — open with the pin visible; focusing a field lifts the panel
+        // above the keyboard (MapScreen respects the keyboard safe area).
         .onChange(of: pickerItem) { _, item in
             guard let item else { return }
             Task { await loadPickerItem(item) }
         }
     }
 
-    /// Title + place on two tight lines so the pin stays visible above a short sheet.
+    /// Title + place; create sits top-trailing as a check so it stays reachable above the keyboard.
     private var compactHeader: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline) {
+            HStack(alignment: .center, spacing: 10) {
                 Text("Start a chat")
                     .font(.cardTitle)
                     .foregroundStyle(Theme.text)
@@ -158,6 +153,17 @@ struct NewThreadSheet: View {
                         .font(.control)
                         .foregroundStyle(Theme.subtle)
                 }
+                Button(action: create) {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(canCreate ? .white : Theme.faint)
+                        .frame(width: 32, height: 32)
+                        .background(canCreate ? Theme.accent : Theme.raised, in: Circle())
+                }
+                .buttonStyle(.pressable)
+                .disabled(!canCreate)
+                .accessibilityLabel("Pin and open")
+                .animation(.easeOut(duration: 0.15), value: canCreate)
             }
             PlaceLabelLine(
                 point: position,
@@ -228,7 +234,13 @@ struct NewThreadSheet: View {
 
     private func create() {
         guard !trimmedTitle.isEmpty else { return }
+        releaseKeyboard()
         onCreate(trimmedTitle, trimmedBody, kind, pendingImage)
+    }
+
+    private func releaseKeyboard() {
+        focusedField = nil
+        onDismissKeyboard?()
     }
 
     private func loadPickerItem(_ item: PhotosPickerItem) async {

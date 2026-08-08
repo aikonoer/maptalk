@@ -15,9 +15,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -26,8 +26,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -81,6 +79,7 @@ private const val MAX_BODY_LENGTH = 1_000
 fun NewThreadSheet(
     position: GeoPoint,
     onCancel: (() -> Unit)? = null,
+    onDismissKeyboard: (() -> Unit)? = null,
     onCreate: (title: String, body: String, kind: ThreadKind, image: PreparedImage?) -> Unit,
 ) {
     var title by remember { mutableStateOf("") }
@@ -90,6 +89,7 @@ fun NewThreadSheet(
     var isPreparingImage by remember { mutableStateOf(false) }
     val trimmed = title.trim()
     val trimmedBody = bodyText.trim()
+    val canCreate = trimmed.isNotEmpty() && !isPreparingImage
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -116,13 +116,14 @@ fun NewThreadSheet(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .navigationBarsPadding()
+            // Outer sheet already insets above the nav bar — don’t double-pad inside.
             .verticalScroll(rememberScrollState())
             .padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 20.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Text(
                 text = "Start a chat",
@@ -133,6 +134,26 @@ fun NewThreadSheet(
             if (onCancel != null) {
                 TextButton(onClick = onCancel) {
                     Text("Cancel", color = MapTalkColors.Subtle)
+                }
+            }
+            // Top check — stays above the keyboard; icon is enough with a clear disabled state.
+            Surface(
+                onClick = { onCreate(trimmed, trimmedBody, kind, pendingImage) },
+                enabled = canCreate,
+                shape = CircleShape,
+                color = if (canCreate) MapTalkColors.Accent else MapTalkColors.Raised,
+                contentColor = if (canCreate) Color.White else MapTalkColors.Faint,
+                modifier = Modifier.size(32.dp),
+            ) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_check),
+                        contentDescription = "Pin and open",
+                        modifier = Modifier.size(16.dp),
+                    )
                 }
             }
         }
@@ -309,32 +330,15 @@ fun NewThreadSheet(
                 KindChip(
                     kind = option,
                     isSelected = option == kind,
-                    onClick = { kind = option },
+                    onClick = {
+                        onDismissKeyboard?.invoke()
+                        kind = option
+                    },
                     modifier = Modifier.weight(1f),
                 )
             }
         }
 
-        Button(
-            onClick = { onCreate(trimmed, trimmedBody, kind, pendingImage) },
-            enabled = trimmed.isNotEmpty() && !isPreparingImage,
-            shape = CircleShape,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MapTalkColors.Accent,
-                contentColor = Color.White,
-                disabledContainerColor = MapTalkColors.Raised,
-                disabledContentColor = MapTalkColors.Faint,
-            ),
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 22.dp),
-        ) {
-            Text(
-                text = "Pin it and open the chat",
-                style = MaterialTheme.typography.labelLarge,
-                modifier = Modifier.padding(vertical = 6.dp),
-            )
-        }
     }
 }
 

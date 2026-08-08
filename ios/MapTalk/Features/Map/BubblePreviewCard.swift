@@ -16,7 +16,7 @@ struct BubblePreviewCard: View {
 
     @State private var dragOffset: CGFloat = 0
 
-    private var live: Bool { LiveNow.isLive(thread.lastMessageAt) }
+    private var heat: ActivityHeat { ActivityHeat.of(thread.lastMessageAt) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -84,10 +84,15 @@ struct BubblePreviewCard: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 HStack(spacing: 5) {
-                    if live {
-                        LiveDot(size: 6)
-                        Text("Live")
-                            .foregroundStyle(Theme.accent)
+                    let heat = ActivityHeat.of(thread.lastMessageAt)
+                    if heat != .cool {
+                        Circle()
+                            .fill(Theme.accent.opacity(heat == .hot ? 1 : 0.55))
+                            .frame(width: 6, height: 6)
+                            .shadow(
+                                color: Theme.accent.opacity(heat == .hot ? 0.7 : 0.35),
+                                radius: heat == .hot ? 4 : 2
+                            )
                     }
                     Text(thread.kind.label)
                         .foregroundStyle(thread.kind.tint)
@@ -112,7 +117,13 @@ struct BubblePreviewCard: View {
                 .frame(width: 1, height: 28)
             statChip(
                 value: relativeTime(thread.lastMessageAt),
-                label: live ? "live now" : "last active"
+                label: {
+                    switch heat {
+                    case .hot: return "active now"
+                    case .warm: return "active recently"
+                    case .cool: return "last active"
+                    }
+                }()
             )
             Rectangle()
                 .fill(Theme.hairline)

@@ -332,10 +332,16 @@ struct ThreadScreen: View {
 
             if let thread = model.thread {
                 HStack(spacing: 5) {
-                    if LiveNow.isLive(thread.lastMessageAt) {
-                        LiveDot(size: 6)
-                        Text("Live")
-                            .foregroundStyle(Theme.accent)
+                    // Glow pip instead of a "Live" label — same heat language as map bubbles.
+                    let heat = ActivityHeat.of(thread.lastMessageAt)
+                    if heat != .cool {
+                        Circle()
+                            .fill(Theme.accent.opacity(heat == .hot ? 1 : 0.55))
+                            .frame(width: 6, height: 6)
+                            .shadow(
+                                color: Theme.accent.opacity(heat == .hot ? 0.7 : 0.35),
+                                radius: heat == .hot ? 4 : 2
+                            )
                     }
                     Text(thread.kind.glyph).font(.system(size: 9))
                     Text(thread.kind.label)

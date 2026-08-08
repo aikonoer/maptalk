@@ -20,10 +20,12 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -31,6 +33,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -78,6 +81,7 @@ import androidx.compose.ui.input.pointer.PointerEventTimeoutCancellationExceptio
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.ImeAction
@@ -129,6 +133,11 @@ private const val SEARCH_LANDING_MS = 1_800L
 private val GLYPH_SIZE = 28.dp
 /** Compose sheet peek — leaves a map band above so the pin stays in view. */
 private val ComposeSheetPeek = 420.dp
+/** Side/bottom inset — matches the floating chat sheet so the map peeks around the card. */
+private val ComposeSheetInset = 12.dp
+private val ComposeSheetCorner = 28.dp
+/** Modest zoom-in when opening compose; cancel restores the prior camera. */
+private const val COMPOSE_ZOOM_DELTA = 0.55f
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -221,6 +230,8 @@ fun MapScreen(
     val density = LocalDensity.current
     var showNewThreadSheet by remember { mutableStateOf(false) }
     var composePosition by remember { mutableStateOf<GeoPoint?>(null) }
+    /** Pre-compose camera — restored when the user cancels. */
+    var composeRestoreCamera by remember { mutableStateOf<CameraPosition?>(null) }
     var openThreadId by remember { mutableStateOf<String?>(null) }
     var showAccount by remember { mutableStateOf(false) }
     var previewThread by remember { mutableStateOf<ChatThread?>(null) }
@@ -230,6 +241,11 @@ fun MapScreen(
     var searchLanding by remember { mutableStateOf<PlaceSearchHit?>(null) }
     var isSearching by remember { mutableStateOf(false) }
     var emptyNearbyHintDismissed by remember { mutableStateOf(false) }
+    /** Thread ids already on the map — seed once so load doesn’t grow every pin. */
+    var seenBubbleThreadIds by remember { mutableStateOf(setOf<String>()) }
+    var bubbleIdsSeeded by remember { mutableStateOf(false) }
+    /** Fresh thread ids that should play the grow-in once. */
+    var appearingBubbleIds by remember { mutableStateOf(setOf<String>()) }
     val threadSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val accountSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val pendingDeepLink by DeepLinkBus.pendingThreadId.collectAsStateWithLifecycle()
@@ -239,18 +255,46 @@ fun MapScreen(
         openThreadId = id
     }
 
-    fun dismissCompose() {
-        if (!showNewThreadSheet && composePosition == null) return
-        // Panel + pin only — map stays put (no padding release, no reverse pan).
-        showNewThreadSheet = false
+    val bubbleThreadIds = remember(state.bubbles) {
+        state.bubbles.flatMap { it.items }.map { it.id }.toSet()
+    }
+    // First snapshot seeds silently; later arrivals get a one-shot grow-in.
+    LaunchedEffect(bubbleThreadIds) {
+        if (!bubbleIdsSeeded) {
+            seenBubbleThreadIds = bubbleThreadIds
+            bubbleIdsSeeded = true
+            return@LaunchedEffect
+        }
+        val fresh = bubbleThreadIds - seenBubbleThreadIds
+        if (fresh.isEmpty()) return@LaunchedEffect
+        seenBubbleThreadIds = seenBubbleThreadIds + fresh
+        appearingBubbleIds = appearingBubbleIds + fresh
+        // Fire-and-forget so a newer snapshot doesn’t cancel the clear (matches iOS Task).
         scope.launch {
+            delay(520)
+            appearingBubbleIds = appearingBubbleIds - fresh
+        }
+    }
+
+    fun dismissCompose(restoreCamera: Boolean = true) {
+        if (!showNewThreadSheet && composePosition == null) return
+        showNewThreadSheet = false
+        val restore = if (restoreCamera) composeRestoreCamera else null
+        composeRestoreCamera = null
+        scope.launch {
+            if (restore != null) {
+                cameraPositionState.animate(
+                    CameraUpdateFactory.newCameraPosition(restore),
+                    durationMs = 340,
+                )
+            }
             delay(280)
             composePosition = null
         }
     }
 
     if (showNewThreadSheet) {
-        BackHandler { dismissCompose() }
+        BackHandler { dismissCompose(restoreCamera = true) }
     }
 
     fun dismissPreview() {
@@ -272,8 +316,10 @@ fun MapScreen(
         dismissPreview()
         if (isSearching) isSearching = false
         composePosition = at
+        val current = cameraPositionState.position
+        composeRestoreCamera = current
         showNewThreadSheet = true
-        // Pan only (keep zoom) — nudge south so the pin sits in the band above the panel.
+        // Light zoom-in + pan so the pin sits in the band above the panel.
         scope.launch {
             val peekPx = with(density) { ComposeSheetPeek.toPx() }
             val mapHeightPx = context.resources.displayMetrics.heightPixels.toFloat().coerceAtLeast(1f)
@@ -283,10 +329,20 @@ fun MapScreen(
             } else {
                 0.02
             }
-            val latShift = latDelta * (peekPx * 0.5) / mapHeightPx
+            val targetZoom = (current.zoom + COMPOSE_ZOOM_DELTA).coerceAtMost(18f)
+            // Span shrinks ~2^Δz when zooming in — shift against the zoomed view.
+            val zoomedLatDelta = latDelta / Math.pow(2.0, COMPOSE_ZOOM_DELTA.toDouble())
+            val latShift = zoomedLatDelta * (peekPx * 0.5) / mapHeightPx
             cameraPositionState.animate(
-                CameraUpdateFactory.newLatLng(LatLng(at.lat - latShift, at.lng)),
-                durationMs = 320,
+                CameraUpdateFactory.newCameraPosition(
+                    CameraPosition.Builder()
+                        .target(LatLng(at.lat - latShift, at.lng))
+                        .zoom(targetZoom)
+                        .bearing(current.bearing)
+                        .tilt(current.tilt)
+                        .build(),
+                ),
+                durationMs = 380,
             )
         }
     }
@@ -325,7 +381,10 @@ fun MapScreen(
             ) {
                 state.bubbles.forEach { bubble ->
                     key(bubble.key) {
-                        ThreadBubbleMarker(bubble = bubble)
+                        ThreadBubbleMarker(
+                            bubble = bubble,
+                            playAppear = bubble.items.any { it.id in appearingBubbleIds },
+                        )
                     }
                 }
                 searchLanding?.let { landing ->
@@ -609,6 +668,14 @@ fun MapScreen(
             }
 
             // In-place panel — ModalBottomSheet still flashes/resizes the map under a scrim.
+            // imePadding rides the panel above the keyboard; tap the map band to clear focus
+            // so the sheet settles back down with the IME.
+            val composeFocusManager = LocalFocusManager.current
+            val composeKeyboard = LocalSoftwareKeyboardController.current
+            fun dismissComposeKeyboard() {
+                composeFocusManager.clearFocus(force = true)
+                composeKeyboard?.hide()
+            }
             AnimatedVisibility(
                 visible = showNewThreadSheet,
                 enter = slideInVertically(
@@ -619,42 +686,79 @@ fun MapScreen(
                     animationSpec = tween(320),
                     targetOffsetY = { it },
                 ) + fadeOut(animationSpec = tween(200)),
-                modifier = Modifier.align(Alignment.BottomCenter),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .imePadding(),
             ) {
                 val pin = cameraPositionState.position.target
                 val pinPosition = composePosition ?: GeoPoint(pin.latitude, pin.longitude)
-                Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(ComposeSheetPeek),
-                    color = MapTalkColors.Surface,
-                    contentColor = MapTalkColors.Text,
-                    shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-                    shadowElevation = 12.dp,
-                ) {
-                    Column {
-                        Box(
+                Column(modifier = Modifier.fillMaxSize()) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = { dismissComposeKeyboard() },
+                            ),
+                    )
+                    BoxWithConstraints(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = ComposeSheetInset)
+                            .padding(bottom = ComposeSheetInset),
+                    ) {
+                        val sheetHeight = minOf(ComposeSheetPeek, maxHeight)
+                        Surface(
                             modifier = Modifier
-                                .padding(top = 10.dp, bottom = 4.dp)
-                                .size(width = 36.dp, height = 5.dp)
-                                .align(Alignment.CenterHorizontally)
-                                .background(MapTalkColors.Faint.copy(alpha = 0.55f), CircleShape),
-                        )
-                        NewThreadSheet(
-                            position = pinPosition,
-                            onCancel = { dismissCompose() },
-                            onCreate = { title, body, kind, image ->
-                                dismissCompose()
-                                openThreadId = viewModel.createThread(
-                                    title = title,
-                                    kind = kind,
-                                    position = pinPosition,
-                                    author = author,
-                                    openingText = body,
-                                    openingImage = image,
+                                .fillMaxWidth()
+                                .height(sheetHeight)
+                                .border(1.dp, MapTalkColors.Hairline, RoundedCornerShape(ComposeSheetCorner)),
+                            color = MapTalkColors.Surface,
+                            contentColor = MapTalkColors.Text,
+                            shape = RoundedCornerShape(ComposeSheetCorner),
+                            shadowElevation = 12.dp,
+                        ) {
+                            Column {
+                                Box(
+                                    modifier = Modifier
+                                        .padding(top = 10.dp, bottom = 4.dp)
+                                        .size(width = 36.dp, height = 5.dp)
+                                        .align(Alignment.CenterHorizontally)
+                                        .background(MapTalkColors.Faint.copy(alpha = 0.55f), CircleShape)
+                                        .clickable(
+                                            interactionSource = remember { MutableInteractionSource() },
+                                            indication = null,
+                                            onClick = { dismissComposeKeyboard() },
+                                        ),
                                 )
-                            },
-                        )
+                                NewThreadSheet(
+                                    position = pinPosition,
+                                    onCancel = { dismissCompose(restoreCamera = true) },
+                                    onDismissKeyboard = { dismissComposeKeyboard() },
+                                    onCreate = { title, body, kind, image ->
+                                        dismissCompose(restoreCamera = false)
+                                        val id = viewModel.createThread(
+                                            title = title,
+                                            kind = kind,
+                                            position = pinPosition,
+                                            author = author,
+                                            openingText = body,
+                                            openingImage = image,
+                                        )
+                                        // Stay on the map briefly so the new bubble’s grow-in is visible.
+                                        seenBubbleThreadIds = seenBubbleThreadIds + id
+                                        appearingBubbleIds = appearingBubbleIds + id
+                                        scope.launch {
+                                            delay(780)
+                                            appearingBubbleIds = appearingBubbleIds - id
+                                            openThreadId = id
+                                        }
+                                    },
+                                )
+                            }
+                        }
                     }
                 }
             }

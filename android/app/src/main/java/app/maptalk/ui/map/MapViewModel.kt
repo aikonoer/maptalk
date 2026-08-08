@@ -7,6 +7,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import app.maptalk.AppContainer
 import app.maptalk.data.AuthRepository
+import app.maptalk.data.Fs
 import app.maptalk.data.SafetyRepository
 import app.maptalk.data.ThreadRepository
 import app.maptalk.data.UserProfile
@@ -19,6 +20,9 @@ import app.maptalk.geo.Viewport
 import app.maptalk.geo.ViewportQuery
 import app.maptalk.geo.clusterByGeohash
 import app.maptalk.location.LocationProvider
+import com.firebase.geofire.GeoFireUtils
+import com.firebase.geofire.GeoLocation
+import java.time.Instant
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.Flow
@@ -96,6 +100,9 @@ class MapViewModel(
     /** Optimistically hidden after Delete chat until the query snapshot catches up. */
     private val _removedThreadIds = MutableStateFlow<Set<String>>(emptySet())
 
+    /** Freshly created chats — shown before the query snapshot includes them. */
+    private val _pendingThreads = MutableStateFlow<Map<String, ChatThread>>(emptyMap())
+
     @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
     val state: StateFlow<MapUiState> = camera
         .filterNotNull()
@@ -108,8 +115,12 @@ class MapViewModel(
                 blockedUids,
                 _kindFilter,
                 _removedThreadIds,
-            ) { threads, blocked, filter, removed ->
-                val visible = threads.filter { it.id !in removed && it.authorId !in blocked }
+                _pendingThreads,
+            ) { threads, blocked, filter, removed, pending ->
+                val serverIds = threads.map { it.id }.toSet()
+                val pendingExtra = pending.values.filter { it.id !in serverIds && it.id !in removed }
+                val visible = (threads.filter { it.id !in removed && it.authorId !in blocked } + pendingExtra)
+                    .distinctBy { it.id }
                 val shown = if (filter.isEmpty()) visible else visible.filter { it.kind in filter }
                 MapUiState(
                     bubbles = clusterByGeohash(
@@ -192,6 +203,25 @@ class MapViewModel(
     ): String {
         val id = threadRepository.createThread(title, kind, position, author)
         val opening = openingText.trim()
+        val now = Instant.now()
+        // Pin immediately so the map bubble can grow in before the query echoes the write.
+        _pendingThreads.value = _pendingThreads.value + (
+            id to ChatThread(
+                id = id,
+                title = title.trim(),
+                kind = kind,
+                position = position,
+                geohash = GeoFireUtils.getGeoHashForLocation(
+                    GeoLocation(position.lat, position.lng),
+                    Fs.GEOHASH_PRECISION,
+                ),
+                authorId = author.uid,
+                authorName = author.displayName,
+                createdAt = now,
+                lastMessageAt = now,
+                messageCount = if (openingImage != null || opening.isNotEmpty()) 1L else 0L,
+            )
+        )
         if (openingImage != null || opening.isNotEmpty()) {
             threadRepository.postMessage(
                 threadId = id,

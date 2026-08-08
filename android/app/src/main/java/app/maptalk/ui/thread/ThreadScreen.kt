@@ -87,7 +87,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import app.maptalk.core.DeepLinkBus
-import app.maptalk.core.LiveNow
+import app.maptalk.core.ActivityHeat
 import app.maptalk.core.ThreadLink
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -627,17 +627,17 @@ fun ThreadScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(5.dp),
                             ) {
-                                if (LiveNow.isLive(thread.lastMessageAt)) {
+                                val heat = ActivityHeat.of(thread.lastMessageAt)
+                                if (heat != ActivityHeat.COOL) {
                                     Box(
                                         modifier = Modifier
                                             .size(6.dp)
-                                            .background(MapTalkColors.Accent, CircleShape),
-                                    )
-                                    Text(
-                                        text = "Live",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MapTalkColors.Accent,
-                                        maxLines = 1,
+                                            .background(
+                                                MapTalkColors.Accent.copy(
+                                                    alpha = if (heat == ActivityHeat.HOT) 1f else 0.55f,
+                                                ),
+                                                CircleShape,
+                                            ),
                                     )
                                 }
                                 Text(

@@ -91,7 +91,7 @@ struct ClusterPreviewCard: View {
 private struct ClusterPreviewRow: View {
     let thread: ChatThread
 
-    private var live: Bool { LiveNow.isLive(thread.lastMessageAt) }
+    private var heat: ActivityHeat { ActivityHeat.of(thread.lastMessageAt) }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -104,25 +104,17 @@ private struct ClusterPreviewRow: View {
                     .foregroundStyle(Theme.text)
                     .lineLimit(1)
 
-                Text(
-                    [
-                        live ? "Live" : nil,
-                        thread.kind.label,
-                        thread.authorName,
-                    ]
-                    .compactMap { $0 }
-                    .joined(separator: " · ")
-                )
-                .font(.meta)
-                .foregroundStyle(live ? Theme.accent : Theme.faint)
-                .lineLimit(1)
+                Text("\(thread.kind.label) · \(thread.authorName)")
+                    .font(.meta)
+                    .foregroundStyle(Theme.faint)
+                    .lineLimit(1)
             }
 
             Spacer(minLength: 8)
 
-            Text(live ? "Live" : relativeTime(thread.lastMessageAt))
+            Text(relativeTime(thread.lastMessageAt))
                 .font(.meta)
-                .foregroundStyle(live ? Theme.accent : Theme.faint)
+                .foregroundStyle(heat == .cool ? Theme.faint : Theme.accent.opacity(heat == .hot ? 0.95 : 0.7))
         }
         .padding(.vertical, 10)
         .contentShape(Rectangle())

@@ -19,7 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import app.maptalk.core.LiveNow
+import app.maptalk.core.ActivityHeat
 import app.maptalk.data.model.ChatThread
 import app.maptalk.ui.relativeTime
 import app.maptalk.ui.theme.MapTalkColors
@@ -92,7 +92,7 @@ private fun ClusterPreviewRow(
     thread: ChatThread,
     onClick: () -> Unit,
 ) {
-    val live = LiveNow.isLive(thread.lastMessageAt)
+    val heat = ActivityHeat.of(thread.lastMessageAt)
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -110,22 +110,21 @@ private fun ClusterPreviewRow(
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                text = buildString {
-                    if (live) append("Live · ")
-                    append(thread.kind.label)
-                    append(" · ")
-                    append(thread.authorName)
-                },
+                text = "${thread.kind.label} · ${thread.authorName}",
                 style = MaterialTheme.typography.labelSmall,
-                color = if (live) MapTalkColors.Accent else MapTalkColors.Faint,
+                color = MapTalkColors.Faint,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
         }
         Text(
-            text = if (live) "Live" else relativeTime(thread.lastMessageAt),
+            text = relativeTime(thread.lastMessageAt),
             style = MaterialTheme.typography.labelSmall,
-            color = if (live) MapTalkColors.Accent else MapTalkColors.Faint,
+            color = when (heat) {
+                ActivityHeat.HOT -> MapTalkColors.Accent.copy(alpha = 0.95f)
+                ActivityHeat.WARM -> MapTalkColors.Accent.copy(alpha = 0.7f)
+                ActivityHeat.COOL -> MapTalkColors.Faint
+            },
         )
     }
 }

@@ -1,5 +1,7 @@
 package app.maptalk.ui.map
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -10,19 +12,25 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.material3.Icon
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -31,7 +39,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.maptalk.R
 import app.maptalk.appContainer
-import app.maptalk.core.LiveNow
+import app.maptalk.core.ActivityHeat
 import app.maptalk.data.model.ChatThread
 import app.maptalk.data.model.MessageKind
 import app.maptalk.geo.GeoCluster
@@ -45,6 +53,7 @@ import com.google.maps.android.compose.GoogleMapComposable
 import com.google.maps.android.compose.MarkerComposable
 import com.google.maps.android.compose.rememberUpdatedMarkerState
 import java.time.Instant
+import kotlin.math.roundToInt
 
 /**
  * A marker drawn as a chat bubble: title when alone, stacked kind glyphs when clustered.
@@ -53,15 +62,36 @@ import java.time.Instant
  * [MarkerComposable] is rasterised to a bitmap and the Maps SDK only offers a plain click on it.
  * Returning true from [MarkerComposable]'s own click keeps the SDK from recentring the camera if
  * one ever slips through.
+ *
+ * [playAppear] grows the bubble in from the anchor corner. Scale is keyed into
+ * [MarkerComposable] so each frame refreshes the bitmap (markers cannot animate otherwise).
  */
 @Composable
 @GoogleMapComposable
-fun ThreadBubbleMarker(bubble: GeoCluster<ChatThread>) {
+fun ThreadBubbleMarker(
+    bubble: GeoCluster<ChatThread>,
+    playAppear: Boolean = false,
+) {
     val thread = bubble.single
+    val appearScale = remember { Animatable(if (playAppear) 0.4f else 1f) }
+    LaunchedEffect(playAppear) {
+        if (playAppear) {
+            if (appearScale.value >= 0.99f) appearScale.snapTo(0.4f)
+            appearScale.animateTo(
+                targetValue = 1f,
+                animationSpec = spring(dampingRatio = 0.55f, stiffness = 320f),
+            )
+        } else {
+            appearScale.snapTo(1f)
+        }
+    }
+    // Quantize so we redraw ~every 2% of scale — enough for a smooth grow without thrashing.
+    val scaleTick = (appearScale.value * 50f).roundToInt()
     MarkerComposable(
         bubble.key,
         bubble.size,
         thread?.title.orEmpty(),
+        scaleTick,
         state = rememberUpdatedMarkerState(
             position = LatLng(bubble.position.lat, bubble.position.lng),
         ),
@@ -70,10 +100,19 @@ fun ThreadBubbleMarker(bubble: GeoCluster<ChatThread>) {
         anchor = Offset(0f, 1f),
         onClick = { true },
     ) {
-        if (thread == null) {
-            ClusterBubble(threads = bubble.items)
-        } else {
-            ThreadBubble(thread = thread)
+        Box(
+            modifier = Modifier.graphicsLayer {
+                val s = appearScale.value
+                scaleX = s
+                scaleY = s
+                transformOrigin = TransformOrigin(0f, 1f)
+            },
+        ) {
+            if (thread == null) {
+                ClusterBubble(threads = bubble.items)
+            } else {
+                ThreadBubble(thread = thread)
+            }
         }
     }
 }
@@ -148,19 +187,10 @@ fun SearchLandingMarker(title: String, latitude: Double, longitude: Double) {
 
 @Composable
 private fun ThreadBubble(thread: ChatThread) {
-    val live = LiveNow.isLive(thread.lastMessageAt)
+    val heat = ActivityHeat.of(thread.lastMessageAt)
+    val live = heat == ActivityHeat.HOT
     val mediaPreview = thread.hasMapMediaPreview
-    Surface(
-        shape = BubbleShape,
-        color = MapTalkColors.Surface,
-        contentColor = MapTalkColors.Text,
-        shadowElevation = if (live) 10.dp else 6.dp,
-        modifier = Modifier.border(
-            if (live) 1.5.dp else 1.dp,
-            if (live) MapTalkColors.Accent.copy(alpha = 0.7f) else MapTalkColors.Hairline,
-            BubbleShape,
-        ),
-    ) {
+    ActivityGlowBubble(heat = heat, live = live) {
         Row(
             modifier = Modifier
                 .widthIn(max = if (mediaPreview) 180.dp else 200.dp)
@@ -168,9 +198,6 @@ private fun ThreadBubble(thread: ChatThread) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(7.dp),
         ) {
-            if (live) {
-                LiveDot(size = 8.dp)
-            }
             if (mediaPreview) {
                 MapBubbleMediaThumb(
                     path = thread.lastMediaPath!!,
@@ -193,9 +220,13 @@ private fun ThreadBubble(thread: ChatThread) {
                     modifier = Modifier.weight(1f, fill = false),
                 )
                 Text(
-                    text = if (live) "Live" else relativeTime(thread.lastMessageAt),
+                    text = relativeTime(thread.lastMessageAt),
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (live) MapTalkColors.Accent else MapTalkColors.Faint,
+                    color = when (heat) {
+                        ActivityHeat.HOT -> MapTalkColors.Accent.copy(alpha = 0.95f)
+                        ActivityHeat.WARM -> MapTalkColors.Accent.copy(alpha = 0.7f)
+                        ActivityHeat.COOL -> MapTalkColors.Faint
+                    },
                 )
             }
         }
@@ -262,22 +293,16 @@ private fun ClusterBubble(threads: List<ChatThread>) {
     }
     val visible = sorted.take(MaxClusterGlyphs)
     val overflow = (sorted.size - visible.size).coerceAtLeast(0)
-    val anyLive = sorted.any { LiveNow.isLive(it.lastMessageAt) }
+    val heat = sorted.minOfOrNull { ActivityHeat.of(it.lastMessageAt) } ?: ActivityHeat.COOL
+    val anyLive = heat == ActivityHeat.HOT
 
-    Surface(
-        shape = BubbleShape,
-        color = MapTalkColors.Surface,
-        contentColor = MapTalkColors.Text,
-        shadowElevation = if (anyLive) 10.dp else 6.dp,
-        modifier = Modifier.border(
-            if (anyLive) 1.5.dp else 1.dp,
-            if (anyLive) MapTalkColors.Accent.copy(alpha = 0.7f) else MapTalkColors.Hairline,
-            BubbleShape,
-        ),
-    ) {
+    // One tight LTR strip — wrap content so the marker bitmap doesn’t stretch
+    // the pill and leave the time stranded on the trailing edge.
+    ActivityGlowBubble(heat = heat, live = anyLive) {
         Row(
             modifier = Modifier.padding(start = 8.dp, end = 10.dp, top = 7.dp, bottom = 7.dp),
             verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Box(
                 modifier = Modifier.size(
@@ -306,15 +331,59 @@ private fun ClusterBubble(threads: List<ChatThread>) {
                 Text(
                     text = "+$overflow",
                     style = MaterialTheme.typography.labelMedium,
-                    modifier = Modifier.padding(start = 8.dp),
-                )
-            } else if (anyLive) {
-                LiveDot(
-                    size = 7.dp,
-                    modifier = Modifier.padding(start = 8.dp),
                 )
             }
+            Text(
+                text = relativeTime(sorted.firstOrNull()?.lastMessageAt),
+                style = MaterialTheme.typography.labelSmall,
+                color = when (heat) {
+                    ActivityHeat.HOT -> MapTalkColors.Accent.copy(alpha = 0.95f)
+                    ActivityHeat.WARM -> MapTalkColors.Accent.copy(alpha = 0.7f)
+                    ActivityHeat.COOL -> MapTalkColors.Faint
+                },
+            )
         }
+    }
+}
+
+/** Soft accent halo (scaled fill) + main border/elevation. */
+@Composable
+private fun ActivityGlowBubble(
+    heat: ActivityHeat,
+    live: Boolean,
+    content: @Composable () -> Unit,
+) {
+    val glowAlpha = when (heat) {
+        ActivityHeat.HOT -> 0.22f
+        ActivityHeat.WARM -> 0.12f
+        ActivityHeat.COOL -> 0f
+    }
+    val glowScale = when (heat) {
+        ActivityHeat.HOT -> 1.08f
+        ActivityHeat.WARM -> 1.05f
+        ActivityHeat.COOL -> 1f
+    }
+    Box(modifier = Modifier.wrapContentSize()) {
+        if (heat != ActivityHeat.COOL) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .scale(glowScale)
+                    .blur(if (heat == ActivityHeat.HOT) 10.dp else 7.dp)
+                    .background(MapTalkColors.Accent.copy(alpha = glowAlpha), BubbleShape),
+            )
+        }
+        Surface(
+            shape = BubbleShape,
+            color = MapTalkColors.Surface,
+            contentColor = MapTalkColors.Text,
+            shadowElevation = if (live) 10.dp else 6.dp,
+            border = BorderStroke(
+                if (live) 1.5.dp else 1.dp,
+                if (live) MapTalkColors.Accent.copy(alpha = 0.7f) else MapTalkColors.Hairline,
+            ),
+            content = content,
+        )
     }
 }
 
